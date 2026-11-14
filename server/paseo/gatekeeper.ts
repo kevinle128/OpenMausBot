@@ -1,3 +1,4 @@
+import { redactSecretsInText } from "../../shared/redact.ts";
 import type { Decider } from "../decider/index.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
@@ -58,7 +59,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
 
   async function jevAllows(command: string, cwd: string, provider: string): Promise<boolean> {
     try {
-      const result = await decider.yesNo("paseoPermission", { command, cwd, provider }, JEV_INSTRUCTIONS, { timeoutMs: JEV_TIMEOUT_MS });
+      const result = await decider.yesNo("paseoPermission", { command: redactSecretsInText(command), cwd, provider }, JEV_INSTRUCTIONS, { timeoutMs: JEV_TIMEOUT_MS });
       if (!result.ok) {
         deps.log(`paseo gatekeeper: Jev gave no answer (${result.reason}); asking the person`);
         return false;
@@ -71,7 +72,9 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
 
   function describe({ agent, request }: PaseoPermissionRequested): { label: string; what: string } {
     const target = permissionTarget(request);
-    const what = target ? (target.kind === "command" ? target.command : target.filePath) : request.title ?? request.description ?? request.name;
+    const shown = target ? (target.kind === "command" ? target.command : target.filePath) : request.title ?? request.description ?? request.name;
+    // The card and the lock-screen notice leave this process's trust boundary; a command can carry a key inline.
+    const what = redactSecretsInText(shown);
     return { label: agent.title?.trim() || agent.id.slice(0, 8), what };
   }
 
@@ -103,8 +106,9 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
     const key = keyOf(agentId, request.id);
     if (stages.has(key)) return;
     stages.set(key, "deciding");
+    let asked = false;
     try {
-      const decision = classifyPermission(request);
+      const decision = classifyPermission(request, { cwd: agent.cwd });
       let allowed = decision.verdict === "allow";
       let rule = decision.rule;
       if (decision.verdict === "ambiguous") {
@@ -127,10 +131,16 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
         deps.log(`paseo gatekeeper: request ${request.id} of agent ${agentId} is a question; it is answered in Paseo`);
         return;
       }
+      asked = true;
       await ask(event, key);
     } catch (error) {
       deps.log(`paseo gatekeeper: request ${request.id} of agent ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`);
-      if (stages.get(key) === "settled") await ask(event, key).catch(() => {});
+      // A card that failed to open is logged above; only an allow the daemon refused still needs its card.
+      if (stages.get(key) === "settled" && !asked) {
+        await ask(event, key).catch((askError: unknown) => {
+          deps.log(`paseo gatekeeper: could not open a card for request ${request.id} of agent ${agentId}: ${askError instanceof Error ? askError.message : String(askError)}`);
+        });
+      }
     }
   }
 

@@ -1,3 +1,6 @@
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+
 import type { PaseoPermissionRequest } from "./connection.ts";
 
 export type PermissionVerdict = "allow" | "ask" | "ambiguous";
@@ -11,30 +14,90 @@ export interface PermissionDecision {
 /** What a request wants to do, as far as the rules can read it. */
 export type PermissionTarget = { kind: "command"; command: string } | { kind: "file"; filePath: string };
 
+/** What the rules need from the machine: whether a path is a plain file whose real name is still an env file. */
+export interface PermissionContext {
+  /** The agent's working directory, for a path that is not absolute. */
+  cwd?: string;
+  /** Replaced by tests that do not want a real file system. */
+  envFile?: (cwd: string | undefined, filePath: string) => boolean;
+}
+
 const READ_SUBCOMMANDS = new Set(["get", "list", "search", "describe", "request", "resolve", "audit", "grants"]);
 const WRITE_SUBCOMMANDS = new Set([
   "set", "delete", "rotate", "grant", "approve", "revoke", "import-env", "export", "sync", "trust", "alias", "annotate", "recovery",
 ]);
 
-/** Flags that only change how a file is shown. `rg --pre` and `grep -f` run or load other things, so they are not here. */
+/** Flags every read-only `ak secrets` subcommand takes. `--reveal`, `-y`, `--backend`, `--exec`, `--env` and
+ * `--unlock-with-recovery` are not here: they print a value, answer a prompt or change where `ak` reads. */
+const AK_COMMON_FLAGS = new Set(["--json", "--no-interactive", "-q", "--quiet"]);
+/** Per subcommand: the flags that narrow it and take a value, and how many plain words it takes (null: any number). */
+const AK_SUBCOMMANDS: Record<string, { valueFlags: string[]; words: number | null }> = {
+  get: { valueFlags: [], words: 1 },
+  describe: { valueFlags: [], words: 1 },
+  list: { valueFlags: [], words: 0 },
+  grants: { valueFlags: [], words: 0 },
+  search: { valueFlags: ["--account", "--environment", "--kind", "--project", "--provider", "--sensitivity", "--tag"], words: null },
+  request: { valueFlags: ["--project", "--purpose"], words: 1 },
+  resolve: { valueFlags: ["--project", "--purpose"], words: 1 },
+  audit: { valueFlags: ["--agent", "--cursor", "--decision", "--limit", "--secret", "--since", "--source"], words: 0 },
+};
+
+/** Flags that only change how a file is shown. `rg --pre` and `grep -f` run or load other things, so they are not here;
+ * `less` and `source` are not readers at all, because they run what they read or can open a shell. */
 const SAFE_FLAGS: Record<string, RegExp> = {
   cat: /^-[nAEbsTv]+$/,
   head: /^-[nqvc]+$/,
   tail: /^-[nqvc]+$/,
-  less: /^-[nNSRi]+$/,
   grep: /^-[invwFEclHhsq]+$/,
   rg: /^-[invwFclHhsq]+$/,
 };
-const ENV_FILE_READERS = new Set([...Object.keys(SAFE_FLAGS), "source", "."]);
+const ENV_FILE_READERS = new Set(Object.keys(SAFE_FLAGS));
 
-const COMPOUND = /[|;&`()\n\r]/;
-const NOT_PLAIN = /[$<>*?[\]{}~\\]/;
-const ENV_MENTION = /(^|[^\w])\.env(\.[\w-]+)*(?![\w])/;
-const AK_SECRETS_MENTION = /(^|[^\w])ak\s+secrets(?![\w-])/;
+/** The only programs that may follow a pipe after an allowed step. They read standard input and nothing else: none takes
+ * a file, writes a file or runs a program, because `sort -o`, `uniq in out`, `grep -f` and `rg --pre` are outside the flag lists. */
+interface FilterSpec {
+  flag: RegExp;
+  /** Flags whose next word is their value. */
+  valueFlags?: string[];
+  /** Fewest and most plain words: a pattern or a character set, never a file. */
+  words: [number, number];
+}
+const LINE_COUNT_FLAG = /^-(?:[qv]+|\d+|[nc]\d+)$/;
+const PIPE_FILTERS: Record<string, FilterSpec> = {
+  head: { flag: LINE_COUNT_FLAG, valueFlags: ["-n", "-c"], words: [0, 0] },
+  tail: { flag: LINE_COUNT_FLAG, valueFlags: ["-n", "-c"], words: [0, 0] },
+  wc: { flag: /^-[lwcm]+$/, words: [0, 0] },
+  sort: { flag: /^-[rnufb]+$/, words: [0, 0] },
+  uniq: { flag: /^-[cdui]+$/, words: [0, 0] },
+  cut: { flag: /^-[dfcb].+$/, valueFlags: ["-d", "-f", "-c", "-b"], words: [0, 0] },
+  tr: { flag: /^-[dsc]+$/, words: [1, 2] },
+  grep: { flag: SAFE_FLAGS.grep!, words: [1, 1] },
+  rg: { flag: SAFE_FLAGS.rg!, words: [1, 1] },
+};
+
+/** Characters that start a substitution, a subshell, a background job, a redirect or a glob, or that escape the next
+ * one. They are refused on the raw text before any quote-aware reading, because `$(...)` and backticks run inside
+ * double quotes. `&&` and `||` fall here or leave an empty step, so they are never read as a join of safe steps. */
+const SHELL_SYNTAX = /[$`()<>&*?[\]{}~\\]/;
+const SEPARATORS = /([|;\n\r])/;
+/** The tools whose `input.command` is a shell command. Another tool with a `command` field is not one. */
+const SHELL_TOOLS = new Set(["bash", "shell", "exec_command"]);
 
 export function isEnvFilePath(filePath: string): boolean {
   const base = filePath.split(/[\\/]/).pop() ?? "";
   return base === ".env" || /^\.env\..+/.test(base);
+}
+
+/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
+ * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
+function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
+  if (!isAbsolute(filePath) && !cwd) return false;
+  try {
+    const real = realpathSync(resolve(cwd ?? "/", filePath));
+    return statSync(real).isFile() && isEnvFilePath(real);
+  } catch {
+    return false;
+  }
 }
 
 function text(value: unknown): string | undefined {
@@ -54,7 +117,7 @@ export function permissionTarget(request: Pick<PaseoPermissionRequest, "detail" 
   }
   if (detail && detail.type !== "unknown" && detail.type !== "plain_text") return null;
   const input = request.input as Record<string, unknown> | undefined;
-  const command = text(input?.command);
+  const command = SHELL_TOOLS.has(request.name.toLowerCase()) ? text(input?.command) : undefined;
   if (command) return { kind: "command", command };
   if (/^read$/i.test(request.name)) {
     const filePath = text(input?.file_path) ?? text(input?.filePath) ?? text(input?.path);
@@ -90,8 +153,9 @@ function words(command: string): string[] | null {
   return out;
 }
 
-function readsOnlyEnvFiles(tool: string, args: string[]): boolean {
-  if (tool === "source" || tool === ".") return args.length === 1 && isEnvFilePath(args[0]!);
+type Step = { kind: "allow"; rule: string } | { kind: "filter" } | { kind: "ask"; rule: string };
+
+function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionContext): boolean {
   const safe = SAFE_FLAGS[tool]!;
   const operands: string[] = [];
   for (const arg of args) {
@@ -102,32 +166,108 @@ function readsOnlyEnvFiles(tool: string, args: string[]): boolean {
     }
   }
   const files = tool === "grep" || tool === "rg" ? operands.slice(1) : operands;
-  return files.length > 0 && files.every(isEnvFilePath);
+  const envFile = context.envFile ?? isRealEnvFile;
+  return files.length > 0 && files.every((file) => isEnvFilePath(file) && envFile(context.cwd, file));
 }
 
-function classifyCommand(command: string): PermissionDecision {
-  const touches = ENV_MENTION.test(command) || AK_SECRETS_MENTION.test(command);
-  if (COMPOUND.test(command)) return touches ? { verdict: "ambiguous", rule: "compound-secret-command" } : { verdict: "ask", rule: "compound-command" };
-  if (NOT_PLAIN.test(command)) return { verdict: "ask", rule: "shell-syntax" };
-  const tokens = words(command);
-  if (!tokens?.length) return { verdict: "ask", rule: "unparseable-command" };
+/** True when every flag is a common one or a narrowing flag of the subcommand, and the plain words fit. */
+function akFlagsAreSafe(sub: string, args: string[]): boolean {
+  const spec = AK_SUBCOMMANDS[sub];
+  if (!spec) return false;
+  let plain = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (!arg.startsWith("-")) {
+      plain += 1;
+      continue;
+    }
+    if (AK_COMMON_FLAGS.has(arg)) continue;
+    const [name, ...inline] = arg.split("=");
+    if (!spec.valueFlags.includes(name!)) return false;
+    if (inline.length > 0) {
+      if (inline.join("=").startsWith("-")) return false;
+    } else {
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith("-")) return false;
+      i += 1;
+    }
+  }
+  return spec.words === null || plain === spec.words;
+}
+
+function isPipeFilter(tool: string, args: string[]): boolean {
+  const spec = PIPE_FILTERS[tool];
+  if (!spec) return false;
+  let plain = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (!arg.startsWith("-")) {
+      plain += 1;
+    } else if (spec.valueFlags?.includes(arg)) {
+      const value = args[i + 1];
+      if (value === undefined || (value.startsWith("-") && !/^-\d+$/.test(value))) return false;
+      i += 1;
+    } else if (!spec.flag.test(arg)) {
+      return false;
+    }
+  }
+  return plain >= spec.words[0] && plain <= spec.words[1];
+}
+
+/** One command with no pipe or separator. */
+function classifyStep(tokens: string[], context: PermissionContext): Step {
   const [tool, ...args] = tokens as [string, ...string[]];
   if (tool === "ak" && args[0] === "secrets") {
     const sub = args[1] ?? "";
-    if (READ_SUBCOMMANDS.has(sub)) return { verdict: "allow", rule: "ak-secrets-read" };
-    if (sub === "run") return { verdict: "ask", rule: "ak-secrets-run" };
-    return { verdict: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
+    if (READ_SUBCOMMANDS.has(sub)) {
+      return akFlagsAreSafe(sub, args.slice(2)) ? { kind: "allow", rule: "ak-secrets-read" } : { kind: "ask", rule: "ak-secrets-flags" };
+    }
+    if (sub === "run") return { kind: "ask", rule: "ak-secrets-run" };
+    return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
   }
-  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args)) return { verdict: "allow", rule: "env-file-read-command" };
-  return { verdict: "ask", rule: "other-command" };
+  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) return { kind: "allow", rule: "env-file-read-command" };
+  if (isPipeFilter(tool, args)) return { kind: "filter" };
+  return { kind: "ask", rule: "other-command" };
 }
 
-export function classifyPermission(request: Pick<PaseoPermissionRequest, "kind" | "detail" | "input" | "name">): PermissionDecision {
+/**
+ * A command is allowed outright only when it is one step that reads an env file or runs a read-only `ak secrets`. Steps
+ * joined by `|`, `;` or a newline go to Jev, and only when every step is one of those, or a pipe filter after a pipe.
+ * Anything else in the line (a substitution, a redirect, `&`, a network or script program) is `ask` without Jev, so
+ * no answer from a model can let it through.
+ */
+function classifyCommand(command: string, context: PermissionContext): PermissionDecision {
+  if (SHELL_SYNTAX.test(command)) return { verdict: "ask", rule: "shell-syntax" };
+  const parts = command.split(SEPARATORS);
+  const steps: Array<{ tokens: string[] | null; afterPipe: boolean }> = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    steps.push({ tokens: words(parts[i]!), afterPipe: i > 0 && parts[i - 1] === "|" });
+  }
+  if (steps.some((step) => !step.tokens?.length)) return { verdict: "ask", rule: "unparseable-command" };
+  if (steps.length === 1) {
+    const step = classifyStep(steps[0]!.tokens!, context);
+    return step.kind === "allow" ? { verdict: "allow", rule: step.rule } : { verdict: "ask", rule: step.kind === "ask" ? step.rule : "other-command" };
+  }
+  for (const { tokens, afterPipe } of steps) {
+    const step = classifyStep(tokens!, context);
+    if (step.kind === "allow" || (step.kind === "filter" && afterPipe)) continue;
+    return { verdict: "ask", rule: "compound-command" };
+  }
+  return { verdict: "ambiguous", rule: "compound-secret-command" };
+}
+
+export function classifyPermission(
+  request: Pick<PaseoPermissionRequest, "kind" | "detail" | "input" | "name">,
+  context: PermissionContext = {},
+): PermissionDecision {
   if (request.kind !== "tool") return { verdict: "ask", rule: "not-a-tool-request" };
   const target = permissionTarget(request);
   if (!target) return { verdict: "ask", rule: "unreadable-request" };
   if (target.kind === "file") {
-    return isEnvFilePath(target.filePath) ? { verdict: "allow", rule: "env-file-read" } : { verdict: "ask", rule: "other-file" };
+    const envFile = context.envFile ?? isRealEnvFile;
+    return isEnvFilePath(target.filePath) && envFile(context.cwd, target.filePath)
+      ? { verdict: "allow", rule: "env-file-read" }
+      : { verdict: "ask", rule: "other-file" };
   }
-  return classifyCommand(target.command);
+  return classifyCommand(target.command, context);
 }
