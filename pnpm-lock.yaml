@@ -42,6 +42,9 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@getpaseo/client':
+        specifier: 0.16.0-beta.2
+        version: 0.16.0-beta.2
       '@hpke/core':
         specifier: 1.9.0
         version: 1.9.0
@@ -1176,6 +1179,15 @@ packages:
   '@fumari/image-size@0.1.0':
     resolution: {integrity: sha512-x2o9u6P8uKUK15B8XgEoRhR3PgLoLSbQKK6FUCd14JzumEw+e8FXZPelij/dZ4VQVMp4r61VD3DcvSo3aEhLAA==}
 
+  '@getpaseo/client@0.16.0-beta.2':
+    resolution: {integrity: sha512-T7NInK3/731BzDOn+8Wdl7kYSJ+/CVqbW9EMjXhtZSZy2TSPni42Ag4tv1t5b9tw7Lu4uJP7jpXvUKN2hYZxTw==}
+
+  '@getpaseo/protocol@0.16.0-beta.2':
+    resolution: {integrity: sha512-w3LynGf+Q0mT9XlKVHnXlNeH/wCpaZcBATYJMh61kiQMNsjKrf61x1kOp9Vutst3nyts0iABVAYVHd+DnUxESQ==}
+
+  '@getpaseo/relay@0.16.0-beta.2':
+    resolution: {integrity: sha512-U9asFRYeo72+6DuNGqdtsMjFi9HrowDrEJw+LKMU8958iYM1SzohB9nm1uAZv7KStxgD5naqgEUdbw9x84yuuA==}
+
   '@hpke/common@1.10.1':
     resolution: {integrity: sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw==}
     engines: {node: '>=16.0.0'}
@@ -1670,12 +1682,24 @@ packages:
     resolution: {integrity: sha512-Clu/xdfgVTf9o7ngLOURaxePwR0j8sjclKEtVij10/jGulwFsPWCvvRgG/XjUVf8Nei+jLG6uwyXzUTGY1DQrw==}
     engines: {node: '>= 20.19.0'}
 
+  '@noble/ciphers@2.4.0':
+    resolution: {integrity: sha512-AnjFn0Jv92laAkvMrghlFZq4qQCIN/4DxFV/eooqtC2YTjB7kBeLMS2T9KJX4Dn+ZVXLOwK0lSgqDtx9gvxtiw==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/curves@2.4.0':
+    resolution: {integrity: sha512-P4/62zrgfH33CneE3Dn4WhJVA22YUU0eR51wKIan4NVRvwsA0YnPTwWGpNbpuacSujmSFLvyzpyuR30+fbq2Ew==}
+    engines: {node: '>= 20.19.0'}
+
   '@noble/hashes@1.4.0':
     resolution: {integrity: sha512-V1JJ1WTRUqHHrOSh597hURcMqVKVGL/ea3kv0gSnEdsEZ0/+VyPghM1lMNGc00z7CIQorSvbKpuJkxvuHbvdbg==}
     engines: {node: '>= 16'}
 
   '@noble/hashes@2.3.0':
     resolution: {integrity: sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
     engines: {node: '>= 20.19.0'}
 
   '@novnc/novnc@1.7.0':
@@ -5302,6 +5326,9 @@ packages:
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
+  tweetnacl@1.0.3:
+    resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
+
   type-fest@0.13.1:
     resolution: {integrity: sha512-34R7HTnG0XIJcBSn5XhDd7nNFPRcXYRZrBB2O2jdKqYODldSzBAqzsWoZYYvduky73toYS/ESqxPvkDf/F0XMg==}
     engines: {node: '>=10'}
@@ -6538,6 +6565,33 @@ snapshots:
 
   '@fumari/image-size@0.1.0': {}
 
+  '@getpaseo/client@0.16.0-beta.2':
+    dependencies:
+      '@getpaseo/protocol': 0.16.0-beta.2
+      '@getpaseo/relay': 0.16.0-beta.2
+      ws: 8.22.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@getpaseo/protocol@0.16.0-beta.2':
+    dependencies:
+      semver: 7.8.5
+      zod: 4.6.7
+
+  '@getpaseo/relay@0.16.0-beta.2':
+    dependencies:
+      '@noble/ciphers': 2.4.0
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+      base64-js: 1.5.1
+      tweetnacl: 1.0.3
+      ws: 8.22.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   '@hpke/common@1.10.1': {}
 
   '@hpke/core@1.9.0':
@@ -6920,9 +6974,17 @@ snapshots:
 
   '@noble/ciphers@2.3.0': {}
 
+  '@noble/ciphers@2.4.0': {}
+
+  '@noble/curves@2.4.0':
+    dependencies:
+      '@noble/hashes': 2.4.0
+
   '@noble/hashes@1.4.0': {}
 
   '@noble/hashes@2.3.0': {}
+
+  '@noble/hashes@2.4.0': {}
 
   '@novnc/novnc@1.7.0': {}
 
@@ -10917,6 +10979,8 @@ snapshots:
   ts-interface-checker@0.1.13: {}
 
   tslib@2.8.1: {}
+
+  tweetnacl@1.0.3: {}
 
   type-fest@0.13.1:
     optional: true
