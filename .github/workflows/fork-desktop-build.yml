@@ -216,8 +216,14 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::APPLE_TEAM_ID is not a 10-character Team ID"; exit 1; }
-          [[ "$APPLE_API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::APPLE_API_KEY_ID is not a 10-character key id"; exit 1; }
+          for name in APPLE_TEAM_ID APPLE_API_KEY_ID; do
+            value="${!name}"
+            if ! [[ "$value" =~ ^[A-Z0-9]{10}$ ]]; then
+              stray="$(printf '%s' "$value" | tr -d 'A-Z0-9' | wc -c | tr -d ' ')"
+              echo "::error::${name} must be 10 characters of A-Z and 0-9 (length ${#value}, ${stray} other characters)"
+              exit 1
+            fi
+          done
           keychain="$RUNNER_TEMP/release.keychain-db"
           keychain_password="$(uuidgen)"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
