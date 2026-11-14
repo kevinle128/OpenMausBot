@@ -1,0 +1,477 @@
+name: Fork Desktop Build
+
+# Builds, signs, notarizes and staples the macOS arm64 app on the fork's
+# self-hosted Mac mini runner and keeps the installers as workflow artifacts.
+# Only the fork runs it, started by hand or by `gh workflow run`. The tag
+# prefix `mf-desktop-v` matches none of the tag triggers of the upstream
+# workflows (`v*`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.1.158-mf.3. Empty derives it from package.json and the published mf-desktop-v tags."
+        required: false
+        default: ""
+        type: string
+      ref:
+        description: "Branch, tag or SHA to build. Empty builds the ref the workflow was started from."
+        required: false
+        default: ""
+        type: string
+      publish:
+        description: "Publish the release and the update feed. False keeps the macOS installers as workflow artifacts only."
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: fork-desktop-build
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FEED_URL: https://gamestudio.mobigame.vn/openmausbot-desktop
+
+jobs:
+  setup:
+    if: github.repository == 'kevinle128/OpenMausBot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Check publish secrets
+        env:
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+        run: |
+          missing=()
+          [[ -n "$WASABI_ACCESS_KEY_ID" ]] || missing+=(WASABI_ACCESS_KEY_ID)
+          [[ -n "$WASABI_SECRET_ACCESS_KEY" ]] || missing+=(WASABI_SECRET_ACCESS_KEY)
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Check the updater feed in the build config
+        run: |
+          config=electron-builder.fork.yml
+          for expected in "provider: generic" "url: ${FEED_URL}"; do
+            grep -Fxq "  ${expected}" "$config" || { echo "::error::${config} lacks '${expected}'"; exit 1; }
+          done
+          if grep -Eiq 'milind-soni|provider: github' "$config"; then
+            echo "::error::${config} still points at the upstream feed"
+            exit 1
+          fi
+
+      - name: Resolve version and tag
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          if [[ -z "$version" ]]; then
+            base="$(node -p "require('./package.json').version")"
+            if [[ "$base" == *-* ]]; then
+              prefix="${base}.mf."
+            else
+              prefix="${base}-mf."
+            fi
+            # Derive N from the published tags so the next build is always higher.
+            last="$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/mf-desktop-v${prefix}*" \
+              | sed -n "s|.*refs/tags/mf-desktop-v${prefix//./\\.}\([0-9][0-9]*\)\$|\1|p" \
+              | sort -n | tail -1)"
+            version="${prefix}$(( ${last:-0} + 1 ))"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+\.mf\.[0-9]+|-mf\.[0-9]+)$ ]]; then
+            echo "::error::Version '$version' must look like X.Y.Z-mf.N or X.Y.Z-pre.K.mf.N"
+            exit 1
+          fi
+          tag="mf-desktop-v${version}"
+          if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${tag}" > /dev/null; then
+            echo "::error::Tag ${tag} already exists. Choose another version."
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${version} from $(git rev-parse HEAD)"
+
+  build-macos:
+    needs: [setup]
+    if: github.repository == 'kevinle128/OpenMausBot'
+    runs-on: [self-hosted, macOS, ARM64, openmausbot]
+    # Holds the Apple signing secrets; only main and mf-desktop-v* tags may use it.
+    environment: desktop-signing
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      DESKTOP_VERSION: ${{ needs.setup.outputs.version }}
+      APP: release/mac-arm64/OpenMausBot.app
+    steps:
+      # The mini also runs the Paseo and Buzz desktop builds. All of them take
+      # this lock, so only one desktop build runs at a time. lockf holds the
+      # lock while its child sleeps; the last step kills the child, and the
+      # runner kills it when the job ends, so a cancelled job frees the lock too.
+      - name: Wait for the mini build lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock="$HOME/.mini-desktop-build.lock"
+          ready="$RUNNER_TEMP/mini-build-lock.pid"
+          rm -f "$ready"
+          # shellcheck disable=SC2016 # $$ and $1 expand in the child shell.
+          nohup /usr/bin/lockf -k -t 3600 "$lock" /bin/sh -c 'echo $$ > "$1"; exec sleep 21600' sh "$ready" \
+            > /dev/null 2>&1 &
+          holder=$!
+          for _ in $(seq 3600); do
+            [[ -s "$ready" ]] && break
+            kill -0 "$holder" 2> /dev/null || { echo "::error::Gave up waiting for the mini build lock after 1 hour"; exit 1; }
+            sleep 1
+          done
+          [[ -s "$ready" ]] || { echo "::error::The mini build lock was not taken"; exit 1; }
+          echo "MINI_BUILD_LOCK_PID_FILE=$ready" >> "$GITHUB_ENV"
+          echo "Took the mini build lock."
+
+      - name: Check free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          min_gib=40
+          free_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
+          free_gib=$(( free_kb / 1024 / 1024 ))
+          echo "Free space for the workspace: ${free_gib} GiB (need ${min_gib} GiB)."
+          if (( free_gib < min_gib )); then
+            echo "::error::Only ${free_gib} GiB free on the mini; a desktop build needs ${min_gib} GiB"
+            exit 1
+          fi
+          echo "FREE_KB_AT_START=${free_kb}" >> "$GITHUB_ENV"
+
+      # The mini keeps its home folder between jobs. Downloads and caches go to
+      # the job temp folder so the last step removes them, and the keychain
+      # search list is saved so the last step can undo what signing adds.
+      - name: Use job-local caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "npm_config_cache=$RUNNER_TEMP/job-cache/npm"
+            echo "npm_config_store_dir=$RUNNER_TEMP/job-cache/pnpm-store"
+            echo "ELECTRON_CACHE=$RUNNER_TEMP/job-cache/electron"
+            echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/job-cache/electron-builder"
+            echo "KEYCHAIN_LIST_BACKUP=$RUNNER_TEMP/keychain-search-list.txt"
+          } >> "$GITHUB_ENV"
+          security list-keychains -d user | tr -d '"' | xargs -n1 > "$RUNNER_TEMP/keychain-search-list.txt"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Clean generated output
+        run: rm -rf dist dist-server dist-native release
+
+      - name: Set the app version
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          packageJson.version = process.env.DESKTOP_VERSION;
+          fs.writeFileSync("package.json", `${JSON.stringify(packageJson, null, 2)}\n`);
+          NODE
+
+      - name: Import the Developer ID certificate into a throwaway keychain
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::APPLE_TEAM_ID is not a 10-character Team ID"; exit 1; }
+          [[ "$APPLE_API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::APPLE_API_KEY_ID is not a 10-character key id"; exit 1; }
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          keychain_password="$(uuidgen)"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain" > /dev/null
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+          key_dir="$RUNNER_TEMP/private_keys"
+          mkdir -p "$key_dir"
+          key_path="$key_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$key_path"
+          chmod 600 "$key_path"
+          {
+            echo "CSC_KEYCHAIN=$keychain"
+            echo "APPLE_API_KEY=$key_path"
+          } >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$keychain" | grep -c "Developer ID Application" | sed 's/^/Developer ID identities in the throwaway keychain: /'
+
+      # package:mac split open, because the script takes no architecture or
+      # config flag. The Speech helper stays universal; every other native
+      # payload is staged per architecture and electron-builder packs arm64 only.
+      - name: Package the arm64 app
+        shell: bash
+        env:
+          CSC_NAME: ${{ secrets.APPLE_TEAM_ID }}
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          pnpm package:prepare
+          pnpm build:speech
+          pnpm build:cua
+          pnpm exec electron-builder --mac --arm64 --publish never --config electron-builder.fork.yml
+          ls -1 release
+
+      - name: "Gate: the feed lists arm64 files only"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat release/latest-mac.yml
+          grep -Eq "^version: ${DESKTOP_VERSION//./\\.}\$" release/latest-mac.yml || { echo "::error::latest-mac.yml has the wrong version"; exit 1; }
+          if grep -E '^\s*-?\s*url:' release/latest-mac.yml | grep -v -- '-arm64\.'; then
+            echo "::error::latest-mac.yml lists a file that is not arm64"
+            exit 1
+          fi
+          test ! -e release/mac || { echo "::error::an x64 app was packaged"; exit 1; }
+
+      - name: "Gate: the app reads the CDN feed"
+        shell: bash
+        run: |
+          set -euo pipefail
+          update="$APP/Contents/Resources/app-update.yml"
+          test -f "$update" || { echo "::error::missing $update"; exit 1; }
+          cat "$update"
+          for expected in "provider: generic" "url: ${FEED_URL}"; do
+            grep -Fxq "$expected" "$update" || { echo "::error::${update} lacks '${expected}'"; exit 1; }
+          done
+          # updaterCacheDirName is a local cache folder name, not a feed.
+          if grep -v '^updaterCacheDirName:' "$update" | grep -Eiq 'milind-soni|github'; then
+            echo "::error::${update} still points at the upstream feed"
+            exit 1
+          fi
+
+      - name: "Gate: the signature must verify before notarization"
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict "$APP"
+          app_team=$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [[ "$app_team" == "$APPLE_TEAM_ID" ]] || { echo "::error::the app is not signed by the APPLE_TEAM_ID team"; exit 1; }
+          bin="$APP/Contents/Resources/cloudflared/cloudflared"
+          test -x "$bin" || { echo "::error::missing executable $bin"; exit 1; }
+          test -f "$APP/Contents/Resources/licenses/cloudflared-LICENSE.txt" || { echo "::error::missing cloudflared license"; exit 1; }
+          test -f "$APP/Contents/Resources/licenses/cloudflared-README.md" || { echo "::error::missing cloudflared provenance"; exit 1; }
+          codesign --verify --strict "$bin"
+          bin_team=$(codesign -dv --verbose=4 "$bin" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [[ "$bin_team" == "$app_team" ]] || { echo "::error::cloudflared is not signed by the app's Developer ID team"; exit 1; }
+          for browser_bin in "$APP/Contents/Resources/browser-engine/agent-browser" "$APP/Contents/Resources/browser-engine/chrome/"*/chrome-headless-shell; do
+            test -x "$browser_bin"
+            codesign --verify --strict "$browser_bin"
+            browser_team=$(codesign -dv --verbose=4 "$browser_bin" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+            [[ "$browser_team" == "$app_team" ]] || { echo "::error::the browser runtime has the wrong signing team"; exit 1; }
+          done
+          speech="$APP/Contents/Resources/OpenMausBot Speech.app"
+          codesign --verify --deep --strict "$speech"
+          speech_team=$(codesign -dv --verbose=4 "$speech" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [[ "$speech_team" == "$app_team" ]] || { echo "::error::the Speech helper has the wrong signing team"; exit 1; }
+          echo "ok: $APP"
+
+      - name: "Gate: the signed native browser works with an empty home"
+        shell: bash
+        run: |
+          set -euo pipefail
+          resources="$PWD/$APP/Contents/Resources"
+          node scripts/smoke-browser-bundle.mjs --resources "$resources"
+          OMB_SMOKE_DIST="$resources/server" node scripts/smoke-packaged-server.mjs --browser-bundle "$resources/browser-engine"
+
+      - name: "Gate: the packaged server starts and every helper path resolves"
+        shell: bash
+        run: |
+          set -euo pipefail
+          res="$APP/Contents/Resources"
+          OMB_SMOKE_DIST="$res/server" node scripts/smoke-packaged-server.mjs \
+            || { echo "::error::the packaged server failed to start"; exit 1; }
+          node scripts/check-module-scopes.mjs "$res"
+          node --input-type=module - "$res/server" <<'EOF'
+          import { existsSync } from "node:fs";
+          import { pathToFileURL } from "node:url";
+          const server = process.argv[2];
+          const { SPAWNED_PROXIES } = await import(pathToFileURL(`${server}/proxy-paths.js`));
+          const missing = Object.entries(SPAWNED_PROXIES).filter(([, p]) => !existsSync(p));
+          if (missing.length) {
+            console.error("unresolved proxies:", missing);
+            process.exit(1);
+          }
+          console.log(`ok: ${Object.keys(SPAWNED_PROXIES).length} proxies resolve in ${server}`);
+          EOF
+          # The Speech helper is a nested signed app and stays universal.
+          speech="$res/OpenMausBot Speech.app/Contents/MacOS/speech-helper"
+          lipo -archs "$speech" | grep -q "x86_64" || { echo "::error::$speech lacks x86_64"; exit 1; }
+          lipo -archs "$speech" | grep -q "arm64" || { echo "::error::$speech lacks arm64"; exit 1; }
+          # Every other native payload carries only the arm64 slice.
+          for bin in "$res/cua-driver" "$res/cua-sdk/native/libcua_driver_sdk.dylib" \
+            "$res/cua-sdk/native/cua_driver_node_runtime.node" "$res/android-platform-tools/darwin/adb" "$res/cloudflared/cloudflared"; do
+            test "$(lipo -archs "$bin")" = "arm64" || { echo "::error::$bin is not an arm64-only executable"; exit 1; }
+          done
+          "$res/cloudflared/cloudflared" version
+
+      - name: Notarize the dmg and the zip
+        shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -uo pipefail
+          notary() {
+            xcrun notarytool "$@" --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
+          }
+          for f in release/*.dmg release/*.zip; do
+            # notarytool exits non-zero when Apple refuses the request (an agreement to accept, a bad key); keep its
+            # output and exit code so the step says why.
+            rc=0
+            out=$(notary submit "$f" --wait 2>&1) || rc=$?
+            if [ "$rc" -eq 0 ] && echo "$out" | grep -q "status: Accepted"; then
+              echo "$out" | tail -2
+              continue
+            fi
+            echo "$out"
+            echo "::error::notarization not Accepted for $f (notarytool exit code $rc)"
+            id=$(echo "$out" | sed -n 's/^ *id: *\([0-9A-Fa-f-]\{1,\}\) *$/\1/p' | head -1)
+            if [ -n "$id" ]; then
+              echo "notarytool log $id:"
+              notary log "$id" 2>&1 || echo "could not fetch the notarization log for $id"
+            fi
+            exit 1
+          done
+
+      # Stapling rewrites the dmg and the app, so the zip is made again from the
+      # stapled app and every hash is taken after that.
+      - name: Staple, re-zip, regenerate blockmaps and the feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # stapler fetches the ticket from Apple's CloudKit: the connection drops now and then (error 68), and a
+          # ticket can lag notarytool's Accepted verdict by a minute (error 65).
+          staple() {
+            for attempt in 1 2 3 4 5 6; do
+              xcrun stapler staple "$1" && return 0
+              echo "stapling $1 failed (attempt $attempt of 6); trying again in 30 s"
+              sleep 30
+            done
+            echo "::error::could not staple $1 after 6 attempts"
+            return 1
+          }
+          v="$DESKTOP_VERSION"
+          staple "release/OpenMausBot-$v-arm64.dmg"
+          staple "$APP"
+          rm -f "release/OpenMausBot-$v-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "release/OpenMausBot-$v-arm64.zip"
+          node scripts/regenerate-blockmaps.mjs "release/OpenMausBot-$v-arm64.zip" "release/OpenMausBot-$v-arm64.dmg"
+          # Refreshes every hash from the post-staple bytes and refuses to
+          # finish unless the feed matches the files on disk.
+          node scripts/regenerate-mac-feed.mjs
+          cat release/latest-mac.yml
+
+      - name: "Gate: Gatekeeper accepts the notarized app and dmg"
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          team="$(codesign -dv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          [[ "$team" == "$APPLE_TEAM_ID" ]] || { echo "::error::the app is not signed by the APPLE_TEAM_ID team"; exit 1; }
+          spctl_out="$(spctl -a -vvv -t exec "$APP" 2>&1)" || true
+          echo "$spctl_out"
+          grep -q 'source=Notarized Developer ID' <<< "$spctl_out" \
+            || { echo "::error::Gatekeeper does not report a notarized Developer ID app"; exit 1; }
+          xcrun stapler validate "$APP"
+          for dmg in release/*.dmg; do
+            echo "Checking $(basename "$dmg")"
+            codesign --verify --verbose=2 "$dmg"
+            xcrun stapler validate "$dmg"
+            dmg_out="$(spctl -a -vvv -t open --context context:primary-signature "$dmg" 2>&1)" || true
+            echo "$dmg_out"
+            grep -q 'source=Notarized Developer ID' <<< "$dmg_out" \
+              || { echo "::error::Gatekeeper does not accept $(basename "$dmg") as a notarized Developer ID disk image"; exit 1; }
+          done
+
+      - name: Report disk use
+        if: always()
+        shell: bash
+        run: |
+          free_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
+          echo "Free now: $(( free_kb / 1024 / 1024 )) GiB; at the start: $(( ${FREE_KB_AT_START:-0} / 1024 / 1024 )) GiB."
+          du -sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/release" "$GITHUB_WORKSPACE/dist-native" "$GITHUB_WORKSPACE/node_modules" \
+            "$RUNNER_TEMP/job-cache" 2> /dev/null || true
+
+      - name: Upload the installers and the feed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-desktop-macos-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Clean the mini
+        if: always()
+        shell: bash
+        run: |
+          # Undo keychain changes: drop every keychain that is not in the saved
+          # list, then put the saved list back.
+          if [[ -s "${KEYCHAIN_LIST_BACKUP:-}" ]]; then
+            security list-keychains -d user | tr -d '"' | xargs -n1 | while IFS= read -r keychain; do
+              grep -Fxq "$keychain" "$KEYCHAIN_LIST_BACKUP" || security delete-keychain "$keychain" 2> /dev/null || true
+            done
+            # shellcheck disable=SC2046
+            security list-keychains -d user -s $(cat "$KEYCHAIN_LIST_BACKUP")
+          fi
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          # The pnpm store stays: the setup-node post step saves it after this
+          # step. The runner's job-completed hook removes the job temp folder.
+          rm -rf "$RUNNER_TEMP/job-cache/electron" "$RUNNER_TEMP/job-cache/electron-builder" \
+            "$RUNNER_TEMP/private_keys" "${KEYCHAIN_LIST_BACKUP:-/nonexistent}"
+          if [[ -s "${MINI_BUILD_LOCK_PID_FILE:-}" ]]; then
+            kill "$(cat "$MINI_BUILD_LOCK_PID_FILE")" 2> /dev/null || true
+            rm -f "$MINI_BUILD_LOCK_PID_FILE"
+            echo "Released the mini build lock."
+          fi
