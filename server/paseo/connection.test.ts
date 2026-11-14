@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PaseoConnection, type PaseoClientPort } from "./connection.ts";
+import { PaseoConnection, RESPONDED_TTL_MS, type PaseoClientPort, type PaseoConnectionOptions } from "./connection.ts";
 import { paseoMcpServerEntry, paseoMcpUrl } from "./mcp-config.ts";
 
 type Status = Parameters<Parameters<PaseoClientPort["subscribeConnectionStatus"]>[0]>[0];
@@ -46,8 +46,8 @@ class FakeClient implements PaseoClientPort {
 const agent = (id: string, pending: string[]) =>
   ({ id, pendingPermissions: pending.map((requestId) => ({ id: requestId, name: "Bash" })) }) as never;
 
-async function connected(client: FakeClient) {
-  const connection = new PaseoConnection({ createClient: () => client, restartBackoffMs: { base: 1, max: 2 } });
+async function connected(client: FakeClient, options: Partial<PaseoConnectionOptions> = {}) {
+  const connection = new PaseoConnection({ createClient: () => client, restartBackoffMs: { base: 1, max: 2 }, ...options });
   const seen: string[] = [];
   connection.on("permissionRequested", ({ agentId, request }) => seen.push(`requested ${agentId}/${request.id}`));
   connection.on("permissionResolved", ({ agentId, requestId }) => seen.push(`resolved ${agentId}/${requestId}`));
@@ -93,6 +93,44 @@ describe("PaseoConnection", () => {
     expect(client.responses).toEqual([["a1", "p1"]]);
     client.status({ status: "disconnected" });
     await expect(connection.respondToPermission("a1", "p2", { behavior: "allow" })).rejects.toThrow("not connected");
+    await connection.stop();
+  });
+
+  it("keeps an answered request muted until the daemon drops it, and reports it resolved once", async () => {
+    const client = new FakeClient();
+    const { connection, seen } = await connected(client);
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p1"]) } });
+    await connection.respondToPermission("a1", "p1", { behavior: "allow" });
+    // The daemon has not dropped it yet, and a later update carries it again.
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p1"]) } });
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p1", "p2"]) } });
+    expect(seen).toEqual(["requested a1/p1", "requested a1/p2"]);
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p2"]) } });
+    expect(seen).toEqual(["requested a1/p1", "requested a1/p2", "resolved a1/p1"]);
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p2"]) } });
+    expect(seen).toHaveLength(3);
+    await connection.stop();
+  });
+
+  it("does not report an answered request again from a snapshot taken before the daemon dropped it", async () => {
+    const client = new FakeClient();
+    const { connection, seen } = await connected(client);
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p1"]) } });
+    await connection.respondToPermission("a1", "p1", { behavior: "deny" });
+    client.observer?.snapshot({ entries: [{ agent: agent("a1", ["p1"]) } as never], pageInfo: { hasMore: false } });
+    expect(seen).toEqual(["requested a1/p1"]);
+    await connection.stop();
+  });
+
+  it("reports a request again when the daemon still lists it after the mute ends", async () => {
+    let clock = 1_000;
+    const client = new FakeClient();
+    const { connection, seen } = await connected(client, { now: () => clock });
+    client.observer?.update({ type: "agent_update", payload: { kind: "upsert", agent: agent("a1", ["p1"]) } });
+    await connection.respondToPermission("a1", "p1", { behavior: "allow" });
+    clock += RESPONDED_TTL_MS + 1;
+    client.observer?.snapshot({ entries: [{ agent: agent("a1", ["p1"]) } as never], pageInfo: { hasMore: false } });
+    expect(seen).toEqual(["requested a1/p1", "requested a1/p1"]);
     await connection.stop();
   });
 

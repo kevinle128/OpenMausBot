@@ -72,7 +72,13 @@ export interface PaseoConnectionOptions {
   /** Wait before the next fresh client after the daemon refused this one. */
   restartBackoffMs?: { base: number; max: number };
   log?: (message: string) => void;
+  /** Replaced by tests. */
+  now?: () => number;
 }
+
+/** How long a request we answered stays muted if the daemon still lists it: a later agent update can carry it again
+ * before the daemon has dropped it, and reporting it would open a second card for an answered request. */
+export const RESPONDED_TTL_MS = 60_000;
 
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
 
@@ -98,6 +104,8 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   private wake: (() => void) | null = null;
   private endSession: (() => void) | null = null;
   private readonly pending = new Map<string, Map<string, PaseoPermissionRequest>>();
+  /** `agentId/requestId` of every request we answered, with the time the mute ends. */
+  private readonly responded = new Map<string, number>();
 
   constructor(options: PaseoConnectionOptions = {}) {
     super();
@@ -134,7 +142,13 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
     const client = this.client;
     if (!client || !this.isUp) throw new Error("The Paseo daemon is not connected");
     await client.respondToPermission(agentId, requestId, response);
-    this.settle(agentId, requestId);
+    // The request stays pending until the daemon's own update drops it: that update reports it resolved, and an update
+    // that still lists it in the meantime is not a new request.
+    this.responded.set(respondedKey(agentId, requestId), this.now() + RESPONDED_TTL_MS);
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
   }
 
   private log(message: string): void {
@@ -167,6 +181,7 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
         this.isUp = false;
         this.client = null;
         this.pending.clear();
+        this.responded.clear();
         await client.close().catch(() => {});
       }
       if (this.stopped) break;
@@ -232,6 +247,7 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
       const agentId = message.payload.agentId;
       for (const requestId of Array.from(this.pending.get(agentId)?.keys() ?? [])) this.settle(agentId, requestId);
       this.pending.delete(agentId);
+      for (const key of Array.from(this.responded.keys())) if (key.startsWith(`${agentId}/`)) this.responded.delete(key);
       this.emit("agentRemoved", agentId);
     }
   }
@@ -246,8 +262,13 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
         this.emit("permissionResolved", { agentId: agent.id, requestId });
       }
     }
+    const now = this.now();
+    for (const [key, until] of Array.from(this.responded)) {
+      const [owner, requestId] = splitRespondedKey(key);
+      if (until <= now || (owner === agent.id && !current.has(requestId!))) this.responded.delete(key);
+    }
     for (const [requestId, request] of current) {
-      if (known.has(requestId)) continue;
+      if (known.has(requestId) || this.responded.has(respondedKey(agent.id, requestId))) continue;
       known.set(requestId, request);
       this.emit("permissionRequested", { agentId: agent.id, request, agent });
     }
@@ -274,6 +295,12 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
     });
   }
 }
+
+const respondedKey = (agentId: string, requestId: string): string => `${agentId}/${requestId}`;
+const splitRespondedKey = (key: string): [string, string] => {
+  const at = key.indexOf("/");
+  return [key.slice(0, at), key.slice(at + 1)];
+};
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
