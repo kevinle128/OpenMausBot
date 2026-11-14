@@ -1,7 +1,11 @@
+import { startAkBridge, type AkBridgeWiring } from "../ak/start.ts";
 import { PaseoConnection } from "./connection.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 
-export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log">;
+export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log"> & {
+  /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
+  ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
+};
 
 /**
  * The worker that keeps one connection to the Paseo daemon. It is off unless OMB_PASEO_BRIDGE=1, and a daemon that is
@@ -16,7 +20,18 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
     log,
   });
   connection.on("error", (error) => console.error("paseo bridge: listener failed", error));
-  if (wiring) startPaseoGatekeeper({ ...wiring, connection, log });
+  if (wiring) {
+    const { ak, ...gatekeeper } = wiring;
+    startPaseoGatekeeper({ ...gatekeeper, connection, log });
+    // After the gatekeeper, which closes the cards an earlier run left open.
+    if (ak) {
+      try {
+        startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked }, log);
+      } catch (error) {
+        log(`ak bridge: could not start (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+  }
   connection.start();
   return connection;
 }

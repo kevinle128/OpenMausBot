@@ -15373,7 +15373,7 @@ function runtimeHoldsRoot(threadId: string): boolean {
   return coordinator.active().some((n) => !n.parentId && n.threadId === threadId && !ENDED.has(n.status));
 }
 
-const paseoBridge = startPaseoBridge(process.env, { store, approvals: externalApprovals, decider, notify, screenLocked: readScreenLocked });
+const paseoBridge = startPaseoBridge(process.env, { store, approvals: externalApprovals, decider, notify, screenLocked: readScreenLocked, ak: { vault: logins, dataDir: DATA_DIR } });
 
 const gracefulShutdown = createGracefulShutdown({
   cleanup: [

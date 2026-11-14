@@ -18,6 +18,16 @@ export const JEV_INSTRUCTIONS =
   "screen. Answer no when any step writes, deletes or changes anything, runs another program that could send data out, sends " +
   "anything over a network, or when you are not sure.";
 
+/** The Paseo conversation's bot, made on first use. */
+export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotRecord {
+  const existing = store.bot(PASEO_BOT_ID);
+  if (existing) return existing as BotRecord;
+  return store.createBot(
+    { name: PASEO_BOT_NAME, description: "Permission requests and secret requests from your Paseo coding agents." },
+    { id: PASEO_BOT_ID, seedMessages: false },
+  );
+}
+
 type DeciderPort = Pick<Decider, "yesNo">;
 
 export interface PaseoGatekeeperDeps {
@@ -44,14 +54,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
   const stages = new Map<string, Stage>();
   const keyOf = (agentId: string, requestId: string) => `${agentId}/${requestId}`;
 
-  function paseoBot(): BotRecord {
-    const existing = store.bot(PASEO_BOT_ID);
-    if (existing) return existing as BotRecord;
-    return store.createBot(
-      { name: PASEO_BOT_NAME, description: "Permission requests from your Paseo coding agents." },
-      { id: PASEO_BOT_ID, seedMessages: false },
-    );
-  }
+  const paseoBot = () => ensurePaseoBot(store);
 
   async function jevAllows(command: string, cwd: string, provider: string): Promise<boolean> {
     try {
@@ -141,12 +144,14 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
   const onSynced = ({ pending, complete }: { pending: Array<{ agentId: string; requestId: string }>; complete: boolean }) => {
     if (!complete) return;
     const live = new Set(pending.map((entry) => keyOf(entry.agentId, entry.requestId)));
+    // Cards of other sources share the approvals list; only the ones this gatekeeper opened are its to close.
+    const ownCards = approvals.keys().filter((key) => stages.has(key));
     for (const key of stages.keys()) {
       if (live.has(key)) continue;
       if (stages.get(key) === "deciding") stages.set(key, "resolved");
       else stages.delete(key);
     }
-    for (const key of approvals.keys()) if (!live.has(key)) approvals.close(key);
+    for (const key of ownCards) if (!live.has(key)) approvals.close(key);
   };
 
   const existing = store.bot(PASEO_BOT_ID);

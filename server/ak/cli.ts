@@ -136,6 +136,23 @@ function parseData<T>(result: AkRunResult): T {
   }
 }
 
+const REQUEST_LIST_KEYS = ["requests", "pending", "items"];
+
+/** The inbox list from `approve --json`, whose exact shape is not fixed: a bare array, or an object holding the array. */
+function requestsIn(data: unknown, onUnknownShape?: (keys: string[]) => void): AkPendingRequest[] {
+  if (Array.isArray(data)) return data as AkPendingRequest[];
+  if (data === null || data === undefined) return [];
+  if (typeof data === "object") {
+    for (const key of REQUEST_LIST_KEYS) {
+      const list = (data as Record<string, unknown>)[key];
+      if (Array.isArray(list)) return list as AkPendingRequest[];
+      if (list === null) return [];
+    }
+  }
+  onUnknownShape?.(typeof data === "object" ? Object.keys(data) : [typeof data]);
+  return [];
+}
+
 export interface AkCli {
   list(): Promise<AkSecretSummary[]>;
   pendingRequests(): Promise<AkPendingRequest[]>;
@@ -158,7 +175,7 @@ function narrow(scope: RequestScope): string[] {
 }
 
 /** Secret values reach `ak` only on stdin (`--value=-`), so they are in no argument list, log or error. */
-export function createAkCli(run: AkRunner = defaultAkRunner()): AkCli {
+export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnknownShape?: (keys: string[]) => void } = {}): AkCli {
   const call = async (args: string[], stdin?: string): Promise<AkRunResult> => {
     const result = await run([...args, ...COMMON], stdin);
     if (result.exitCode !== 0) throw akErrorFor(result);
@@ -169,8 +186,7 @@ export function createAkCli(run: AkRunner = defaultAkRunner()): AkCli {
       return parseData<AkSecretSummary[]>(await call(["secrets", "list"]));
     },
     async pendingRequests() {
-      const data = parseData<AkPendingRequest[] | { requests?: AkPendingRequest[] } | null>(await call(["secrets", "approve"]));
-      return Array.isArray(data) ? data : (data?.requests ?? []);
+      return requestsIn(parseData<unknown>(await call(["secrets", "approve"])), options.onUnknownShape);
     },
     async approve({ ref, ttl, ...scope }) {
       await call(["secrets", "approve", ref, "--state", "ttl", "--ttl", ttl, ...narrow(scope)]);
