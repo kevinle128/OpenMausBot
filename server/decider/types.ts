@@ -10,8 +10,8 @@ export type CustomApi = "systemone" | "decisions";
 export type DeciderJob = "roomRouting" | "inboxTriage";
 export const DECIDER_JOBS: readonly DeciderJob[] = ["roomRouting", "inboxTriage"];
 
-/** botDecide: a bot's own `decide` tool call. */
-export type DeciderSeam = DeciderJob | "keyCheck" | "botDecide";
+/** botDecide: a bot's own `decide` tool call. paseoPermission: whether a coding agent's request may go ahead unasked; only the person's own key answers it. */
+export type DeciderSeam = DeciderJob | "keyCheck" | "botDecide" | "paseoPermission";
 
 /** Every failure means "use today's rule". */
 export type DeciderFailure =

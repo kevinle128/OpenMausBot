@@ -31,6 +31,8 @@ export interface PaseoConnectionEvents {
   agentRemoved: [agentId: string];
   permissionRequested: [event: PaseoPermissionRequested];
   permissionResolved: [event: PaseoPermissionResolved];
+  /** Every permission pending after a snapshot of the agents; `complete` is false while later pages are not watched. */
+  permissionsSynced: [event: { pending: Array<{ agentId: string; requestId: string }>; complete: boolean }];
   attentionRequired: [notification: AgentAttentionRequiredNotification];
 }
 
@@ -204,6 +206,10 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
           if (pageInfo.hasMore) this.log("paseo bridge: more agents exist than the first page; later pages are not watched");
           this.pending.clear();
           for (const entry of entries) this.observe(entry.agent);
+          this.emit("permissionsSynced", {
+            pending: [...this.pending].flatMap(([agentId, requests]) => [...requests.keys()].map((requestId) => ({ agentId, requestId }))),
+            complete: !pageInfo.hasMore,
+          });
         },
         update: (message) => this.receive(message),
         error: (error) => this.log(`paseo bridge: agent subscription error: ${describe(error)}`),
