@@ -36,6 +36,11 @@ every other Paseo agent; the Dispatcher never answers them.
   short, secret-scrubbed summary of the agent's last message. If the
   Dispatcher is busy, the run waits for its turn. Agents without the label
   wake nobody.
+- Only a bot made from this preset is woken. The bridge reads the package id
+  and preset key that OpenMausBot stamps on a bot when a preset is applied, so
+  a label that names another bot's thread, or a bot set up by hand without the
+  preset, wakes nobody. One thread is woken at most 20 times in 10 minutes;
+  later reports in that window are logged once and dropped.
 - The number of agents is not limited. The Dispatcher says how many it
   started; watch the computer's load while it works.
 
