@@ -8,6 +8,8 @@ import { classifyPermission, isEnvFilePath, type PermissionContext, type Permiss
 type Request = Parameters<typeof classifyPermission>[0];
 
 const shell = (command: string): Request => ({ kind: "tool", name: "Bash", detail: { type: "shell", command } });
+/** The rules refuse a backslash path on every OS, so a test that names a real file builds a forward-slash path. */
+const slashed = (path: string): string => path.replaceAll("\\", "/");
 const read = (filePath: string): Request => ({ kind: "tool", name: "Read", detail: { type: "read", filePath } });
 /** Names only: the table is about the rules, the file system checks are tested below with real files. */
 const namesOnly: PermissionContext = { envFile: (_cwd, filePath) => isEnvFilePath(filePath) };
@@ -229,12 +231,12 @@ describe("classifyPermission: env files on disk", () => {
 
   it("allows a plain file, by a relative or an absolute path", () => {
     expect(verdict("cat .env")).toBe("allow");
-    expect(verdict(`cat ${join(dir, ".env")}`, "/")).toBe("allow");
+    expect(verdict(`cat ${slashed(join(dir, ".env"))}`, "/")).toBe("allow");
     expect(classifyPermission(read(".env"), { cwd: dir }).verdict).toBe("allow");
   });
 
   it("allows an env file outside the agent's directory, and a link to one that keeps an env name", () => {
-    expect(verdict(`cat ${join(elsewhere, ".env.remote")}`)).toBe("allow");
+    expect(verdict(`cat ${slashed(join(elsewhere, ".env.remote"))}`)).toBe("allow");
     expect(verdict("cat .env.remote")).toBe("allow");
   });
 
