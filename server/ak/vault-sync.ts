@@ -120,7 +120,9 @@ export function startVaultSync(deps: VaultSyncDeps): VaultSync {
       try {
         if (present.has(row.ref)) await cli.delete(row.ref);
       } catch (error) {
-        if (!(error instanceof AkError && error.kind === "no-such-ref")) throw error;
+        if (error instanceof AkError && error.kind === "invalid") {
+          warnOnce(`ak sync: ak refused to remove "${row.ref}" (${describeAkError(error)}); it is dropped from the list of refs written by OpenMausBot`);
+        } else if (!(error instanceof AkError && error.kind === "no-such-ref")) throw error;
       }
       delete ledger[id];
       save();
@@ -148,6 +150,12 @@ export function startVaultSync(deps: VaultSyncDeps): VaultSync {
       } catch (error) {
         if (error instanceof AkError && error.kind === "exists") {
           warnOnce(`ak sync: "${entry.ref}" already exists in ak and was not written by OpenMausBot; it is left alone`);
+          continue;
+        }
+        // `ak` refused this one secret (a ref it does not accept, a value it does not take): the others still go over.
+        // It is not retried until the secret changes. Any other failure is about `ak` itself, and ends the pass.
+        if (error instanceof AkError && error.kind === "invalid") {
+          warnOnce(`ak sync: ak refused "${entry.ref}" (${describeAkError(error)}); it is skipped`);
           continue;
         }
         throw error;

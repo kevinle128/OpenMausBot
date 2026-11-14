@@ -109,6 +109,50 @@ describe("ak inbox watcher", () => {
     expect(t.approve).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, project: "app", purpose: "run", env: "TOKEN", ttl: "24h" });
   });
 
+  it("opens a new card when answering a card fails and the request is still in the inbox", async () => {
+    const t = setup();
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    t.approve.mockRejectedValueOnce(new AkError("backend", 5, "inbox locked"));
+    t.approvals.answer(t.card()!.requestId!, "allow");
+    await flush();
+    expect(t.lines.filter((line) => line.card)[0]?.card).toMatchObject({ answered: "unavailable", dismissed: true });
+    await t.watcher.checkNow();
+    const cards = t.lines.filter((line) => line.card);
+    expect(cards).toHaveLength(2);
+    t.approvals.answer(cards[1]!.card!.requestId!, "allow");
+    await flush();
+    expect(t.approve).toHaveBeenCalledTimes(2);
+    await t.watcher.checkNow();
+    expect(t.lines.filter((line) => line.card)).toHaveLength(2);
+  });
+
+  it("opens a new card when a deny fails too", async () => {
+    const t = setup();
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    t.deny.mockRejectedValueOnce(new Error("could not run"));
+    t.approvals.answer(t.card()!.requestId!, "deny");
+    await flush();
+    await t.watcher.checkNow();
+    expect(t.lines.filter((line) => line.card)).toHaveLength(2);
+  });
+
+  it("ignores a request whose ref is not a valid ref: no card, no approve, no deny, one log line", async () => {
+    const t = setup({ owned: ["--reveal", "-y", "a/b", " pad", ""] });
+    t.inbox.requests = [ordinary("--reveal"), ordinary("-y"), ordinary("a/b"), ordinary(" pad"), ordinary("x".repeat(129)), ordinary("A\u202eB"), ordinary("")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.approve).not.toHaveBeenCalled();
+    expect(t.deny).not.toHaveBeenCalled();
+    expect(t.lines).toEqual([]);
+    expect(t.logs.filter((line) => line.includes("not a valid ref"))).toHaveLength(6);
+    t.inbox.requests = [ordinary("--reveal"), ordinary("GOOD")];
+    await t.watcher.checkNow();
+    expect(t.card()?.subtitle).toContain("GOOD");
+    expect(t.logs.filter((line) => line.includes("not a valid ref"))).toHaveLength(6);
+  });
+
   it("closes a card when its request leaves the inbox", async () => {
     const t = setup();
     t.inbox.requests = [ordinary("STRANGER")];

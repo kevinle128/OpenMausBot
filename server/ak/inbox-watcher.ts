@@ -7,6 +7,7 @@ import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
 import type { AkCli, AkPendingRequest } from "./cli.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
+import { isAkRef } from "./vault-sync.ts";
 
 export const AK_CARD_KEY_PREFIX = "ak:";
 export const AK_APPROVAL_TTL = "24h";
@@ -17,6 +18,7 @@ const POLL_MAX_MS = 60_000;
 const AUTO_APPROVE_ATTEMPTS = 3;
 const KNOWN_FIELDS = new Set(["ref", "agent", "project", "purpose", "env", "exec", "firstSeen", "count"]);
 const TEXT_CHARS = 160;
+const BAD_REF_LOG_LIMIT = 50;
 
 export interface InboxWatcherDeps {
   cli: Pick<AkCli, "pendingRequests" | "approve" | "deny">;
@@ -110,6 +112,13 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     log(`ak inbox: unexpected request shape, keys: ${keys.join(", ") || "(none)"}`);
   };
 
+  const badRefs = new Set<string>();
+  const warnBadRef = (ref: string) => {
+    if (badRefs.has(ref) || badRefs.size >= BAD_REF_LOG_LIMIT) return;
+    badRefs.add(ref);
+    log(`ak inbox: ignored a request whose ref is not a valid ref: ${JSON.stringify(oneLine(ref, 60))}`);
+  };
+
   async function notifyIfLocked(label: string): Promise<void> {
     if (!(await deps.screenLocked().catch(() => false))) return;
     const bot = deps.bot();
@@ -136,6 +145,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
           if (decision === "allow") await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
           else await cli.deny(answerScope);
         } catch (error) {
+          // The answer did not reach ak and the request is still in the inbox: the next pass opens a new card for it.
+          handled.delete(key);
           guard.report(error);
           throw error;
         }
@@ -177,6 +188,11 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         continue;
       }
       if (!shapeLogged && Object.keys(request).some((field) => !KNOWN_FIELDS.has(field))) logShapeOnce(Object.keys(request));
+      // The ref is text from outside: a name `ak` would not accept as a ref gets no card and reaches no `ak` command.
+      if (!isAkRef(scope.ref)) {
+        warnBadRef(scope.ref);
+        continue;
+      }
       const key = keyOf(request, scope);
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;

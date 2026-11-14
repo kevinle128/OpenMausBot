@@ -165,12 +165,13 @@ export interface AkCli {
 
 const COMMON = ["--json", "--no-interactive"];
 
+/** Flag values go as `--flag=value`, so a value that starts with "-" is still read as a value and never as a flag. */
 function narrow(scope: RequestScope): string[] {
   const flags: string[] = [];
-  if (scope.agent !== undefined) flags.push("--agent", scope.agent);
-  if (scope.project !== undefined) flags.push("--project", scope.project);
-  if (scope.purpose !== undefined) flags.push("--purpose", scope.purpose);
-  if (scope.env !== undefined) flags.push("--env", scope.env);
+  if (scope.agent !== undefined) flags.push(`--agent=${scope.agent}`);
+  if (scope.project !== undefined) flags.push(`--project=${scope.project}`);
+  if (scope.purpose !== undefined) flags.push(`--purpose=${scope.purpose}`);
+  if (scope.env !== undefined) flags.push(`--env=${scope.env}`);
   return flags;
 }
 
@@ -189,10 +190,10 @@ export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnkn
       return requestsIn(parseData<unknown>(await call(["secrets", "approve"])), options.onUnknownShape);
     },
     async approve({ ref, ttl, ...scope }) {
-      await call(["secrets", "approve", ref, "--state", "ttl", "--ttl", ttl, ...narrow(scope)]);
+      await call(["secrets", "approve", ref, "--state=ttl", `--ttl=${ttl}`, ...narrow(scope)]);
     },
     async deny({ ref, ...scope }) {
-      await call(["secrets", "approve", ref, "--state", "deny", ...narrow(scope)]);
+      await call(["secrets", "approve", ref, "--state=deny", ...narrow(scope)]);
     },
     async set(ref, value, options) {
       await call(["secrets", "set", ref, "--value=-", "--no-push", ...(options?.force ? ["--force"] : [])], value);

@@ -37,6 +37,8 @@ function fakeCli(initial: string[] = []) {
   const calls: string[] = [];
   const values: Array<[string, string]> = [];
   const failWith: { error: Error | null } = { error: null };
+  /** Refs `ak` refuses with exit 2, as for a name it does not accept. */
+  const refuse = new Set<string>();
   const cli: Pick<AkCli, "list" | "set" | "rotate" | "delete"> = {
     async list() {
       if (failWith.error) throw failWith.error;
@@ -45,6 +47,7 @@ function fakeCli(initial: string[] = []) {
     async set(ref, value) {
       calls.push(`set ${ref}`);
       values.push([ref, value]);
+      if (refuse.has(ref)) throw new AkError("invalid", 2, "invalid ref");
       if (refs.has(ref)) throw new AkError("exists", 4, "already exists");
       refs.set(ref, value);
     },
@@ -58,7 +61,7 @@ function fakeCli(initial: string[] = []) {
       if (!refs.delete(ref)) throw new AkError("no-such-ref", 3, "no such ref");
     },
   };
-  return { cli, refs, calls, values, failWith };
+  return { cli, refs, calls, values, failWith, refuse };
 }
 
 let dirs: string[] = [];
@@ -127,6 +130,33 @@ describe("Vault to ak sync", () => {
     await sync.reconcile();
     expect(t.ak.calls).toEqual(["delete A"]);
     expect([...t.ak.refs.keys()]).toEqual(["USER_OWN"]);
+  });
+
+  it("skips a secret ak refuses, warns once, and still copies the others without retrying", async () => {
+    const t = setup([secret("a", "REFUSED"), secret("b", "GOOD")]);
+    t.ak.refuse.add("REFUSED");
+    const sync = t.start();
+    await sync.reconcile();
+    expect(t.ak.calls).toEqual(["set REFUSED", "set GOOD"]);
+    expect(sync.owns("GOOD")).toBe(true);
+    expect(sync.owns("REFUSED")).toBe(false);
+    t.vault.touch();
+    await sync.reconcile();
+    await sync.reconcile();
+    expect(t.logs.filter((line) => line.includes("ak refused \"REFUSED\""))).toHaveLength(1);
+    expect(t.logs.join("\n")).not.toContain(VALUE);
+    // The pass finished cleanly, so the poll is not asking ak again for a ref that cannot be written.
+    expect(t.ak.calls.filter((call) => call === "set REFUSED")).toHaveLength(1);
+  });
+
+  it("still stops and reports when ak refuses to run under an agent in the middle of the pass", async () => {
+    const t = setup([secret("a", "A"), secret("b", "B")]);
+    const sync = t.start();
+    t.ak.cli.set = async () => {
+      throw new AkError("agent-above-process", 6, "refused");
+    };
+    await sync.reconcile();
+    expect(t.guard.blocked).toBe(true);
   });
 
   it("follows a rename by deleting the old ref and setting the new one", async () => {

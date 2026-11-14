@@ -42,7 +42,17 @@ describe("ak commands", () => {
   it("approves one request for a set time", async () => {
     const { calls, run } = recorder();
     await createAkCli(run).approve({ ref: "DB_PASSWORD", ttl: "24h", agent: "sha256:abc" });
-    expect(calls[0]?.args).toEqual(["secrets", "approve", "DB_PASSWORD", "--state", "ttl", "--ttl", "24h", "--agent", "sha256:abc", "--json", "--no-interactive"]);
+    expect(calls[0]?.args).toEqual(["secrets", "approve", "DB_PASSWORD", "--state=ttl", "--ttl=24h", "--agent=sha256:abc", "--json", "--no-interactive"]);
+  });
+
+  it("passes every request flag as flag=value, so a value that looks like a flag stays a value", async () => {
+    const { calls, run } = recorder();
+    const cli = createAkCli(run);
+    await cli.approve({ ref: "R", ttl: "24h", agent: "--yes", project: "-p", purpose: "--reveal", env: "" });
+    await cli.deny({ ref: "R", purpose: "--state=ttl", env: "--exec" });
+    expect(calls[0]?.args).toEqual(["secrets", "approve", "R", "--state=ttl", "--ttl=24h", "--agent=--yes", "--project=-p", "--purpose=--reveal", "--env=", "--json", "--no-interactive"]);
+    expect(calls[1]?.args).toEqual(["secrets", "approve", "R", "--state=deny", "--purpose=--state=ttl", "--env=--exec", "--json", "--no-interactive"]);
+    for (const call of calls) expect(call.args.filter((arg) => arg.startsWith("-") && !arg.includes("="))).toEqual(["--json", "--no-interactive"]);
   });
 
   it("lists the inbox whether ak returns an array or an object", async () => {
