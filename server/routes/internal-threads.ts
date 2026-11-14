@@ -11,6 +11,8 @@ interface ThreadRow {
   threadId: string; botId: string; botName: string; title: string;
   state: ThreadState;
   unread: boolean; openedAt: number; delegationId?: string; own: boolean;
+  /** The conversation the caller is speaking in, so it can learn its own thread id. */
+  current?: boolean;
   /** Why a queued handoff hasn't started (host/queued-reason.ts). */
   waiting?: string;
   openedBy?: string;
@@ -58,7 +60,7 @@ export function createInternalThreadRoutes(deps: {
         rows.push({
           threadId: task.threadId, botId: from.id, botName: from.name, title: task.title,
           state, unread: task.unread === true, openedAt: task.openedBy?.at ?? task.createdAt,
-          delegationId: task.openedBy?.delegationId, own: true, ...queued(from, task, state),
+          delegationId: task.openedBy?.delegationId, own: true, ...(task.threadId === fromThreadId ? { current: true } : {}), ...queued(from, task, state),
         });
       }
       for (const peer of reachablePeers(store.bots, from)) {

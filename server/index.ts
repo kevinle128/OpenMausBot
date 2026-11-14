@@ -15373,7 +15373,8 @@ function runtimeHoldsRoot(threadId: string): boolean {
   return coordinator.active().some((n) => !n.parentId && n.threadId === threadId && !ENDED.has(n.status));
 }
 
-const paseoBridge = startPaseoBridge(process.env, { store, approvals: externalApprovals, decider, notify, screenLocked: readScreenLocked, ak: { vault: logins, dataDir: DATA_DIR } });
+const paseoBridge = startPaseoBridge(process.env, { store, approvals: externalApprovals, decider, notify, screenLocked: readScreenLocked, ak: { vault: logins, dataDir: DATA_DIR },
+  dispatcher: { store, wake: ({ botId, threadId, deliveryId, message }) => { routines!.enqueueWebhook({ webhookId: "paseo-dispatcher", webhookName: "Paseo agent update", prompt: message, botId, runOn: "maus", deliveryId, receivedAt: Date.now(), eventSource: "wait", resultsThreadId: threadId }); } } });
 
 const gracefulShutdown = createGracefulShutdown({
   cleanup: [

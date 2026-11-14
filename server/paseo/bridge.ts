@@ -1,10 +1,13 @@
 import { startAkBridge, type AkBridgeWiring } from "../ak/start.ts";
 import { PaseoConnection } from "./connection.ts";
+import { startDispatcherWake, type DispatcherWakeDeps } from "./dispatcher-wake.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 
 export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log"> & {
   /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
   ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
+  /** With this, a Paseo agent a Dispatcher bot created wakes that bot's thread when it finishes or fails. */
+  dispatcher?: Pick<DispatcherWakeDeps, "store" | "wake">;
 };
 
 /**
@@ -21,8 +24,9 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
   });
   connection.on("error", (error) => console.error("paseo bridge: listener failed", error));
   if (wiring) {
-    const { ak, ...gatekeeper } = wiring;
+    const { ak, dispatcher, ...gatekeeper } = wiring;
     startPaseoGatekeeper({ ...gatekeeper, connection, log });
+    if (dispatcher) startDispatcherWake({ ...dispatcher, connection, log });
     // After the gatekeeper, which closes the cards an earlier run left open.
     if (ak) {
       try {

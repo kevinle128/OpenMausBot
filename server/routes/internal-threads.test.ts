@@ -9,7 +9,7 @@ const ops = { id: "bot-ops", name: "Ops", section: "Work" } as BotRecord;
 const task = (threadId: string, title: string, openedBy?: unknown) => ({ threadId, title, createdAt: 1, openedBy }) as TaskRecord;
 const handoff = { id: "h-42", rootId: "h-1", parentId: "h-1", threadId: "t-ops-new", botId: "bot-ops", status: "queued" } as HandoffView;
 const tasks: Record<string, TaskRecord[]> = {
-  "bot-lead": [task("t-lead", "Lead main")],
+  "bot-lead": [task("t-lead", "Lead main"), task("t-own", "Lead current")],
   "bot-ops": [task("t-ops-busy", "Weekly report"), task("t-ops-new", "Export CSV", { botId: "bot-lead", name: "Lead", at: 5 })],
 };
 
@@ -38,5 +38,14 @@ describe("list_threads on a queued handoff", () => {
     const running = rows.find((thread) => thread.threadId === "t-ops-busy");
     expect(running).toMatchObject({ state: "running" });
     expect(running).not.toHaveProperty("waiting");
+  });
+});
+
+describe("list_threads on the caller's own conversation", () => {
+  it("marks only the conversation the caller speaks in", async () => {
+    const rows = await listThreads(lead);
+    expect(rows.find((thread) => thread.threadId === "t-own")).toMatchObject({ own: true, current: true });
+    expect(rows.find((thread) => thread.threadId === "t-lead")).not.toHaveProperty("current");
+    expect(rows.find((thread) => thread.threadId === "t-ops-new")).not.toHaveProperty("current");
   });
 });
