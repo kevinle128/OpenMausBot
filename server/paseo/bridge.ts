@@ -10,12 +10,18 @@ export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log"> 
   dispatcher?: Pick<DispatcherWakeDeps, "store" | "wake">;
 };
 
+export interface PaseoBridge {
+  connection: PaseoConnection;
+  /** Stops the gatekeeper, the Dispatcher wake and the ak bridge, then closes the connection to the daemon. */
+  stop(): Promise<void>;
+}
+
 /**
  * The worker that keeps one connection to the Paseo daemon. It is off unless OMB_PASEO_BRIDGE=1, and a daemon that is
  * down or refuses the credential only delays it: the connection retries with a growing wait and never stops OMB.
  * With `wiring`, the permissions its agents ask for are decided as they arrive.
  */
-export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: PaseoBridgeWiring): PaseoConnection | null {
+export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: PaseoBridgeWiring): PaseoBridge | null {
   if (env.OMB_PASEO_BRIDGE !== "1") return null;
   const log = (message: string) => console.log(message);
   const connection = new PaseoConnection({
@@ -23,19 +29,32 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
     log,
   });
   connection.on("error", (error) => console.error("paseo bridge: listener failed", error));
+  const stops: Array<() => void> = [];
   if (wiring) {
     const { ak, dispatcher, ...gatekeeper } = wiring;
-    startPaseoGatekeeper({ ...gatekeeper, connection, log });
-    if (dispatcher) startDispatcherWake({ ...dispatcher, connection, log });
+    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log }));
+    if (dispatcher) stops.push(startDispatcherWake({ ...dispatcher, connection, log }));
     // After the gatekeeper, which closes the cards an earlier run left open.
     if (ak) {
       try {
-        startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked }, log);
+        stops.push(startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked }, log));
       } catch (error) {
         log(`ak bridge: could not start (${error instanceof Error ? error.message : String(error)})`);
       }
     }
   }
   connection.start();
-  return connection;
+  return {
+    connection,
+    async stop() {
+      for (const stop of stops.splice(0).reverse()) {
+        try {
+          stop();
+        } catch (error) {
+          log(`paseo bridge: a listener did not stop cleanly (${error instanceof Error ? error.message : String(error)})`);
+        }
+      }
+      await connection.stop();
+    },
+  };
 }
