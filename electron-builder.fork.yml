@@ -1,7 +1,11 @@
 extends: ./electron-builder.yml
-# An object replaces the base publish list. A list would be concatenated with it
-# and electron-builder bakes the first entry, the upstream GitHub feed, into app-update.yml.
+# electron-builder concatenates lists across extends. An object replaces the base publish
+# list, which would otherwise bake the upstream GitHub feed into app-update.yml.
 publish:
   provider: generic
   url: https://gamestudio.mobigame.vn/openmausbot-desktop
   channel: latest
+mac:
+  # Drops the base target list, which names arm64 and x64 for each target and would
+  # override the --arm64 flag. The defaults are dmg and zip for the flag architecture.
+  target: null
