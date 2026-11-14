@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -206,8 +206,10 @@ describe("classifyPermission: env files on disk", () => {
   const fifo = () => join(dir, ".env.fifo");
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "omb-rules-"));
-    elsewhere = mkdtempSync(join(tmpdir(), "omb-rules-other-"));
+    // The Windows runner's temp folder is an 8.3 short name (RUNNER~1), and the rules refuse a "~" in a command.
+    const root = realpathSync.native(tmpdir());
+    dir = mkdtempSync(join(root, "omb-rules-"));
+    elsewhere = mkdtempSync(join(root, "omb-rules-other-"));
     writeFileSync(join(dir, ".env"), "A=1\n");
     writeFileSync(join(elsewhere, ".env.remote"), "B=2\n");
     writeFileSync(join(dir, "notes.txt"), "text\n");
