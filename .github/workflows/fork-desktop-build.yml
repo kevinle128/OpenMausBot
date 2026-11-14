@@ -1,7 +1,8 @@
 name: Fork Desktop Build
 
 # Builds, signs, notarizes and staples the macOS arm64 app on the fork's
-# self-hosted Mac mini runner and keeps the installers as workflow artifacts.
+# self-hosted Mac mini runner, then (publish=true) uploads it to the update
+# feed on the CDN, creates the fork's GitHub Release and prunes old versions.
 # Only the fork runs it, started by hand or by `gh workflow run`. The tag
 # prefix `mf-desktop-v` matches none of the tag triggers of the upstream
 # workflows (`v*`).
@@ -24,6 +25,11 @@ on:
         required: false
         default: true
         type: boolean
+      prune_dry_run:
+        description: "Only print which old versions the prune step would delete from the feed folder."
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: fork-desktop-build
@@ -34,6 +40,9 @@ permissions:
 
 env:
   FEED_URL: https://gamestudio.mobigame.vn/openmausbot-desktop
+  WASABI_ENDPOINT: https://s3.ap-southeast-1.wasabisys.com
+  WASABI_BUCKET: game-mobile-registry
+  WASABI_PREFIX: openmausbot-desktop
 
 jobs:
   setup:
@@ -485,3 +494,186 @@ jobs:
             rm -f "$MINI_BUILD_LOCK_PID_FILE"
             echo "Released the mini build lock."
           fi
+
+  # Order matters to an installed app: it reads latest-mac.yml and then fetches
+  # the files the feed names. Installers go up first and the feed goes up last,
+  # so the feed never names a file that is not there yet.
+  publish:
+    needs: [setup, build-macos]
+    if: github.repository == 'kevinle128/OpenMausBot' && inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
+      TAG: ${{ needs.setup.outputs.tag }}
+      SHA: ${{ needs.setup.outputs.sha }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ap-southeast-1
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+          sparse-checkout: |
+            scripts/fork-feed-check.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Make sure the AWS CLI is installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws > /dev/null; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$RUNNER_TEMP/awscliv2.zip"
+            unzip -q "$RUNNER_TEMP/awscliv2.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install"
+          fi
+          aws --version
+
+      - name: Download the installers and the feed
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-desktop-macos-arm64
+          path: release
+
+      - name: Check the feed against the files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l release
+          node scripts/fork-feed-check.mjs --feed release/latest-mac.yml --version "$VERSION" --dir release
+
+      - name: Upload the version folder, then the installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="s3://${WASABI_BUCKET}/${WASABI_PREFIX}"
+          aws s3 cp release "${root}/${VERSION}/" --recursive --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
+          aws s3 cp release "${root}/" --recursive --exclude latest-mac.yml --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
+          # Every installer is listed in the bucket before the feed goes up.
+          listing="$(aws s3 ls "${root}/" --endpoint-url "$WASABI_ENDPOINT")"
+          for name in $(sed -n 's/^ *- url: //p;s/^path: //p' release/latest-mac.yml | sort -u); do
+            grep -Fq " ${name}" <<< "$listing" || { echo "::error::${name} is not in ${root}/"; exit 1; }
+          done
+
+      - name: Upload the feed last
+        shell: bash
+        run: |
+          set -euo pipefail
+          # no-cache: the CDN and the app must not keep an older feed.
+          aws s3 cp release/latest-mac.yml "s3://${WASABI_BUCKET}/${WASABI_PREFIX}/latest-mac.yml" \
+            --cache-control no-cache --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
+
+      - name: Wait for the CDN to serve the new feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$(( SECONDS + 600 ))
+          served=""
+          while (( SECONDS < deadline )); do
+            served="$(curl -fsS --retry 2 "${FEED_URL}/latest-mac.yml" 2> /dev/null | sed -n 's/^version: //p' || true)"
+            echo "${FEED_URL}/latest-mac.yml serves: ${served:-nothing}"
+            [[ "$served" == "$VERSION" ]] && break
+            sleep 15
+          done
+          [[ "$served" == "$VERSION" ]] || { echo "::error::The CDN still serves '${served}' after 10 minutes; expected ${VERSION}"; exit 1; }
+          curl -fsS "${FEED_URL}/latest-mac.yml" | diff - release/latest-mac.yml \
+            || { echo "::error::The CDN feed differs from the uploaded feed"; exit 1; }
+
+      - name: Check the installers through the CDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="OpenMausBot-${VERSION}-arm64.zip"
+          want="$(awk -v z="$zip" '$1 == "-" && $2 == "url:" && $3 == z {found = 1; next} found && $1 == "sha512:" {print $2; exit}' release/latest-mac.yml)"
+          [[ -n "$want" ]] || { echo "::error::No sha512 for ${zip} in the feed"; exit 1; }
+          got="$(curl -fsS --retry 3 "${FEED_URL}/${zip}" | openssl dgst -sha512 -binary | base64 -w0)"
+          [[ "$got" == "$want" ]] || { echo "::error::${zip} from the CDN does not match the feed sha512"; exit 1; }
+          echo "ok: ${zip} from the CDN matches the feed"
+          for file in release/*.dmg release/*.blockmap; do
+            name="$(basename "$file")"
+            size="$(curl -fsSI --retry 3 "${FEED_URL}/${name}" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Ll]ength: //p' | tail -1)"
+            [[ "$size" == "$(stat -c %s "$file")" ]] || { echo "::error::${name} on the CDN has size '${size}', expected $(stat -c %s "$file")"; exit 1; }
+            echo "ok: ${name} (${size} bytes)"
+          done
+
+      # Last, after the feed is live: a failure here leaves a working feed and
+      # only the download page missing, and the step is safe to run again.
+      - name: Create the GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            notes="Fork build ${VERSION} of OpenMausBot, built from ${SHA}. Installed apps update from ${FEED_URL}/latest-mac.yml."
+            gh release create "$TAG" "${files[@]}" --target "$SHA" --title "OpenMausBot ${VERSION}" --notes "$notes"
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'
+          for folder in "" "${VERSION}/"; do
+            echo "s3://${WASABI_BUCKET}/${WASABI_PREFIX}/${folder}:"
+            aws s3 ls "s3://${WASABI_BUCKET}/${WASABI_PREFIX}/${folder}" --endpoint-url "$WASABI_ENDPOINT"
+          done
+          {
+            echo "### OpenMausBot ${VERSION}"
+            echo "- Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+            echo "- Feed: ${FEED_URL}/latest-mac.yml"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keeps the three newest versions in the feed folder. A failure here never
+  # fails the release.
+  prune:
+    needs: [setup, publish]
+    if: ${{ always() && github.repository == 'kevinle128/OpenMausBot' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ap-southeast-1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+          sparse-checkout: |
+            scripts/fork-desktop-backup-prune.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Delete older versions from the feed folder
+        shell: bash
+        env:
+          CURRENT: ${{ needs.setup.outputs.version }}
+          DRY_RUN: ${{ inputs.prune_dry_run && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if ! command -v aws > /dev/null; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$RUNNER_TEMP/awscliv2.zip"
+            unzip -q "$RUNNER_TEMP/awscliv2.zip" -d "$RUNNER_TEMP"
+            sudo "$RUNNER_TEMP/aws/install"
+          fi
+          root="s3://${WASABI_BUCKET}/${WASABI_PREFIX}/"
+          listing="${RUNNER_TEMP}/feed-listing.txt"
+          delete_list="${RUNNER_TEMP}/feed-delete.txt"
+          aws s3 ls "$root" --endpoint-url "$WASABI_ENDPOINT" > "$listing"
+          node scripts/fork-desktop-backup-prune.mjs --listing "$listing" --keep 3 --current "$CURRENT" --out "$delete_list"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Dry run: nothing is deleted."
+            exit 0
+          fi
+          while IFS= read -r key; do
+            [[ -n "$key" ]] || continue
+            if [[ "$key" == */ ]]; then
+              aws s3 rm "${root}${key}" --recursive --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
+            else
+              aws s3 rm "${root}${key}" --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
+            fi
+            echo "Deleted ${key}"
+          done < "$delete_list"
