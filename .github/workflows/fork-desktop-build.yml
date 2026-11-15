@@ -590,34 +590,36 @@ jobs:
             --cache-control no-cache --endpoint-url "$WASABI_ENDPOINT" --only-show-errors
 
       - name: Wait for the CDN to serve the new feed
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euo pipefail
           deadline=$(( SECONDS + 600 ))
           served=""
           while (( SECONDS < deadline )); do
-            served="$(curl -fsS --retry 2 "${FEED_URL}/latest-mac.yml" 2> /dev/null | sed -n 's/^version: //p' || true)"
+            served="$(curl -fsS --max-time 60 --connect-timeout 20 --speed-limit 102400 --speed-time 60 --retry 3 --retry-all-errors "${FEED_URL}/latest-mac.yml" 2> /dev/null | sed -n 's/^version: //p' || true)"
             echo "${FEED_URL}/latest-mac.yml serves: ${served:-nothing}"
             [[ "$served" == "$VERSION" ]] && break
             sleep 15
           done
           [[ "$served" == "$VERSION" ]] || { echo "::error::The CDN still serves '${served}' after 10 minutes; expected ${VERSION}"; exit 1; }
-          curl -fsS "${FEED_URL}/latest-mac.yml" | diff - release/latest-mac.yml \
+          curl -fsS --max-time 60 --connect-timeout 20 --speed-limit 102400 --speed-time 60 --retry 3 --retry-all-errors "${FEED_URL}/latest-mac.yml" | diff - release/latest-mac.yml \
             || { echo "::error::The CDN feed differs from the uploaded feed"; exit 1; }
 
       - name: Check the installers through the CDN
+        timeout-minutes: 30
         shell: bash
         run: |
           set -euo pipefail
           zip="OpenMausBot-${VERSION}-arm64.zip"
           want="$(awk -v z="$zip" '$1 == "-" && $2 == "url:" && $3 == z {found = 1; next} found && $1 == "sha512:" {print $2; exit}' release/latest-mac.yml)"
           [[ -n "$want" ]] || { echo "::error::No sha512 for ${zip} in the feed"; exit 1; }
-          got="$(curl -fsS --retry 3 "${FEED_URL}/${zip}" | openssl dgst -sha512 -binary | base64 -w0)"
+          got="$(curl -fsS --max-time 900 --connect-timeout 20 --speed-limit 102400 --speed-time 60 --retry 3 --retry-all-errors "${FEED_URL}/${zip}" | openssl dgst -sha512 -binary | base64 -w0)"
           [[ "$got" == "$want" ]] || { echo "::error::${zip} from the CDN does not match the feed sha512"; exit 1; }
           echo "ok: ${zip} from the CDN matches the feed"
           for file in release/*.dmg release/*.blockmap; do
             name="$(basename "$file")"
-            size="$(curl -fsSI --retry 3 "${FEED_URL}/${name}" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Ll]ength: //p' | tail -1)"
+            size="$(curl -fsSI --max-time 60 --connect-timeout 20 --speed-limit 102400 --speed-time 60 --retry 3 --retry-all-errors "${FEED_URL}/${name}" | tr -d '\r' | sed -n 's/^[Cc]ontent-[Ll]ength: //p' | tail -1)"
             [[ "$size" == "$(stat -c %s "$file")" ]] || { echo "::error::${name} on the CDN has size '${size}', expected $(stat -c %s "$file")"; exit 1; }
             echo "ok: ${name} (${size} bytes)"
           done
