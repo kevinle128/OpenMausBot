@@ -50,6 +50,9 @@ jobs:
     if: github.repository == 'kevinle128/OpenMausBot'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only the tag step below writes; it runs when publish is true.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -119,6 +122,24 @@ jobs:
             echo "sha=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
           echo "Building ${version} from $(git rev-parse HEAD)"
+
+      # The workflow token may create a tag only at the tip of a branch; a
+      # later job gets a 403 once the branch has moved on. The build takes
+      # long enough for that to happen, so the tag is made now, while the
+      # commit is still the tip, and the release step reuses it.
+      - name: Create the release tag
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null; then
+            echo "::error::Could not create tag ${TAG} at ${SHA}. The workflow token can tag only the tip of a branch, so start the run with ref set to a branch tip."
+            exit 1
+          fi
+          echo "Created tag ${TAG} at ${SHA}."
 
   build-macos:
     needs: [setup]
@@ -612,7 +633,7 @@ jobs:
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             notes="Fork build ${VERSION} of OpenMausBot, built from ${SHA}. Installed apps update from ${FEED_URL}/latest-mac.yml."
-            gh release create "$TAG" "${files[@]}" --target "$SHA" --title "OpenMausBot ${VERSION}" --notes "$notes"
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "OpenMausBot ${VERSION}" --notes "$notes"
           fi
           gh release view "$TAG" --json assets --jq '.assets[].name'
           for folder in "" "${VERSION}/"; do
