@@ -432,6 +432,10 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
     handedResult(work: { botId: string; threadId: string; groupId?: string; text: string }, requester: { botId: string; threadId: string }): void {
       if (!team) deps.place?.handedResult(work, requester);
     },
+    /** Something was allowed without asking: on a place that is no team's, a line in Done, read, with no notification. */
+    autoApproved(approval: Parameters<PlaceInbox["autoApproved"]>[0]): void {
+      if (!team) deps.place?.autoApproved(approval);
+    },
     stop(): void {
       unsubscribe();
       inbox.stop();

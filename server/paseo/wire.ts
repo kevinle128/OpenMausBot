@@ -1,5 +1,7 @@
 import type { RoutineManager } from "../routines.ts";
 import type { Store } from "../store.ts";
+import { formatAutoApproval, type AutoApprovalLine } from "./auto-approval.ts";
+import { ensurePaseoBot } from "./gatekeeper.ts";
 import { startPaseoBridge, type PaseoBridge, type PaseoBridgeWiring } from "./bridge.ts";
 import { readScreenLocked } from "./screen-lock.ts";
 
@@ -10,6 +12,8 @@ export type PaseoHost = Pick<PaseoBridgeWiring, "approvals" | "decider" | "notif
   /** The Vault whose secrets kept to the Paseo bot are copied to `ak`. */
   vault: NonNullable<PaseoBridgeWiring["ak"]>["vault"];
   dataDir: string;
+  /** Writes one line of what was allowed without asking into the Done tab of the Inbox. */
+  autoApproved(line: AutoApprovalLine): void;
   enqueueWebhook(input: Parameters<RoutineManager["enqueueWebhook"]>[0]): unknown;
 };
 
@@ -21,6 +25,10 @@ export function startPaseo(host: PaseoHost, env: NodeJS.ProcessEnv = process.env
     decider: host.decider,
     notify: host.notify,
     screenLocked: readScreenLocked,
+    history: (entry) => {
+      const bot = ensurePaseoBot(host.store);
+      host.autoApproved({ botId: bot.id, threadId: bot.threadId, key: entry.key, text: (count) => formatAutoApproval(entry, count) });
+    },
     ak: { vault: host.vault, dataDir: host.dataDir },
     dispatcher: {
       store: host.store,

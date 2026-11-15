@@ -2,10 +2,12 @@ import { watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
 import type { AkCli, AkPendingRequest } from "./cli.ts";
+import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
 
@@ -30,6 +32,12 @@ export interface InboxWatcherDeps {
   notify(notification: Notification | null): void;
   screenLocked(): Promise<boolean>;
   log(message: string): void;
+  /** The Paseo agent that sent `ak secrets request` for a ref a moment ago. */
+  origins?: Pick<RequestOrigins, "find">;
+  /** Receives each request allowed without the person, for the Inbox's Done tab. */
+  history?: AutoApprovalHistory;
+  /** Tells the Paseo agent that waited for this approval to go on. */
+  notifyAgent?(approved: { ref: string; program?: string }): Promise<"sent" | "queued" | "none">;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -87,8 +95,8 @@ function execLabel(request: AkPendingRequest): string {
 }
 
 /**
- * Answers the secret requests Paseo agents leave in the `ak` inbox. An ordinary request for a secret the person put in
- * the Vault for the Paseo bot is allowed for 24 hours at once. An exec request, or one for any other ref, becomes a card.
+ * Answers the secret requests Paseo agents leave in the `ak` inbox. A request, ordinary or exec, for a secret the person put
+ * in the Vault for the Paseo bot is allowed for 24 hours at once. A request for any other ref becomes a card.
  * The list always comes from `ak secrets approve --json`; the file is only watched, never read.
  */
 export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise<void>; stop(): void } {
@@ -143,10 +151,14 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       title: exec ? "A Paseo agent asks to run a program with a secret" : "A Paseo agent asks for a secret",
       subtitle: lines.join("\n"),
       tool: "ak secrets request",
+      allowLabel: `Allow ${AK_APPROVAL_TTL}`,
       onAnswer: async (decision) => {
         handled.add(key);
         try {
-          if (decision === "allow") await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+          if (decision === "allow") {
+            await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+            void tellAgent(scope, request);
+          }
           else await cli.deny(answerScope);
         } catch (error) {
           // The answer did not reach ak and the request is still in the inbox: the next pass opens a new card for it.
@@ -161,12 +173,44 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     await notifyIfLocked(`${scope.ref} · ${agent}`);
   }
 
+  /** One line for the Inbox: the secret's ref and purpose, the 24 hours, and the Paseo agent that asked when it is known. */
+  /** The agent that waited is told; a failure is logged and never undoes the approval. */
+  async function tellAgent(scope: Scope, request: AkPendingRequest): Promise<"sent" | "queued" | "none"> {
+    if (!deps.notifyAgent) return "none";
+    try {
+      return await deps.notifyAgent({ ref: scope.ref, ...(isExec(request) ? { program: execLabel(request) } : {}) });
+    } catch (error) {
+      log(`ak inbox: could not tell the agent about "${scope.ref}" (${error instanceof Error ? error.message : String(error)})`);
+      return "none";
+    }
+  }
+
+  function record(scope: Scope, request: AkPendingRequest, told: "sent" | "queued" | "none" = "none"): void {
+    if (!deps.history) return;
+    const origin = deps.origins?.find(scope.ref) ?? null;
+    const label = text(request.agentLabel);
+    const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
+    const exec = isExec(request);
+    const purpose = scope.purpose ? `, mục đích: ${redactSecretsInText(oneLine(scope.purpose, 100))}` : "";
+    const what = exec
+      ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}, ${AK_APPROVAL_TTL}`, 300))
+      : `cấp quyền đọc bí mật ${scope.ref}${purpose}, ${AK_APPROVAL_TTL}`;
+    const notice = !deps.notifyAgent ? "" : told === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
+    try {
+      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
+    } catch (error) {
+      log(`ak inbox: could not write the history line (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+
   /** True when the request needs no card: it was allowed, or `ak` refuses to be driven from here at all. */
-  async function autoApprove(scope: Scope, key: string): Promise<boolean> {
+  async function autoApprove(scope: Scope, key: string, request: AkPendingRequest): Promise<boolean> {
     handled.add(key);
     try {
-      await cli.approve({ ...scope, env: "", ttl: AK_APPROVAL_TTL });
+      // An exec request is answered for its own program and variable, exactly as the card's Allow does.
+      await cli.approve({ ...scope, ...(isExec(request) ? {} : { env: "" }), ttl: AK_APPROVAL_TTL });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
+      record(scope, request, await tellAgent(scope, request));
       return true;
     } catch (error) {
       if (guard.report(error)) return true;
@@ -200,8 +244,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       const key = keyOf(request, scope);
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;
-      if (!isExec(request) && deps.owns(scope.ref)) {
-        if (await autoApprove(scope, key)) continue;
+      if (deps.owns(scope.ref)) {
+        if (await autoApprove(scope, key, request)) continue;
         // Allowing it failed three times: a person decides.
         handled.delete(key);
       }

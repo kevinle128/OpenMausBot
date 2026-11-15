@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AutoApproval } from "../paseo/auto-approval.ts";
 import { createExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
@@ -22,7 +23,9 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none" } = {}) {
+  const told: Array<{ ref: string; program?: string }> = [];
+  const history: AutoApproval[] = [];
   const lines: Message[] = [];
   const store = {
     appendMessage: (_threadId: string, message: Partial<Message>) => {
@@ -54,13 +57,16 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     notify: (notification) => notified.push(notification),
     screenLocked: async () => options.locked === true,
     log: (line) => logs.push(line),
+    history: (entry) => history.push(entry),
+    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string }) => { told.push(approved); return options.notify!; } } : {}),
+    origins: { find: (ref) => (options.origin && ref === "API_KEY" ? options.origin : null) },
     secretsDir: options.secretsDir ?? "/nonexistent-ak-dir",
     pollMs: options.pollMs ?? 3_600_000,
     debounceMs: options.debounceMs ?? 10,
   });
   stops.push(watcher.stop);
   const card = () => lines.find((line) => line.card)?.card;
-  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card };
+  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card, history, told };
 }
 
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
@@ -77,6 +83,62 @@ describe("ak inbox watcher", () => {
     expect(t.lines).toEqual([]);
   });
 
+  it("records an allowed request with the secret's ref, purpose and 24 hours, and names the Paseo agent that asked", async () => {
+    const t = setup({ owned: ["API_KEY"], origin: { agentId: "agent-1", agent: "Fix the build", cwd: "/work/app" } });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.history).toEqual([{ key: `ak:API_KEY|agent-1|deploy|`, agent: "Fix the build", workspace: "/work/app", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h", rule: "ak-vault-secret" }]);
+  });
+
+  it("does not name an agent when two agents asked for the ref", async () => {
+    const { createRequestOrigins } = await import("../paseo/auto-approval.ts");
+    const origins = createRequestOrigins();
+    origins.note("ak secrets request API_KEY", { agentId: "a1", agent: "One", cwd: "/one" });
+    origins.note("ak secrets request API_KEY", { agentId: "a2", agent: "Two", cwd: "/two" });
+    expect(origins.find("API_KEY")).toBeNull();
+    origins.note("ak secrets request OTHER", { agentId: "a1", agent: "One", cwd: "/one" });
+    expect(origins.find("OTHER")).toMatchObject({ agentId: "a1" });
+  });
+
+  it("tells the agent after an automatic approval and marks the history line", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "sent" });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.told).toEqual([{ ref: "API_KEY" }]);
+    expect(t.history[0]!.what).toContain("đã báo agent");
+  });
+
+  it("tells the agent when the person taps Allow on a card, with the program for an exec request", async () => {
+    const t = setup({ notify: "queued" });
+    t.inbox.requests = [exec("DEPLOY_TOKEN")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.card()!.requestId!, "allow");
+    await flush();
+    expect(t.told).toEqual([{ ref: "DEPLOY_TOKEN", program: "/usr/bin/deploy" }]);
+  });
+
+  it("says the agent is not known when nobody was told", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "none" });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.history[0]!.what).toContain("không rõ agent");
+  });
+
+  it("says the project is not known when no Paseo agent asked for the ref", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.history).toMatchObject([{ workspace: "không rõ project" }]);
+  });
+
+  it("writes no history line for a request that went to a card", async () => {
+    const t = setup();
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    expect(t.history).toEqual([]);
+  });
+
   it("puts a request for a secret not in the Vault scope on a card, and a Deny answers it once", async () => {
     const t = setup({ locked: true });
     t.inbox.requests = [ordinary("STRANGER")];
@@ -84,7 +146,7 @@ describe("ak inbox watcher", () => {
     await t.watcher.checkNow();
     expect(t.approve).not.toHaveBeenCalled();
     expect(t.lines.filter((line) => line.card)).toHaveLength(1);
-    expect(t.card()).toMatchObject({ title: "A Paseo agent asks for a secret", options: ["Allow", "Deny"] });
+    expect(t.card()).toMatchObject({ title: "A Paseo agent asks for a secret", options: ["Allow 24h", "Deny"] });
     expect(t.card()?.subtitle).toContain("STRANGER");
     expect(t.notified).toHaveLength(1);
 
@@ -95,11 +157,25 @@ describe("ak inbox watcher", () => {
     expect(t.lines.filter((line) => line.card)).toHaveLength(1);
   });
 
-  it("puts an exec request on a card even for an owned ref, and Allow answers that exact scope for 24 hours", async () => {
+  it("allows an exec request for an owned ref for its own program and variable, for 24 hours, and records it", async () => {
     const t = setup({ owned: ["DEPLOY_TOKEN"] });
+    t.inbox.requests = [{ ...exec("DEPLOY_TOKEN"), purpose: "deploy with sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789" }];
+    await t.watcher.checkNow();
+    expect(t.lines).toEqual([]);
+    expect(t.approve).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, project: "app", purpose: expect.any(String), env: "TOKEN", ttl: "24h" });
+    expect(t.history).toHaveLength(1);
+    expect(t.history[0]).toMatchObject({ rule: "ak-exec-owned-ref" });
+    expect(t.history[0]!.what).toContain("/usr/bin/deploy");
+    expect(t.history[0]!.what).toContain("TOKEN");
+    expect(t.history[0]!.what).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("puts an exec request for a ref OpenMausBot does not own on a card, and Allow answers that exact scope for 24 hours", async () => {
+    const t = setup({ owned: ["OTHER"] });
     t.inbox.requests = [exec("DEPLOY_TOKEN")];
     await t.watcher.checkNow();
     expect(t.approve).not.toHaveBeenCalled();
+    expect(t.history).toEqual([]);
     expect(t.card()).toMatchObject({ title: "A Paseo agent asks to run a program with a secret" });
     expect(t.card()?.subtitle).toContain("/usr/bin/deploy");
     expect(t.card()?.subtitle).toContain("TOKEN");

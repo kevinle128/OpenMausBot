@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import type { PaseoPermissionRequest } from "./connection.ts";
@@ -20,7 +20,14 @@ export interface PermissionContext {
   cwd?: string;
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
+  /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
+  ownsRef?: (ref: string) => boolean;
+  regularFile?: (cwd: string | undefined, filePath: string) => boolean;
 }
+
+/** The hook of AgentKit puts this before a path it let the person approve once. */
+export const APPROVED_PREFIX = "APPROVED:";
 
 const READ_SUBCOMMANDS = new Set(["get", "list", "search", "describe", "request", "resolve", "audit", "grants"]);
 const WRITE_SUBCOMMANDS = new Set([
@@ -88,16 +95,38 @@ export function isEnvFilePath(filePath: string): boolean {
   return base === ".env" || /^\.env\..+/.test(base);
 }
 
-/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
- * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
-function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
-  if (!isAbsolute(filePath) && !cwd) return false;
+/** The real path of a plain file after every link is followed. A pipe, a directory and a missing file give null. */
+function realRegularFile(cwd: string | undefined, filePath: string): string | null {
+  if (!isAbsolute(filePath) && !cwd) return null;
   try {
     const real = realpathSync(resolve(cwd ?? "/", filePath));
-    return statSync(real).isFile() && isEnvFilePath(real);
+    return statSync(real).isFile() ? real : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. */
+function literalExists(cwd: string | undefined, filePath: string): boolean {
+  if (!isAbsolute(filePath) && !cwd) return true;
+  try {
+    lstatSync(resolve(cwd ?? "/", filePath));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+/** True for an existing regular file, whatever its name. */
+export function isRegularFile(cwd: string | undefined, filePath: string): boolean {
+  return realRegularFile(cwd, filePath) !== null;
+}
+
+/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
+ * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
+export function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
+  const real = realRegularFile(cwd, filePath);
+  return real !== null && isEnvFilePath(real);
 }
 
 function text(value: unknown): string | undefined {
@@ -167,7 +196,13 @@ function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionCont
   }
   const files = tool === "grep" || tool === "rg" ? operands.slice(1) : operands;
   const envFile = context.envFile ?? isRealEnvFile;
-  return files.length > 0 && files.every((file) => isEnvFilePath(file) && envFile(context.cwd, file));
+  const regularFile = context.regularFile ?? isRegularFile;
+  // A path the person approved once with the hook of AgentKit may be any regular file; every other path must be an env file.
+  return files.length > 0 && files.every((file) => {
+    // The shell opens the literal argument, so a file or link really named like that must not slip through the prefix.
+    if (file.startsWith(APPROVED_PREFIX)) return !literalExists(context.cwd, file) && regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+    return isEnvFilePath(file) && envFile(context.cwd, file);
+  });
 }
 
 /** True when every flag is a common one or a narrowing flag of the subcommand, and the plain words fit. */
@@ -214,6 +249,33 @@ function isPipeFilter(tool: string, args: string[]): boolean {
   return plain >= spec.words[0] && plain <= spec.words[1];
 }
 
+const RUN_RULE = "ak-secrets-run-owned-ref";
+const RUN_VALUE_FLAGS = new Set(["--purpose", "--project", "--session"]);
+
+/** True for `ak secrets run` with only known flags, at least one `--env VAR=REF`, every REF owned, and a program after `--`. */
+function akRunIsOwned(args: string[], context: PermissionContext): boolean {
+  if (!context.ownsRef) return false;
+  const refs: string[] = [];
+  let i = 0;
+  for (; i < args.length && args[i] !== "--"; i += 1) {
+    const arg = args[i]!;
+    if (AK_COMMON_FLAGS.has(arg)) continue;
+    const [name, ...inline] = arg.split("=");
+    if (name === "--env") {
+      const pair = inline.length > 0 ? inline.join("=") : args[++i];
+      const at = pair?.indexOf("=") ?? -1;
+      if (!pair || at < 1 || at === pair.length - 1) return false;
+      refs.push(pair.slice(at + 1));
+    } else if (RUN_VALUE_FLAGS.has(name!)) {
+      const value = inline.length > 0 ? inline.join("=") : args[++i];
+      if (value === undefined || value.startsWith("-")) return false;
+    } else {
+      return false;
+    }
+  }
+  return args[i] === "--" && i + 1 < args.length && refs.length > 0 && refs.every((ref) => context.ownsRef!(ref));
+}
+
 /** One command with no pipe or separator. */
 function classifyStep(tokens: string[], context: PermissionContext): Step {
   const [tool, ...args] = tokens as [string, ...string[]];
@@ -222,10 +284,12 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
     if (READ_SUBCOMMANDS.has(sub)) {
       return akFlagsAreSafe(sub, args.slice(2)) ? { kind: "allow", rule: "ak-secrets-read" } : { kind: "ask", rule: "ak-secrets-flags" };
     }
-    if (sub === "run") return { kind: "ask", rule: "ak-secrets-run" };
+    if (sub === "run") return akRunIsOwned(args.slice(2), context) ? { kind: "allow", rule: RUN_RULE } : { kind: "ask", rule: "ak-secrets-run" };
     return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
   }
-  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) return { kind: "allow", rule: "env-file-read-command" };
+  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) {
+    return { kind: "allow", rule: args.some((arg) => arg.startsWith(APPROVED_PREFIX)) ? "approved-file-read-command" : "env-file-read-command" };
+  }
   if (isPipeFilter(tool, args)) return { kind: "filter" };
   return { kind: "ask", rule: "other-command" };
 }
@@ -250,10 +314,25 @@ function classifyCommand(command: string, context: PermissionContext): Permissio
   }
   for (const { tokens, afterPipe } of steps) {
     const step = classifyStep(tokens!, context);
-    if (step.kind === "allow" || (step.kind === "filter" && afterPipe)) continue;
+    // A run starts a program with a value in its environment: it is never one step of a longer line.
+    if ((step.kind === "allow" && step.rule !== RUN_RULE) || (step.kind === "filter" && afterPipe)) continue;
     return { verdict: "ask", rule: "compound-command" };
   }
   return { verdict: "ambiguous", rule: "compound-secret-command" };
+}
+
+/** The ref of a plain `ak secrets request <REF>` command, or null for any other command. */
+export function akSecretsRequestRef(command: string): string | null {
+  if (SHELL_SYNTAX.test(command)) return null;
+  const tokens = words(command);
+  if (!tokens || tokens[0] !== "ak" || tokens[1] !== "secrets" || tokens[2] !== "request") return null;
+  const spec = AK_SUBCOMMANDS.request!;
+  for (let i = 3; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (!token.startsWith("-")) return token;
+    if (spec.valueFlags.includes(token)) i += 1;
+  }
+  return null;
 }
 
 export function classifyPermission(
