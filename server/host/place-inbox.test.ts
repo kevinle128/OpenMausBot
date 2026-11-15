@@ -65,6 +65,41 @@ function setup(over: Partial<PlaceInboxDeps> = {}, dataDir = mkdtempSync(join(tm
   return { inbox, store, said, cards, sent, handed, guests, bots, listeners, ask, dataDir, tick: (ms: number) => { clock += ms; } };
 }
 
+describe("what was allowed without asking", () => {
+  const line = (key: string, text = (count: number) => `allowed ${count}`) => ({ botId: "eli", threadId: "eli-main", key, text });
+
+  it("is one line in Done, already read, with no notification and no wait", () => {
+    const f = setup();
+    f.inbox.autoApproved(line("a"));
+    expect(f.inbox.view(OWNER).rows).toMatchObject([{ kind: "notice", tab: "done", unread: false, text: "allowed 1", from: { name: "Eli" } }]);
+    expect(f.inbox.count(OWNER)).toBe(0);
+    expect(f.sent).toEqual([]);
+  });
+
+  it("changes the line for the same thing within an hour, with the number of times", () => {
+    const f = setup();
+    f.inbox.autoApproved(line("a"));
+    f.tick(30 * 60_000);
+    f.inbox.autoApproved(line("a"));
+    f.inbox.autoApproved(line("b"));
+    expect(f.inbox.view(OWNER).rows.map((row) => row.text).sort()).toEqual(["allowed 1", "allowed 2"]);
+  });
+
+  it("starts a new line after an hour without it", () => {
+    const f = setup();
+    f.inbox.autoApproved(line("a"));
+    f.tick(61 * 60_000);
+    f.inbox.autoApproved(line("a"));
+    expect(f.inbox.view(OWNER).rows.map((row) => row.text)).toEqual(["allowed 1", "allowed 1"]);
+  });
+
+  it("is kept in the owner's lines, never a guest's", () => {
+    const f = setup();
+    f.inbox.autoApproved(line("a"));
+    expect(f.inbox.view(GUEST).rows).toEqual([]);
+  });
+});
+
 describe("finished work reaches the inbox once", () => {
   const work = (threadId: string, text = "Pricing page updated.") => ({ botId: "mira", threadId, text });
   const asked = { botId: "eli", threadId: "eli-main" };

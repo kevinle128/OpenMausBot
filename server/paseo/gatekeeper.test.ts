@@ -8,7 +8,8 @@ import { createExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
 import { PaseoConnection, type PaseoConnectionEvents, type PaseoPermissionRequested } from "./connection.ts";
-import { JEV_INSTRUCTIONS, PASEO_BOT_ID, startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
+import { createRequestOrigins, type AutoApproval } from "./auto-approval.ts";
+import { ANSWER_IN_PASEO, JEV_INSTRUCTIONS, PASEO_BOT_ID, startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 import { isMacScreenLocked } from "./screen-lock.ts";
 
 const workDir = mkdtempSync(join(tmpdir(), "omb-gatekeeper-"));
@@ -20,6 +21,8 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 type YesNo = PaseoGatekeeperDeps["decider"]["yesNo"];
 
 function fixture(options: { jev?: YesNo; locked?: boolean; openFails?: boolean } = {}) {
+  const history: AutoApproval[] = [];
+  const origins = createRequestOrigins();
   const connection = new EventEmitter<PaseoConnectionEvents>() as EventEmitter<PaseoConnectionEvents> & { respondToPermission: ReturnType<typeof vi.fn> };
   connection.respondToPermission = vi.fn(async () => {});
   const lines: Message[] = [];
@@ -52,13 +55,15 @@ function fixture(options: { jev?: YesNo; locked?: boolean; openFails?: boolean }
     notify: (notification) => notified.push(notification),
     screenLocked: async () => options.locked === true,
     log: (message) => logs.push(message),
+    history: (entry) => history.push(entry),
+    origins,
   });
   const agent = { id: "agent-1", title: "Fix the build", cwd: workDir, provider: "claude" };
   const request = (id: string, detail: unknown, extra: Record<string, unknown> = {}) =>
     ({ agentId: "agent-1", agent, request: { id, name: "Bash", kind: "tool", provider: "claude", detail, ...extra } }) as unknown as PaseoPermissionRequested;
   const shell = (id: string, command: string) => request(id, { type: "shell", command });
   const card = () => lines.find((line) => line.card)?.card;
-  return { connection, lines, approvals, jev, notified, logs, shell, request, card };
+  return { connection, lines, approvals, jev, notified, logs, shell, request, card, history, origins };
 }
 
 describe("Paseo gatekeeper", () => {
@@ -174,20 +179,108 @@ describe("Paseo gatekeeper", () => {
     expect(f.notified[0]?.body).toContain("rm -rf build");
   });
 
-  it("does not ask the person about a question the agent must answer in Paseo", async () => {
+  it("records each allowed request for the Inbox with the agent, the directory, the target and the rule", async () => {
     const f = fixture();
-    f.connection.emit("permissionRequested", f.request("r1", { type: "shell", command: "ls" }, { kind: "question" }));
+    f.connection.emit("permissionRequested", f.request("r1", { type: "read", filePath: join(workDir, ".env") }, { name: "Read" }));
+    f.connection.emit("permissionRequested", f.shell("r2", "ak secrets get db/password"));
     await flush();
-    expect(f.lines).toEqual([]);
+    expect(f.history).toEqual([
+      { key: `agent-1|đọc file ${join(workDir, ".env")}`, agent: "Fix the build", workspace: workDir, what: `đọc file ${join(workDir, ".env")}`, rule: "env-file-read" },
+      { key: "agent-1|ak secrets get db/password", agent: "Fix the build", workspace: workDir, what: "ak secrets get db/password", rule: "ak-secrets-read" },
+    ]);
+  });
+
+  it("remembers which agent sent an ak secrets request", async () => {
+    const f = fixture();
+    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets request SERVER_PORT"));
+    await flush();
+    expect(f.origins.find("SERVER_PORT")).toEqual({ agentId: "agent-1", agent: "Fix the build", cwd: workDir });
+  });
+
+  it("puts a plain question on a card with a button for each answer, and a tap answers the agent", async () => {
+    const f = fixture();
+    const questions = [{ question: "Which database?", header: "DB", multiSelect: false, options: [{ label: "Postgres" }, { label: "SQLite" }] }];
+    f.connection.emit("permissionRequested", f.request("r1", undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));
+    await flush();
+    expect(f.card()).toMatchObject({ title: "A Paseo agent asks you a question", options: ["Postgres", "SQLite"], requestType: "question", fixedOptions: true });
+    expect(f.card()?.tool).toBeUndefined();
+    expect(f.card()?.subtitle).toContain("Which database?");
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+
+    f.approvals.answer(f.card()!.requestId!, "answer", "SQLite");
+    await flush();
+    expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow", updatedInput: { questions, answers: { "Which database?": "SQLite" } } });
+    expect(f.history).toEqual([]);
+  });
+
+  it("leaves a question in Paseo when the card is closed without a button, or when it has several questions", async () => {
+    const f = fixture();
+    const one = [{ question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] }];
+    f.connection.emit("permissionRequested", f.request("r1", undefined, { kind: "question", name: "AskUserQuestion", input: { questions: one } }));
+    await flush();
+    f.approvals.answer(f.card()!.requestId!, "answer", "The user closed this question without answering.");
+    f.connection.emit("permissionRequested", f.request("r2", undefined, { kind: "question", name: "AskUserQuestion", input: { questions: [...one, ...one] } }));
+    await flush();
+    const second = f.lines.filter((line) => line.card).at(-1)!.card!;
+    expect(second.options).toEqual([ANSWER_IN_PASEO]);
+    f.approvals.answer(second.requestId!, "answer", ANSWER_IN_PASEO);
+    await flush();
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
   });
 
+  it("closes a question card when the question is answered in Paseo", async () => {
+    const f = fixture();
+    f.connection.emit("permissionRequested", f.request("r1", undefined, { kind: "question", name: "AskUserQuestion", input: { questions: [{ question: "Which?", options: ["a", "b"] }] } }));
+    await flush();
+    f.connection.emit("permissionResolved", { agentId: "agent-1", requestId: "r1" });
+    expect(f.card()).toMatchObject({ answered: "unavailable", dismissed: true });
+  });
   it("falls back to a card when the daemon refuses an allow", async () => {
     const f = fixture();
     f.connection.respondToPermission.mockRejectedValueOnce(new Error("refused"));
     f.connection.emit("permissionRequested", f.shell("r1", "ak secrets list"));
     await flush();
     expect(f.card()).toBeDefined();
+  });
+});
+
+describe("Paseo gatekeeper: the privacy hook's read question", () => {
+  const hookQuestion = (file: string, verb = "read", labels = ["Yes, approve once", "No, skip this file"]) => [{
+    header: "File Access", multiSelect: false, options: labels.map((label) => ({ label })),
+    question: `I need to ${verb} "${file.split("/").pop()}" (${file}), which may contain sensitive data. May I?`,
+  }];
+  const ask = (f: ReturnType<typeof fixture>, id: string, questions: unknown) =>
+    f.connection.emit("permissionRequested", f.request(id, undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));
+  writeFileSync(join(workDir, "server.pem"), "key\n");
+
+  it("answers Yes, approve once for a regular file of any name, and records it", async () => {
+    const f = fixture();
+    const questions = hookQuestion(join(workDir, "server.pem"));
+    ask(f, "r1", questions);
+    await flush();
+    expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", {
+      behavior: "allow", updatedInput: { questions, answers: { [questions[0]!.question]: "Yes, approve once" } },
+    });
+    expect(f.lines).toEqual([]);
+    expect(f.history).toMatchObject([{ agent: "Fix the build", workspace: workDir, what: `đọc file ${join(workDir, "server.pem")}`, rule: "hook-read-question" }]);
+  });
+
+  it.each([
+    ["a write question", () => hookQuestion(join(workDir, "server.pem"), "write")],
+    ["a file that is missing", () => hookQuestion(join(workDir, "missing.pem"))],
+    ["a directory", () => hookQuestion(workDir)],
+    ["a question without the approve option", () => hookQuestion(join(workDir, "server.pem"), "read", ["No, skip this file", "Maybe"])],
+    ["a name that is not the file's", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, question: `I need to read "other.pem" (${join(workDir, "server.pem")}), which may hold data.` }]],
+    ["another header", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, header: "Deploy" }]],
+    ["two questions", () => [...hookQuestion(join(workDir, "server.pem")), ...hookQuestion(join(workDir, "server.pem"))]],
+  ])("does not answer %s: it becomes a card", async (_name, build) => {
+    const f = fixture();
+    ask(f, "r1", build());
+    await flush();
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+    expect(f.history).toEqual([]);
+    expect(f.jev).not.toHaveBeenCalled();
   });
 });
 

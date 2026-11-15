@@ -13,14 +13,17 @@ export interface ExternalApproval {
   subtitle: string;
   /** What is asked for, such as the tool's name. The card is an approval only while this is set. */
   tool: string;
+  /** With these, the card is a question: one button for each label, and no tool. A tap hands the label to `onAnswer`. */
+  choices?: string[];
   /** Runs once, when a person answers the card. A rejection closes the card as unavailable. */
-  onAnswer(decision: ExternalDecision): Promise<void> | void;
+  onAnswer(decision: ExternalDecision, choice?: string): Promise<void> | void;
 }
 
 interface Open {
   threadId: string;
   messageId: string;
   requestId: string;
+  choices?: string[];
   onAnswer: ExternalApproval["onAnswer"];
 }
 
@@ -44,6 +47,15 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
     return card;
   }
 
+  function deliver(card: Open, send: () => Promise<void> | void): void {
+    void Promise.resolve()
+      .then(send)
+      .catch((error: unknown) => {
+        patch(card, { answered: "unavailable", dismissed: true });
+        deps.log?.(`external approval could not be delivered: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }
+
   return {
     has: (key: string): boolean => open.has(key),
     keys: (): string[] => [...open.keys()],
@@ -55,16 +67,13 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
       const message = store.appendMessage(approval.threadId, {
         role: "bot",
         kind: "options",
-        card: {
-          title: approval.title,
-          subtitle: approval.subtitle,
-          options: ["Allow", "Deny"],
-          requestId,
-          requestType: "permission",
-          tool: approval.tool,
-        },
+        card: approval.choices
+          ? { title: approval.title, subtitle: approval.subtitle, options: approval.choices, fixedOptions: true, requestId, requestType: "question" }
+          : { title: approval.title, subtitle: approval.subtitle, options: ["Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
       });
-      open.set(approval.key, { threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer });
+      open.set(approval.key, {
+        threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}),
+      });
       byRequest.set(requestId, approval.key);
       return true;
     },
@@ -75,19 +84,25 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
       if (card) patch(card, { answered: "unavailable", dismissed: true });
     },
 
-    /** A tap on a card. True when it was one of these; the verdict goes on to its owner without being waited for. */
-    answer(requestId: string, behavior: string | undefined): boolean {
+    /** A tap on a card. True when it was one of these; the verdict goes on to its owner without being waited for. A question
+     * card takes only the text of one of its buttons: closing it without a pick leaves the question where it came from. */
+    answer(requestId: string, behavior: string | undefined, message?: unknown): boolean {
       const key = byRequest.get(requestId);
       const card = key === undefined ? undefined : forget(key);
       if (!card) return false;
+      if (card.choices) {
+        const choice = behavior === "answer" && typeof message === "string" ? card.choices.find((label) => label === message) : undefined;
+        if (choice === undefined) {
+          patch(card, { answered: "unavailable", dismissed: true });
+          return true;
+        }
+        patch(card, { answered: choice });
+        deliver(card, () => card.onAnswer("allow", choice));
+        return true;
+      }
       const decision: ExternalDecision = behavior === "allow" ? "allow" : "deny";
       patch(card, { answered: decision });
-      void Promise.resolve()
-        .then(() => card.onAnswer(decision))
-        .catch((error: unknown) => {
-          patch(card, { answered: "unavailable", dismissed: true });
-          deps.log?.(`external approval could not be delivered: ${error instanceof Error ? error.message : String(error)}`);
-        });
+      deliver(card, () => card.onAnswer(decision));
       return true;
     },
 
@@ -96,7 +111,7 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
       let dismissed = 0;
       for (const message of store.messagesFor(threadId)) {
         const card = message.card;
-        if (!card?.requestId || card.requestType !== "permission" || card.answered || card.dismissed || byRequest.has(card.requestId)) continue;
+        if (!card?.requestId || (card.requestType !== "permission" && card.requestType !== "question") || card.answered || card.dismissed || byRequest.has(card.requestId)) continue;
         store.patchMessage(threadId, message.id, { card: { ...card, answered: "unavailable", dismissed: true } });
         dismissed += 1;
       }

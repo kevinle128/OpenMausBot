@@ -6,6 +6,18 @@ Paseo bridge (`OMB_PASEO_BRIDGE=1`) so it is woken when an agent finishes or
 fails. Permission requests from its agents go through the same gatekeeper as
 every other Paseo agent; the Dispatcher never answers them.
 
+The gatekeeper also handles the questions an agent asks. It answers "Yes,
+approve once" itself only for the privacy hook's question to read a file (one
+question, the read wording, a path that is a regular file). Every other question
+becomes a card with one button for each answer, or with an **Answer in Paseo**
+button when it has several questions or lets the person pick more than one.
+Each request it allows without asking (a file read, a read-only `ak secrets`
+command, the hook's read question, a Vault secret request) is written as one
+read line in the Done tab of the Inbox, headed "OpenMausBot tự duyệt", with no
+notification. The same agent and target within an hour share one line with a
+count. The line never holds a secret value or file content. On a server with a
+team, the history is not written.
+
 ## Set it up (once)
 
 1. **Add the preset.** In **Templates → Import**, choose

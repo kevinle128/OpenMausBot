@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AutoApproval } from "../paseo/auto-approval.ts";
 import { createExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
@@ -22,7 +23,8 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string } } = {}) {
+  const history: AutoApproval[] = [];
   const lines: Message[] = [];
   const store = {
     appendMessage: (_threadId: string, message: Partial<Message>) => {
@@ -54,13 +56,15 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     notify: (notification) => notified.push(notification),
     screenLocked: async () => options.locked === true,
     log: (line) => logs.push(line),
+    history: (entry) => history.push(entry),
+    origins: { find: (ref) => (options.origin && ref === "API_KEY" ? options.origin : null) },
     secretsDir: options.secretsDir ?? "/nonexistent-ak-dir",
     pollMs: options.pollMs ?? 3_600_000,
     debounceMs: options.debounceMs ?? 10,
   });
   stops.push(watcher.stop);
   const card = () => lines.find((line) => line.card)?.card;
-  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card };
+  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card, history };
 }
 
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
@@ -75,6 +79,28 @@ describe("ak inbox watcher", () => {
     expect(t.approve).toHaveBeenCalledTimes(1);
     expect(t.approve).toHaveBeenCalledWith({ ref: "API_KEY", agent: AGENT, project: "app", purpose: "deploy", env: "", ttl: "24h" });
     expect(t.lines).toEqual([]);
+  });
+
+  it("records an allowed request with the secret's ref, purpose and 24 hours, and names the Paseo agent that asked", async () => {
+    const t = setup({ owned: ["API_KEY"], origin: { agentId: "agent-1", agent: "Fix the build", cwd: "/work/app" } });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.history).toEqual([{ key: `ak:API_KEY|agent-1|deploy`, agent: "Fix the build", workspace: "/work/app", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h", rule: "ak-vault-secret" }]);
+  });
+
+  it("says the project is not known when no Paseo agent asked for the ref", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.history).toMatchObject([{ workspace: "không rõ project" }]);
+  });
+
+  it("writes no history line for a request that went to a card", async () => {
+    const t = setup();
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    expect(t.history).toEqual([]);
   });
 
   it("puts a request for a secret not in the Vault scope on a card, and a Deny answers it once", async () => {

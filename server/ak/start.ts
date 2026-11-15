@@ -1,4 +1,5 @@
 import type { ExternalApprovals } from "../external-approvals.ts";
+import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import type { Notification } from "../notify.ts";
 import { ensurePaseoBot, PASEO_BOT_ID } from "../paseo/gatekeeper.ts";
 import type { Store } from "../store.ts";
@@ -15,6 +16,10 @@ export interface AkBridgeWiring {
   approvals: ExternalApprovals;
   notify(notification: Notification | null): void;
   screenLocked(): Promise<boolean>;
+  /** Names the Paseo agent behind a request, when one sent `ak secrets request` for the ref a moment ago. */
+  origins?: Pick<RequestOrigins, "find">;
+  /** Receives what was allowed without the person. */
+  history?: AutoApprovalHistory;
   /** Tests give a fake; OpenMausBot uses the real `ak`. */
   cli?: AkCli;
   secretsDir?: string;
@@ -36,6 +41,8 @@ export function startAkBridge(wiring: AkBridgeWiring, log: (message: string) => 
     notify: wiring.notify,
     screenLocked: wiring.screenLocked,
     log,
+    ...(wiring.origins ? { origins: wiring.origins } : {}),
+    ...(wiring.history ? { history: wiring.history } : {}),
     ...(wiring.secretsDir ? { secretsDir: wiring.secretsDir } : {}),
   });
   return () => {

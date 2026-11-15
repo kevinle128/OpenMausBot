@@ -247,6 +247,32 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
       ...(asked ? { workingFor: { botId: asked.id, name: asked.name } } : {}), ...(guest ? { guest } : {}), text: clip(text, NOTICE_TEXT_MAX), at: now(), job: requester.threadId });
   }
 
+  /** What was allowed without asking, by the same thing: it stays in memory for the hour that repeats are merged in. */
+  const allowed = new Map<string, { lineId: string; count: number; at: number }>();
+
+  /** Something was allowed without asking the person: one line in Done, already read, with no notification and no wait. The
+   * same `key` again within an hour changes that line instead of adding one, and `text` is given the number of times. */
+  function autoApproved(approval: { botId: string; threadId: string; key: string; text(count: number): string }): void {
+    const bot = store.bot(approval.botId);
+    if (!bot) return;
+    for (const [key, one] of allowed) if (now() - one.at >= HOUR_MS) allowed.delete(key);
+    const before = allowed.get(approval.key);
+    const line = before ? lines.find((one) => one.id === before.lineId) : undefined;
+    const count = line && before ? before.count + 1 : 1;
+    const text = clip(approval.text(count), NOTICE_TEXT_MAX);
+    let id = line?.id;
+    if (line) {
+      line.text = text;
+      line.at = now();
+      save();
+    } else {
+      const guest = deps.guestOf(approval.threadId);
+      id = addLine({ id: crypto.randomUUID(), botId: bot.id, threadId: approval.threadId, kind: "notice", from: bot.name.slice(0, 200),
+        ...(guest ? { guest } : {}), text, at: now(), seen: true, done: true }).id;
+    }
+    allowed.set(approval.key, { lineId: id!, count, at: now() });
+  }
+
   const unsubscribe = store.onChange((change: StoreChange) => {
     if (change.type !== "thread.deleted") return;
     const before = lines.length;
@@ -259,6 +285,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
     message,
     route,
     handedResult,
+    autoApproved,
     /** What waits on this viewer: every open ask, and news they have not read. */
     count(auth: RequestAuth): number {
       return view(auth).rows.filter((row) => row.tab === "needs-you" || (row.tab === "info" && row.unread)).length;

@@ -20,7 +20,12 @@ export interface PermissionContext {
   cwd?: string;
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
+  /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  regularFile?: (cwd: string | undefined, filePath: string) => boolean;
 }
+
+/** The hook of AgentKit puts this before a path it let the person approve once. */
+export const APPROVED_PREFIX = "APPROVED:";
 
 const READ_SUBCOMMANDS = new Set(["get", "list", "search", "describe", "request", "resolve", "audit", "grants"]);
 const WRITE_SUBCOMMANDS = new Set([
@@ -88,16 +93,27 @@ export function isEnvFilePath(filePath: string): boolean {
   return base === ".env" || /^\.env\..+/.test(base);
 }
 
-/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
- * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
-function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
-  if (!isAbsolute(filePath) && !cwd) return false;
+/** The real path of a plain file after every link is followed. A pipe, a directory and a missing file give null. */
+function realRegularFile(cwd: string | undefined, filePath: string): string | null {
+  if (!isAbsolute(filePath) && !cwd) return null;
   try {
     const real = realpathSync(resolve(cwd ?? "/", filePath));
-    return statSync(real).isFile() && isEnvFilePath(real);
+    return statSync(real).isFile() ? real : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** True for an existing regular file, whatever its name. */
+export function isRegularFile(cwd: string | undefined, filePath: string): boolean {
+  return realRegularFile(cwd, filePath) !== null;
+}
+
+/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
+ * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
+export function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
+  const real = realRegularFile(cwd, filePath);
+  return real !== null && isEnvFilePath(real);
 }
 
 function text(value: unknown): string | undefined {
@@ -167,7 +183,12 @@ function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionCont
   }
   const files = tool === "grep" || tool === "rg" ? operands.slice(1) : operands;
   const envFile = context.envFile ?? isRealEnvFile;
-  return files.length > 0 && files.every((file) => isEnvFilePath(file) && envFile(context.cwd, file));
+  const regularFile = context.regularFile ?? isRegularFile;
+  // A path the person approved once with the hook of AgentKit may be any regular file; every other path must be an env file.
+  return files.length > 0 && files.every((file) => {
+    if (file.startsWith(APPROVED_PREFIX)) return regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+    return isEnvFilePath(file) && envFile(context.cwd, file);
+  });
 }
 
 /** True when every flag is a common one or a narrowing flag of the subcommand, and the plain words fit. */
@@ -225,7 +246,9 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
     if (sub === "run") return { kind: "ask", rule: "ak-secrets-run" };
     return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
   }
-  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) return { kind: "allow", rule: "env-file-read-command" };
+  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) {
+    return { kind: "allow", rule: args.some((arg) => arg.startsWith(APPROVED_PREFIX)) ? "approved-file-read-command" : "env-file-read-command" };
+  }
   if (isPipeFilter(tool, args)) return { kind: "filter" };
   return { kind: "ask", rule: "other-command" };
 }
@@ -254,6 +277,20 @@ function classifyCommand(command: string, context: PermissionContext): Permissio
     return { verdict: "ask", rule: "compound-command" };
   }
   return { verdict: "ambiguous", rule: "compound-secret-command" };
+}
+
+/** The ref of a plain `ak secrets request <REF>` command, or null for any other command. */
+export function akSecretsRequestRef(command: string): string | null {
+  if (SHELL_SYNTAX.test(command)) return null;
+  const tokens = words(command);
+  if (!tokens || tokens[0] !== "ak" || tokens[1] !== "secrets" || tokens[2] !== "request") return null;
+  const spec = AK_SUBCOMMANDS.request!;
+  for (let i = 3; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (!token.startsWith("-")) return token;
+    if (spec.valueFlags.includes(token)) i += 1;
+  }
+  return null;
 }
 
 export function classifyPermission(

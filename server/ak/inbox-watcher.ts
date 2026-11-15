@@ -6,6 +6,7 @@ import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
 import type { AkCli, AkPendingRequest } from "./cli.ts";
+import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
 
@@ -30,6 +31,10 @@ export interface InboxWatcherDeps {
   notify(notification: Notification | null): void;
   screenLocked(): Promise<boolean>;
   log(message: string): void;
+  /** The Paseo agent that sent `ak secrets request` for a ref a moment ago. */
+  origins?: Pick<RequestOrigins, "find">;
+  /** Receives each request allowed without the person, for the Inbox's Done tab. */
+  history?: AutoApprovalHistory;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -161,12 +166,27 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     await notifyIfLocked(`${scope.ref} · ${agent}`);
   }
 
+  /** One line for the Inbox: the secret's ref and purpose, the 24 hours, and the Paseo agent that asked when it is known. */
+  function record(scope: Scope, request: AkPendingRequest): void {
+    if (!deps.history) return;
+    const origin = deps.origins?.find(scope.ref) ?? null;
+    const label = text(request.agentLabel);
+    const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
+    const what = `cấp quyền đọc bí mật ${scope.ref}${scope.purpose ? `, mục đích: ${oneLine(scope.purpose, 100)}` : ""}, ${AK_APPROVAL_TTL}`;
+    try {
+      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what, rule: "ak-vault-secret" });
+    } catch (error) {
+      log(`ak inbox: could not write the history line (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+
   /** True when the request needs no card: it was allowed, or `ak` refuses to be driven from here at all. */
-  async function autoApprove(scope: Scope, key: string): Promise<boolean> {
+  async function autoApprove(scope: Scope, key: string, request: AkPendingRequest): Promise<boolean> {
     handled.add(key);
     try {
       await cli.approve({ ...scope, env: "", ttl: AK_APPROVAL_TTL });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
+      record(scope, request);
       return true;
     } catch (error) {
       if (guard.report(error)) return true;
@@ -201,7 +221,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;
       if (!isExec(request) && deps.owns(scope.ref)) {
-        if (await autoApprove(scope, key)) continue;
+        if (await autoApprove(scope, key, request)) continue;
         // Allowing it failed three times: a person decides.
         handled.delete(key);
       }
