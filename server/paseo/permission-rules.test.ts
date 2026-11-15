@@ -609,15 +609,40 @@ describe("gitConfigRunsNoProgram", () => {
     }
   });
 
+  it("finds a submodule by its gitlink when the modules file is gone", () => {
+    const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitlink-")));
+    try {
+      const child = join(base, "child");
+      const parent = join(base, "parent");
+      mkdirSync(child);
+      sh(child, "init", "-q");
+      sh(child, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x");
+      mkdirSync(parent);
+      sh(parent, "init", "-q");
+      sh(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "sub");
+      rmSync(join(parent, ".gitmodules"));
+      sh(parent, "rm", "-q", "--cached", ".gitmodules");
+      sh(join(parent, "sub"), "config", "core.fsmonitor", "touch x");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(false);
+      sh(join(parent, "sub"), "config", "--unset", "core.fsmonitor");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("refuses more than twenty submodules", () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitmany-")));
     try {
       execFileSync("git", ["init", "-q"], { cwd: base });
-      const lines = Array.from({ length: 21 }, (_, i) => `[submodule "s${i}"]\n\tpath = s${i}\n\turl = ./x${i}\n`).join("");
-      writeFileSync(join(base, ".gitmodules"), lines);
+      const oid = "1".repeat(40);
       for (let i = 0; i < 21; i++) {
         mkdirSync(join(base, `s${i}`));
         execFileSync("git", ["init", "-q"], { cwd: join(base, `s${i}`) });
+        execFileSync("git", ["update-index", "--add", "--cacheinfo", `160000,${oid},s${i}`], { cwd: base });
       }
       forgetGitConfigAnswers();
       expect(gitConfigRunsNoProgram(base)).toBe(false);

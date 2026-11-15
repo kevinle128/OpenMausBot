@@ -52,13 +52,17 @@ function repositoryIsQuiet(dir: string): boolean {
   }
 }
 
-/** Every checked-out submodule below `dir`, each repository checked once. Null when there are too many or git fails. */
+/** Every checked-out submodule below `top`, found as git finds them: by the gitlink entries (mode 160000) of the index, not by
+ * the `.gitmodules` file, which can be missing. Each repository is checked once; too many or any git failure gives false. */
 function submodulesAreQuiet(top: string, budget: { left: number }): boolean {
-  const listed = gitOrNothing(top, ["config", "-z", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"]);
+  const listed = git(top, ["ls-files", "-s", "-z"]);
   for (const entry of listed.split("\0").filter(Boolean)) {
+    // `<mode> <object> <stage>` and a tab, then the path.
+    const tab = entry.indexOf("\t");
+    if (tab < 0 || !entry.startsWith("160000 ")) continue;
     budget.left -= 1;
     if (budget.left < 0) return false;
-    const path = entry.slice(entry.indexOf("\n") + 1);
+    const path = entry.slice(tab + 1);
     if (!path || path.startsWith("/") || path.split("/").includes("..")) return false;
     const sub = join(top, path);
     // A submodule that is not checked out has no repository there and runs nothing.
