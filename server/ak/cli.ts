@@ -52,6 +52,9 @@ export interface AkSecretSummary {
 /** One waiting request in the inbox. `ak secrets approve --json` only lists, so any field beyond `ref` is optional. */
 export interface AkPendingRequest {
   ref: string;
+  /** The agent fingerprint, `sha256:<64 hex>`: the value `--agent` takes. */
+  fingerprint?: string;
+  agentLabel?: string;
   agent?: string;
   project?: string;
   purpose?: string;

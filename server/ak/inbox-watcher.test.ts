@@ -205,6 +205,26 @@ describe("ak inbox watcher", () => {
     expect(t.guard.blocked).toBe(false);
   });
 
+  it("reads the fields ak lists, narrows an approval by the agent fingerprint and logs no shape warning", async () => {
+    const fingerprint = `sha256:${"ab".repeat(32)}`;
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.requests = [
+      { ref: "API_KEY", project: "app", purpose: "deploy", fingerprint, agentLabel: "claude", count: 2, firstSeen: "2026-11-15T10:00:00Z", lastSeen: "2026-11-15T10:05:00Z", exec: null },
+    ];
+    await t.watcher.checkNow();
+    expect(t.approve).toHaveBeenCalledWith({ ref: "API_KEY", agent: fingerprint, project: "app", purpose: "deploy", env: "", ttl: "24h" });
+    expect(t.logs.filter((line) => line.includes("unexpected request shape"))).toEqual([]);
+  });
+
+  it("names the agent on a card by its label and answers the card for that fingerprint", async () => {
+    const fingerprint = `sha256:${"cd".repeat(32)}`;
+    const t = setup();
+    t.inbox.requests = [{ ref: "STRANGER", project: "app", purpose: "deploy", fingerprint, agentLabel: "claude", exec: null }];
+    await t.watcher.checkNow();
+    expect(t.approve).not.toHaveBeenCalled();
+    expect(t.card()?.subtitle).toContain("agent claude");
+  });
+
   it("logs the keys of the first unknown request shape and never a value", async () => {
     const t = setup();
     t.inbox.requests = [{ ref: "R", weird: "secret-looking-text" } as AkPendingRequest, { nothing: "x" } as unknown as AkPendingRequest];

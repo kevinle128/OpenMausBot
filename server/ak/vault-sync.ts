@@ -12,6 +12,8 @@ const POLL_MS = 1_000;
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 const REF_MAX = 128;
+// Failures about ak itself, which end the pass; any other refusal of a rotate concerns that one ref.
+const NOT_PER_SECRET = new Set<AkError["kind"]>(["agent-above-process", "cooldown", "unavailable", "backend"]);
 // ak refuses a "/", control, bidi, zero-width and line-separator characters in a new ref; a leading "-" would read as a flag.
 // Code point ranges: C0/C1 controls, soft hyphen, Arabic letter mark, Mongolian vowel separator, zero-width and bidi marks,
 // line and paragraph separators, word joiner and invisible operators, and the byte order mark.
@@ -58,12 +60,13 @@ export function paseoScopedSecrets(vault: Pick<VaultStore, "listSecrets">, botId
   return new Map([...byName.values()].map((entry) => [entry.ref, entry]));
 }
 
-type Ledger = Record<string, { ref: string; updatedAt: number }>;
+/** `adopted` marks a ref that already existed in ak and was taken over, so its removal says that ak loses it. */
+type Ledger = Record<string, { ref: string; updatedAt: number; adopted?: true }>;
 
 export interface VaultSync {
   /** Runs one reconcile now (or after the one in flight). Resolves when it is done; never rejects. */
   reconcile(): Promise<void>;
-  /** True for a ref OpenMausBot wrote to ak and the Vault still keeps for the Paseo bot. */
+  /** True for a ref OpenMausBot wrote to ak, or took over from ak, and the Vault still keeps for the Paseo bot. */
   owns(ref: string): boolean;
   stop(): void;
 }
@@ -80,7 +83,9 @@ export interface VaultSyncDeps {
 
 /**
  * Keeps `ak secrets` in step with the Vault. Only refs OpenMausBot wrote itself (the ledger holds ref and Vault update
- * time, never a value or a hash of one) are ever rotated or deleted, so a secret the person made in `ak` is left alone.
+ * time, never a value or a hash of one) are ever rotated or deleted. A ref that already exists in ak under the name of a
+ * Paseo-scoped Vault secret is taken over: the Vault is the source of truth for it, so its value is replaced and it is
+ * deleted from ak when the Vault stops keeping it. Any other ak secret is left alone.
  * The Vault has no event for a new secret, so its write counter is polled and the in-scope list is diffed against the ledger.
  */
 export function startVaultSync(deps: VaultSyncDeps): VaultSync {
@@ -106,6 +111,23 @@ export function startVaultSync(deps: VaultSyncDeps): VaultSync {
   const scope = () => paseoScopedSecrets(vault, deps.botId, (name, why) => warnOnce(`ak sync: skipped the secret "${name}": ${why}`));
   const signature = (entries: Map<string, ScopedSecret>) => JSON.stringify([...entries.values()].map((entry) => [entry.id, entry.ref, entry.updatedAt]).sort());
 
+  /** Replaces the value of a ref that already exists in ak (its grants stay) and records it as written by OpenMausBot. */
+  async function adopt(entry: ScopedSecret, value: string): Promise<boolean> {
+    try {
+      await cli.rotate(entry.ref, value);
+    } catch (error) {
+      // ak is not the problem when it refuses this one ref: the ref stays unowned and is not tried again until the secret changes.
+      if (error instanceof AkError && !NOT_PER_SECRET.has(error.kind)) {
+        warnOnce(`ak sync: could not take over the existing ak secret "${entry.ref}" (${describeAkError(error)}); it is left alone`);
+        return false;
+      }
+      throw error;
+    }
+    ledger[entry.id] = { ref: entry.ref, updatedAt: entry.updatedAt, adopted: true };
+    log(`ak sync: took over the existing ak secret "${entry.ref}" with the Vault value; it is deleted from ak if the Vault stops keeping it for the Paseo bot`);
+    return true;
+  }
+
   async function pass(): Promise<void> {
     const wanted = scope();
     const sig = signature(wanted);
@@ -126,7 +148,11 @@ export function startVaultSync(deps: VaultSyncDeps): VaultSync {
       }
       delete ledger[id];
       save();
-      log(`ak sync: removed "${row.ref}" from ak`);
+      log(
+        row.adopted
+          ? `ak sync: deleted "${row.ref}" from ak because the Vault no longer keeps it for the Paseo bot; it was an existing ak secret that OpenMausBot had taken over`
+          : `ak sync: removed "${row.ref}" from ak`,
+      );
     }
 
     for (const entry of wanted.values()) {
@@ -141,17 +167,22 @@ export function startVaultSync(deps: VaultSyncDeps): VaultSync {
           if (row.updatedAt === entry.updatedAt) continue;
           await cli.rotate(entry.ref, secret.value);
           log(`ak sync: updated "${entry.ref}" in ak`);
+          ledger[entry.id] = { ref: entry.ref, updatedAt: entry.updatedAt, ...(row.adopted ? { adopted: true as const } : {}) };
+        } else if (!row && present.has(entry.ref)) {
+          if (!(await adopt(entry, secret.value))) continue;
         } else {
-          await cli.set(entry.ref, secret.value);
-          log(`ak sync: added "${entry.ref}" to ak`);
+          try {
+            await cli.set(entry.ref, secret.value);
+            log(`ak sync: added "${entry.ref}" to ak`);
+            ledger[entry.id] = { ref: entry.ref, updatedAt: entry.updatedAt };
+          } catch (error) {
+            // The ref appeared in ak after the list was read.
+            if (!(error instanceof AkError && error.kind === "exists")) throw error;
+            if (!(await adopt(entry, secret.value))) continue;
+          }
         }
-        ledger[entry.id] = { ref: entry.ref, updatedAt: entry.updatedAt };
         save();
       } catch (error) {
-        if (error instanceof AkError && error.kind === "exists") {
-          warnOnce(`ak sync: "${entry.ref}" already exists in ak and was not written by OpenMausBot; it is left alone`);
-          continue;
-        }
         // `ak` refused this one secret (a ref it does not accept, a value it does not take): the others still go over.
         // It is not retried until the secret changes. Any other failure is about `ak` itself, and ends the pass.
         if (error instanceof AkError && error.kind === "invalid") {

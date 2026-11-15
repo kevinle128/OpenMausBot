@@ -170,18 +170,90 @@ describe("Vault to ak sync", () => {
     expect(t.ak.calls).toEqual(["delete OLD", "set NEW"]);
   });
 
-  it("leaves an ak secret of the same name that it did not write alone, and never claims it", async () => {
-    const t = setup([secret("a", "TAKEN")], ["TAKEN"]);
+  it("takes over an existing ak secret of the same name: rotates it from stdin, records it and owns it", async () => {
+    const t = setup([secret("a", "TAKEN")], ["TAKEN", "USER_OWN"]);
     const sync = t.start();
     await sync.reconcile();
-    expect(t.ak.calls).toEqual(["set TAKEN"]);
-    expect(t.ak.refs.get("TAKEN")).toBe("existing");
+    expect(t.ak.calls).toEqual(["rotate TAKEN"]);
+    expect(t.ak.values).toEqual([["TAKEN", `${VALUE}-a`]]);
+    expect(sync.owns("TAKEN")).toBe(true);
+    expect(sync.owns("USER_OWN")).toBe(false);
+    expect(JSON.parse(t.ledger()).refs.a).toMatchObject({ ref: "TAKEN", adopted: true });
+    expect(t.ledger()).not.toContain(VALUE);
+    expect(t.logs.join("\n")).not.toContain(VALUE);
+
+    t.ak.calls.length = 0;
+    t.vault.rows[0] = { ...t.vault.rows[0]!, value: "newer", updatedAt: 2 };
+    t.vault.touch();
+    await sync.reconcile();
+    expect(t.ak.calls).toEqual(["rotate TAKEN"]);
+    expect(JSON.parse(t.ledger()).refs.a.adopted).toBe(true);
+  });
+
+  it("deletes a taken-over ref from ak when the Vault stops keeping it for the Paseo bot, and says so", async () => {
+    const t = setup([secret("a", "TAKEN")], ["TAKEN", "USER_OWN"]);
+    const sync = t.start();
+    await sync.reconcile();
+    t.ak.calls.length = 0;
+    t.vault.rows[0] = { ...t.vault.rows[0]!, bots: ["someone-else"] };
+    t.vault.touch();
+    await sync.reconcile();
+    expect(t.ak.calls).toEqual(["delete TAKEN"]);
+    expect(t.ak.refs.has("TAKEN")).toBe(false);
+    expect(t.ak.refs.has("USER_OWN")).toBe(true);
     expect(sync.owns("TAKEN")).toBe(false);
+    expect(t.logs.some((line) => line.includes('deleted "TAKEN" from ak') && line.includes("taken over"))).toBe(true);
+  });
+
+  it("takes over a ref that appears in ak between the list and the set", async () => {
+    const t = setup([secret("a", "RACE")]);
+    t.ak.cli.set = async (ref) => {
+      t.ak.calls.push(`set ${ref}`);
+      t.ak.refs.set(ref, "existing");
+      throw new AkError("exists", 4, "already exists");
+    };
+    const sync = t.start();
+    await sync.reconcile();
+    expect(t.ak.calls).toEqual(["set RACE", "rotate RACE"]);
+    expect(sync.owns("RACE")).toBe(true);
+  });
+
+  it("leaves an existing ak secret un-owned when ak refuses the rotate, logging once without retrying", async () => {
+    const t = setup([secret("a", "TAKEN"), secret("b", "GOOD")], ["TAKEN"]);
+    const rotate = t.ak.cli.rotate;
+    t.ak.cli.rotate = async (ref, value) => {
+      if (ref === "TAKEN") {
+        t.ak.calls.push(`rotate ${ref}`);
+        throw new AkError("failed", 1, "refused");
+      }
+      return rotate(ref, value);
+    };
+    const sync = t.start();
+    await sync.reconcile();
+    t.vault.touch();
+    await sync.reconcile();
+    await sync.reconcile();
+    expect(sync.owns("TAKEN")).toBe(false);
+    expect(sync.owns("GOOD")).toBe(true);
+    expect(t.ak.refs.get("TAKEN")).toBe("existing");
+    expect(t.ak.calls.filter((call) => call === "rotate TAKEN")).toHaveLength(1);
+    expect(t.logs.filter((line) => line.includes("could not take over"))).toHaveLength(1);
+    expect(t.logs.join("\n")).not.toContain(VALUE);
     t.vault.rows = [];
     t.vault.touch();
     await sync.reconcile();
     expect(t.ak.refs.has("TAKEN")).toBe(true);
-    expect(t.logs.join("\n")).not.toContain(VALUE);
+  });
+
+  it("stops and reports when ak refuses to run under an agent during a take-over", async () => {
+    const t = setup([secret("a", "TAKEN")], ["TAKEN"]);
+    t.ak.cli.rotate = async () => {
+      throw new AkError("agent-above-process", 6, "refused");
+    };
+    const sync = t.start();
+    await sync.reconcile();
+    expect(t.guard.blocked).toBe(true);
+    expect(sync.owns("TAKEN")).toBe(false);
   });
 
   it("skips a name that is not a valid ref and logs the name only", async () => {

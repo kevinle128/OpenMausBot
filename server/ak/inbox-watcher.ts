@@ -16,7 +16,7 @@ const DEBOUNCE_MS = 200;
 const POLL_MS = 2_000;
 const POLL_MAX_MS = 60_000;
 const AUTO_APPROVE_ATTEMPTS = 3;
-const KNOWN_FIELDS = new Set(["ref", "agent", "project", "purpose", "env", "exec", "firstSeen", "count"]);
+const KNOWN_FIELDS = new Set(["ref", "agent", "fingerprint", "agentLabel", "project", "purpose", "env", "exec", "firstSeen", "lastSeen", "count"]);
 const TEXT_CHARS = 160;
 const BAD_REF_LOG_LIMIT = 50;
 
@@ -59,7 +59,10 @@ function scopeOf(request: AkPendingRequest): Scope | null {
   const ref = text(request.ref);
   if (!ref) return null;
   const scope: Scope = { ref };
-  for (const field of ["agent", "project", "purpose", "env"] as const) {
+  // `ak secrets approve --agent` narrows by the agent fingerprint, which the inbox lists as `fingerprint`.
+  const agent = text(request.fingerprint) ?? text(request.agent);
+  if (agent !== undefined) scope.agent = agent;
+  for (const field of ["project", "purpose", "env"] as const) {
     const value = text(request[field]);
     if (value !== undefined) scope[field] = value;
   }
@@ -127,7 +130,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   async function ask(request: AkPendingRequest, scope: Scope, key: string): Promise<void> {
     const exec = isExec(request);
-    const agent = scope.agent ? `agent ${scope.agent.replace(/^sha256:/, "").slice(0, 12)}` : "an agent";
+    const label = text(request.agentLabel);
+    const agent = label ? `agent ${oneLine(label, 60)}` : scope.agent ? `agent ${scope.agent.replace(/^sha256:/, "").slice(0, 12)}` : "an agent";
     const lines = [oneLine(`${scope.ref} · ${agent}${scope.purpose ? ` · ${scope.purpose}` : ""}`)];
     if (exec) lines.push(oneLine(`Only for ${execLabel(request)}, in the variable ${scope.env ?? "(unnamed)"}`));
     const bot = deps.bot();
