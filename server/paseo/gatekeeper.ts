@@ -15,9 +15,9 @@ const SUBTITLE_CHARS = 600;
 const MAX_QUESTION_CHOICES = 6;
 const MAX_CHOICE_CHARS = 120;
 /** The one button of a question card the person cannot answer here: the agent's question stays in Paseo. */
+export const ANSWER_IN_PASEO = "Answer in Paseo";
 /** Paseo puts this label on an agent that another agent created. */
 export const PARENT_AGENT_LABEL = "paseo.parent-agent-id";
-export const ANSWER_IN_PASEO = "Answer in Paseo";
 
 /** The Paseo conversation's bot, made on first use. */
 export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotRecord {
