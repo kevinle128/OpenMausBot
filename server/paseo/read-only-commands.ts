@@ -126,6 +126,8 @@ export function readOnlyCommand(command: string, hooks: ReadOnlyHooks): boolean 
   if (segments.length > 1 && leading?.length === 2 && leading[0]!.text === "cd" && !leading[1]!.glob && !leading[1]!.brace && !leading[1]!.text.startsWith("-")) {
     first = 1;
     const target = leading[1]!.text;
+    // With CDPATH set, a relative `cd` may go somewhere else than the name says.
+    if (!target.startsWith("/") && !target.startsWith("~") && process.env.CDPATH) return false;
     // A `~` or a relative path with no known start leaves the directory unknown, which git steps refuse.
     dir = target.startsWith("~") || (!target.startsWith("/") && !hooks.cwd) ? undefined : resolve(hooks.cwd ?? "/", target);
   }

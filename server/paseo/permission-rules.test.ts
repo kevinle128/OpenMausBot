@@ -579,6 +579,61 @@ describe("gitConfigRunsNoProgram", () => {
     reset();
   });
 
+  it("checks each checked-out submodule's own config and the index hook", () => {
+    const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitsub-")));
+    try {
+      const child = join(base, "child");
+      const parent = join(base, "parent");
+      mkdirSync(child);
+      sh(child, "init", "-q");
+      sh(child, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x");
+      mkdirSync(parent);
+      sh(parent, "init", "-q");
+      sh(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "sub");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(true);
+      sh(join(parent, "sub"), "config", "core.fsmonitor", "touch x");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(false);
+      sh(join(parent, "sub"), "config", "--unset", "core.fsmonitor");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(true);
+      const hooks = join(parent, ".git", "hooks");
+      mkdirSync(hooks, { recursive: true });
+      writeFileSync(join(hooks, "post-index-change"), "#!/bin/sh\n");
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(parent)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses more than twenty submodules", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitmany-")));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: base });
+      const lines = Array.from({ length: 21 }, (_, i) => `[submodule "s${i}"]\n\tpath = s${i}\n\turl = ./x${i}\n`).join("");
+      writeFileSync(join(base, ".gitmodules"), lines);
+      for (let i = 0; i < 21; i++) {
+        mkdirSync(join(base, `s${i}`));
+        execFileSync("git", ["init", "-q"], { cwd: join(base, `s${i}`) });
+      }
+      forgetGitConfigAnswers();
+      expect(gitConfigRunsNoProgram(base)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not take a value with a newline for a standard git-lfs value", () => {
+    forgetGitConfigAnswers();
+    execFileSync("git", ["config", "filter.lfs.clean", "git-lfs clean -- %f\nevil"], { cwd: repo });
+    expect(gitConfigRunsNoProgram(repo)).toBe(false);
+    execFileSync("git", ["config", "--unset", "filter.lfs.clean"], { cwd: repo });
+    forgetGitConfigAnswers();
+  });
+
   it("keeps an answer for a minute", () => {
     forgetGitConfigAnswers();
     let clock = 1_000;
@@ -589,5 +644,22 @@ describe("gitConfigRunsNoProgram", () => {
     clock += 31_000;
     expect(gitConfigRunsNoProgram(repo, () => clock)).toBe(false);
     execFileSync("git", ["config", "--unset", "core.pager"], { cwd: repo });
+  });
+});
+
+describe("classifyPermission: cd with CDPATH", () => {
+  it("refuses a relative cd when CDPATH is set, and still allows an absolute one", () => {
+    const ctx: PermissionContext = { cwd: "/nonexistent-omb-cwd", gitConfigSafe: () => true };
+    const before = process.env.CDPATH;
+    try {
+      process.env.CDPATH = "/elsewhere";
+      expect(classifyPermission(shell("cd src && ls"), ctx).verdict).toBe("ask");
+      expect(classifyPermission(shell("cd /abs/src && ls"), ctx).verdict).toBe("allow");
+      delete process.env.CDPATH;
+      expect(classifyPermission(shell("cd src && ls"), ctx).verdict).toBe("allow");
+    } finally {
+      if (before === undefined) delete process.env.CDPATH;
+      else process.env.CDPATH = before;
+    }
   });
 });

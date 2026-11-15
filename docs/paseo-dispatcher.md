@@ -25,10 +25,14 @@ ls-files, ls-tree, grep, describe, remote -v, config --get/--list), `ls`, `cat`,
 `echo`, any path. Pipes and `&&` are allowed when every part is read-only, with
 an optional `cd <dir> &&` first. Any redirect, substitution, `;`, `||`,
 background job, or an option that writes a file or runs a program still asks.
-A `git` step is allowed only when no git setting in its directory (a pager, a diff
-or text filter, a file monitor, a signing program, an editor) would run a program.
-Two small writes are accepted: `sort -T` temporary files and the index refresh of
-`git status`.
+A `git` step is allowed only when no git setting in its directory, or in any
+checked-out submodule (at most 20), would run a program (a pager, a diff or text
+filter, a file monitor, a signing program, an editor; the standard git-lfs filter
+is accepted), and no `post-index-change` hook exists there, because `git status`
+and `git diff` run that hook. The check uses OpenMausBot's own environment, so it
+assumes the agents run as the same user with no extra `GIT_*` variables, and a
+relative `cd` is refused when `CDPATH` is set. One small write is accepted:
+`sort -T` temporary files; `git status` also refreshes the index.
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen
