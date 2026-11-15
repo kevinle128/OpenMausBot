@@ -23,6 +23,8 @@ export interface AkBridgeWiring {
   /** Tests give a fake; OpenMausBot uses the real `ak`. */
   cli?: AkCli;
   secretsDir?: string;
+  /** Receives the live test for the refs this bridge owns, once the Vault sync is running. */
+  onOwns?(owns: (ref: string) => boolean): void;
 }
 
 /** Starts the Vault-to-ak sync and the inbox watcher. A missing or refusing `ak` is logged and never throws. */
@@ -32,6 +34,7 @@ export function startAkBridge(wiring: AkBridgeWiring, log: (message: string) => 
   // Made now, not on the first card: the Vault's bot picker can only offer the Paseo bot once it exists.
   ensurePaseoBot(wiring.store);
   const sync = startVaultSync({ vault: wiring.vault, cli, guard, dataDir: wiring.dataDir, botId: PASEO_BOT_ID, log });
+  wiring.onOwns?.(sync.owns);
   const inbox = startInboxWatcher({
     cli,
     guard,

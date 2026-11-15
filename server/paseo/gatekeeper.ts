@@ -49,6 +49,8 @@ export interface PaseoGatekeeperDeps {
   history?: AutoApprovalHistory;
   /** Told of each `ak secrets request` command, so its later approval can name the agent that asked. */
   origins?: Pick<RequestOrigins, "note">;
+  /** True for an `ak` ref OpenMausBot owns: an `ak secrets run` that names only such refs is allowed. */
+  ownsRef?: (ref: string) => boolean;
 }
 
 type Stage = "deciding" | "settled" | "resolved";
@@ -152,7 +154,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       if (target?.kind === "command") deps.origins?.note(target.command, { agentId, agent: describe(event).label, cwd: agent.cwd });
       // The privacy hook asks before an agent reads a file; that one question is answered here, every other one is not.
       const hookRead = hookReadQuestion(request, { cwd: agent.cwd });
-      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : classifyPermission(request, { cwd: agent.cwd });
+      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : classifyPermission(request, { cwd: agent.cwd, ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) });
       let allowed = decision.verdict === "allow";
       let rule = decision.rule;
       if (decision.verdict === "ambiguous") {

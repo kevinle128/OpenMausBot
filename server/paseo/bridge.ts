@@ -4,7 +4,7 @@ import { PaseoConnection } from "./connection.ts";
 import { startDispatcherWake, type DispatcherWakeDeps } from "./dispatcher-wake.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 
-export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins"> & {
+export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins" | "ownsRef"> & {
   /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
   ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
   /** With this, a Paseo agent a Dispatcher bot created wakes that bot's thread when it finishes or fails. */
@@ -34,12 +34,14 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
   if (wiring) {
     const { ak, dispatcher, ...gatekeeper } = wiring;
     const origins = createRequestOrigins();
-    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins }));
+    // The Vault sync starts after the gatekeeper; until it has, no ref is owned.
+    let owns: (ref: string) => boolean = () => false;
+    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins, ownsRef: (ref) => owns(ref) }));
     if (dispatcher) stops.push(startDispatcherWake({ ...dispatcher, connection, log }));
     // After the gatekeeper, which closes the cards an earlier run left open.
     if (ak) {
       try {
-        stops.push(startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked, origins, ...(wiring.history ? { history: wiring.history } : {}) }, log));
+        stops.push(startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked, origins, onOwns: (fn) => { owns = fn; }, ...(wiring.history ? { history: wiring.history } : {}) }, log));
       } catch (error) {
         log(`ak bridge: could not start (${error instanceof Error ? error.message : String(error)})`);
       }

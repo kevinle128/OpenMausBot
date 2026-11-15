@@ -188,6 +188,33 @@ describe("classifyPermission: files the person approved once", () => {
   });
 });
 
+describe("classifyPermission: ak secrets run", () => {
+  const owned = { ...namesOnly, ownsRef: (ref: string) => ref.startsWith("OWN_") };
+  it.each([
+    ["ak secrets run --env TOKEN=OWN_TOKEN -- node server.js", "allow"],
+    ["ak secrets run --env=TOKEN=OWN_TOKEN --purpose release -- gh release list", "allow"],
+    ["ak secrets run --env A=OWN_A --env B=OWN_B -- node x.js", "allow"],
+    ["ak secrets run --env TOKEN=OTHER -- node server.js", "ask"],
+    ["ak secrets run --env A=OWN_A --env B=OTHER -- node x.js", "ask"],
+    ["ak secrets run -- node server.js", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN --", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN --backend file -- node x.js", "ask"],
+    ["ak secrets run -y --env TOKEN=OWN_TOKEN -- node x.js", "ask"],
+    ["ak secrets run --env TOKEN OWN_TOKEN -- node x.js", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN -- node x.js | wc -l", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN -- node x.js; ls", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN -- node $(whoami)", "ask"],
+    ["ak secrets run --env TOKEN=OWN_TOKEN -- node x.js > out", "ask"],
+  ])("%j -> %s", (command, verdict) => {
+    expect(classifyPermission(shell(command), owned).verdict).toBe(verdict);
+  });
+
+  it("asks when no owned-ref test is given", () => {
+    expect(classifyPermission(shell("ak secrets run --env TOKEN=OWN_TOKEN -- node x.js"), namesOnly)).toEqual({ verdict: "ask", rule: "ak-secrets-run" });
+  });
+});
+
 describe("akSecretsRequestRef", () => {
   it.each([
     ["ak secrets request SERVER_PORT", "SERVER_PORT"],

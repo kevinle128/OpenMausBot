@@ -15,6 +15,8 @@ export interface ExternalApproval {
   tool: string;
   /** With these, the card is a question: one button for each label, and no tool. A tap hands the label to `onAnswer`. */
   choices?: string[];
+  /** The text of the allow button of a permission card; the default is "Allow". */
+  allowLabel?: string;
   /** One of the `choices` that answers nothing: it closes the card and leaves the question where it came from. */
   leave?: string;
   /** Runs once, when a person answers the card. A rejection closes the card as unavailable. */
@@ -72,7 +74,7 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
         kind: "options",
         card: approval.choices
           ? { title: approval.title, subtitle: approval.subtitle, options: approval.choices, fixedOptions: true, requestId, requestType: "question" }
-          : { title: approval.title, subtitle: approval.subtitle, options: ["Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
+          : { title: approval.title, subtitle: approval.subtitle, options: [approval.allowLabel ?? "Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
       });
       open.set(approval.key, {
         threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}), ...(approval.leave ? { leave: approval.leave } : {}),

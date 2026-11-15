@@ -11,6 +11,11 @@ approve once" itself only for the privacy hook's question to read a file (one
 question, the read wording, a path that is a regular file). Every other question
 becomes a card with one button for each answer, or with an **Answer in Paseo**
 button when it has several questions or lets the person pick more than one.
+It also allows `ak secrets run` (a single command with known flags whose `--env
+VAR=REF` refs are all secrets OpenMausBot keeps for the Paseo bot) and the
+matching exec request in the `ak` inbox, for 24 hours and for that program and
+variable only. A ref OpenMausBot does not own, and every `ak` write command,
+still ask the person; the secret request card's allow button reads "Allow 24h".
 Pressing Deny, or closing a question card, leaves the question to be answered in
 Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
 command, the hook's read question, a Vault secret request) is written as one

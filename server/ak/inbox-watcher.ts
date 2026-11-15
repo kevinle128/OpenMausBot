@@ -93,8 +93,8 @@ function execLabel(request: AkPendingRequest): string {
 }
 
 /**
- * Answers the secret requests Paseo agents leave in the `ak` inbox. An ordinary request for a secret the person put in
- * the Vault for the Paseo bot is allowed for 24 hours at once. An exec request, or one for any other ref, becomes a card.
+ * Answers the secret requests Paseo agents leave in the `ak` inbox. A request, ordinary or exec, for a secret the person put
+ * in the Vault for the Paseo bot is allowed for 24 hours at once. A request for any other ref becomes a card.
  * The list always comes from `ak secrets approve --json`; the file is only watched, never read.
  */
 export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise<void>; stop(): void } {
@@ -149,6 +149,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       title: exec ? "A Paseo agent asks to run a program with a secret" : "A Paseo agent asks for a secret",
       subtitle: lines.join("\n"),
       tool: "ak secrets request",
+      allowLabel: `Allow ${AK_APPROVAL_TTL}`,
       onAnswer: async (decision) => {
         handled.add(key);
         try {
@@ -173,9 +174,13 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const origin = deps.origins?.find(scope.ref) ?? null;
     const label = text(request.agentLabel);
     const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
-    const what = `cấp quyền đọc bí mật ${scope.ref}${scope.purpose ? `, mục đích: ${redactSecretsInText(oneLine(scope.purpose, 100))}` : ""}, ${AK_APPROVAL_TTL}`;
+    const exec = isExec(request);
+    const purpose = scope.purpose ? `, mục đích: ${redactSecretsInText(oneLine(scope.purpose, 100))}` : "";
+    const what = exec
+      ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}, ${AK_APPROVAL_TTL}`, 300))
+      : `cấp quyền đọc bí mật ${scope.ref}${purpose}, ${AK_APPROVAL_TTL}`;
     try {
-      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what, rule: "ak-vault-secret" });
+      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
     } catch (error) {
       log(`ak inbox: could not write the history line (${error instanceof Error ? error.message : String(error)})`);
     }
@@ -185,7 +190,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
   async function autoApprove(scope: Scope, key: string, request: AkPendingRequest): Promise<boolean> {
     handled.add(key);
     try {
-      await cli.approve({ ...scope, env: "", ttl: AK_APPROVAL_TTL });
+      // An exec request is answered for its own program and variable, exactly as the card's Allow does.
+      await cli.approve({ ...scope, ...(isExec(request) ? {} : { env: "" }), ttl: AK_APPROVAL_TTL });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
       record(scope, request);
       return true;
@@ -221,7 +227,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       const key = keyOf(request, scope);
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;
-      if (!isExec(request) && deps.owns(scope.ref)) {
+      if (deps.owns(scope.ref)) {
         if (await autoApprove(scope, key, request)) continue;
         // Allowing it failed three times: a person decides.
         handled.delete(key);

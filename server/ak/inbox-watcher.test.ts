@@ -86,7 +86,7 @@ describe("ak inbox watcher", () => {
     t.inbox.requests = [ordinary("API_KEY")];
     await t.watcher.checkNow();
     await t.watcher.checkNow();
-    expect(t.history).toEqual([{ key: `ak:API_KEY|agent-1|deploy`, agent: "Fix the build", workspace: "/work/app", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h", rule: "ak-vault-secret" }]);
+    expect(t.history).toEqual([{ key: `ak:API_KEY|agent-1|deploy|`, agent: "Fix the build", workspace: "/work/app", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h", rule: "ak-vault-secret" }]);
   });
 
   it("does not name an agent when two agents asked for the ref", async () => {
@@ -120,7 +120,7 @@ describe("ak inbox watcher", () => {
     await t.watcher.checkNow();
     expect(t.approve).not.toHaveBeenCalled();
     expect(t.lines.filter((line) => line.card)).toHaveLength(1);
-    expect(t.card()).toMatchObject({ title: "A Paseo agent asks for a secret", options: ["Allow", "Deny"] });
+    expect(t.card()).toMatchObject({ title: "A Paseo agent asks for a secret", options: ["Allow 24h", "Deny"] });
     expect(t.card()?.subtitle).toContain("STRANGER");
     expect(t.notified).toHaveLength(1);
 
@@ -131,11 +131,25 @@ describe("ak inbox watcher", () => {
     expect(t.lines.filter((line) => line.card)).toHaveLength(1);
   });
 
-  it("puts an exec request on a card even for an owned ref, and Allow answers that exact scope for 24 hours", async () => {
+  it("allows an exec request for an owned ref for its own program and variable, for 24 hours, and records it", async () => {
     const t = setup({ owned: ["DEPLOY_TOKEN"] });
+    t.inbox.requests = [{ ...exec("DEPLOY_TOKEN"), purpose: "deploy with sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789" }];
+    await t.watcher.checkNow();
+    expect(t.lines).toEqual([]);
+    expect(t.approve).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, project: "app", purpose: expect.any(String), env: "TOKEN", ttl: "24h" });
+    expect(t.history).toHaveLength(1);
+    expect(t.history[0]).toMatchObject({ rule: "ak-exec-owned-ref" });
+    expect(t.history[0]!.what).toContain("/usr/bin/deploy");
+    expect(t.history[0]!.what).toContain("TOKEN");
+    expect(t.history[0]!.what).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("puts an exec request for a ref OpenMausBot does not own on a card, and Allow answers that exact scope for 24 hours", async () => {
+    const t = setup({ owned: ["OTHER"] });
     t.inbox.requests = [exec("DEPLOY_TOKEN")];
     await t.watcher.checkNow();
     expect(t.approve).not.toHaveBeenCalled();
+    expect(t.history).toEqual([]);
     expect(t.card()).toMatchObject({ title: "A Paseo agent asks to run a program with a secret" });
     expect(t.card()?.subtitle).toContain("/usr/bin/deploy");
     expect(t.card()?.subtitle).toContain("TOKEN");

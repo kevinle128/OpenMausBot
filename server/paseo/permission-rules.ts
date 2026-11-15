@@ -21,6 +21,8 @@ export interface PermissionContext {
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
   /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
+  ownsRef?: (ref: string) => boolean;
   regularFile?: (cwd: string | undefined, filePath: string) => boolean;
 }
 
@@ -247,6 +249,33 @@ function isPipeFilter(tool: string, args: string[]): boolean {
   return plain >= spec.words[0] && plain <= spec.words[1];
 }
 
+const RUN_RULE = "ak-secrets-run-owned-ref";
+const RUN_VALUE_FLAGS = new Set(["--purpose", "--project", "--session"]);
+
+/** True for `ak secrets run` with only known flags, at least one `--env VAR=REF`, every REF owned, and a program after `--`. */
+function akRunIsOwned(args: string[], context: PermissionContext): boolean {
+  if (!context.ownsRef) return false;
+  const refs: string[] = [];
+  let i = 0;
+  for (; i < args.length && args[i] !== "--"; i += 1) {
+    const arg = args[i]!;
+    if (AK_COMMON_FLAGS.has(arg)) continue;
+    const [name, ...inline] = arg.split("=");
+    if (name === "--env") {
+      const pair = inline.length > 0 ? inline.join("=") : args[++i];
+      const at = pair?.indexOf("=") ?? -1;
+      if (!pair || at < 1 || at === pair.length - 1) return false;
+      refs.push(pair.slice(at + 1));
+    } else if (RUN_VALUE_FLAGS.has(name!)) {
+      const value = inline.length > 0 ? inline.join("=") : args[++i];
+      if (value === undefined || value.startsWith("-")) return false;
+    } else {
+      return false;
+    }
+  }
+  return args[i] === "--" && i + 1 < args.length && refs.length > 0 && refs.every((ref) => context.ownsRef!(ref));
+}
+
 /** One command with no pipe or separator. */
 function classifyStep(tokens: string[], context: PermissionContext): Step {
   const [tool, ...args] = tokens as [string, ...string[]];
@@ -255,7 +284,7 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
     if (READ_SUBCOMMANDS.has(sub)) {
       return akFlagsAreSafe(sub, args.slice(2)) ? { kind: "allow", rule: "ak-secrets-read" } : { kind: "ask", rule: "ak-secrets-flags" };
     }
-    if (sub === "run") return { kind: "ask", rule: "ak-secrets-run" };
+    if (sub === "run") return akRunIsOwned(args.slice(2), context) ? { kind: "allow", rule: RUN_RULE } : { kind: "ask", rule: "ak-secrets-run" };
     return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
   }
   if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) {
@@ -285,7 +314,8 @@ function classifyCommand(command: string, context: PermissionContext): Permissio
   }
   for (const { tokens, afterPipe } of steps) {
     const step = classifyStep(tokens!, context);
-    if (step.kind === "allow" || (step.kind === "filter" && afterPipe)) continue;
+    // A run starts a program with a value in its environment: it is never one step of a longer line.
+    if ((step.kind === "allow" && step.rule !== RUN_RULE) || (step.kind === "filter" && afterPipe)) continue;
     return { verdict: "ask", rule: "compound-command" };
   }
   return { verdict: "ambiguous", rule: "compound-secret-command" };
