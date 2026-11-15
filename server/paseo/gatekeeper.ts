@@ -162,7 +162,8 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       let verdict: GuardOutcome | null = null;
       let choice: string | null = null;
       let shown: string | undefined;
-      if (!allowed) {
+      // A refusal for a hidden hazard is for the person alone: no model is asked to overrule it.
+      if (!allowed && !("hazard" in decision && decision.hazard)) {
         // What the fixed rules did not allow goes to Jev Guard: a tool call, or a question with one plain yes option.
         const subject = guardSubject(event, target);
         if (subject) {

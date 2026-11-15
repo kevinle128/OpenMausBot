@@ -10,6 +10,8 @@ export interface ReadOnlyHooks {
   gitConfigSafe(dir: string | undefined): boolean;
   /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix. */
   approvedExists(argument: string): boolean;
+  /** Called when the line is refused for a hidden hazard (unsafe git setting or hook, CDPATH, a real file named `APPROVED:…`) and not for what it says. */
+  hazard(): void;
 }
 
 export const READ_ONLY_RULE = "read-only-command";
@@ -95,14 +97,21 @@ const wordIsPlain = (word: ShellWord): boolean => !word.brace && (!word.glob || 
 function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: string | undefined): boolean {
   if (!tokens.every(wordIsPlain)) return false;
   const texts = tokens.map((token) => token.text);
-  if (texts.some((arg) => arg.startsWith(APPROVED) && hooks.approvedExists(arg))) return false;
+  if (texts.some((arg) => arg.startsWith(APPROVED) && hooks.approvedExists(arg))) {
+    hooks.hazard();
+    return false;
+  }
   const [tool, ...args] = texts as [string, ...string[]];
   const check = PROGRAMS.get(tool);
   // A program that is not listed, `ak` included, is not read-only here.
   if (!check || !check(args)) return false;
   // `uniq` takes one file and no glob, which could expand into a second one.
   if (tool === "uniq" && tokens.slice(1).some((token) => token.glob)) return false;
-  return tool !== "git" || hooks.gitConfigSafe(dir);
+  if (tool === "git" && !hooks.gitConfigSafe(dir)) {
+    hooks.hazard();
+    return false;
+  }
+  return true;
 }
 
 function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks, dir: string | undefined): boolean {
@@ -127,7 +136,10 @@ export function readOnlyCommand(command: string, hooks: ReadOnlyHooks): boolean 
     first = 1;
     const target = leading[1]!.text;
     // With CDPATH set, a relative `cd` may go somewhere else than the name says.
-    if (!target.startsWith("/") && !target.startsWith("~") && process.env.CDPATH) return false;
+    if (!target.startsWith("/") && !target.startsWith("~") && process.env.CDPATH) {
+      hooks.hazard();
+      return false;
+    }
     // A `~` or a relative path with no known start leaves the directory unknown, which git steps refuse.
     dir = target.startsWith("~") || (!target.startsWith("/") && !hooks.cwd) ? undefined : resolve(hooks.cwd ?? "/", target);
   }

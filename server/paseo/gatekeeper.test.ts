@@ -313,7 +313,7 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow" });
     expect(f.lines).toEqual([]);
     expect(f.history).toHaveLength(1);
-    expect(f.history[0]).toMatchObject({ rule: "jev-guard", what: command, detail: "risk 0.4/3, approval 0.10, user_requested 0.00, from_untrusted 0.00" });
+    expect(f.history[0]).toMatchObject({ rule: "jev-guard", what: command, detail: "risk 0.4/3, approval 0.10, user_requested n/a, from_untrusted 0.00" });
   });
 
   it("asks four questions with the agent, the command and the directory, and a 3 second limit", async () => {
@@ -321,8 +321,8 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
     await run(f);
     const [seam, state, questions, options] = f.jev.mock.calls[0]!;
     expect(seam).toBe("paseoPermission");
-    expect(state).toMatchObject({ agent: "Fix the build", tool: "Bash", input: command, cwd: workDir });
-    expect(Object.keys(questions)).toEqual(["risk", "approval", "user_requested", "from_untrusted"]);
+    expect(state).toMatchObject({ agent_supplied: { agent: "Fix the build", tool: "Bash", input: command, cwd: workDir } });
+    expect(Object.keys(questions)).toEqual(["risk", "approval", "from_untrusted"]);
     expect(options?.timeoutMs).toBeGreaterThan(2_000);
     expect(options?.timeoutMs).toBeLessThanOrEqual(3_000);
   });
@@ -330,7 +330,7 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
   it("sends the first prompt and the last calls of the agent", async () => {
     const f = fixture({ jev: scored(), context: async () => ({ firstPrompt: "Clean the build folder", recent: ["Bash: ls build"] }) });
     await run(f);
-    expect(f.jev.mock.calls[0]![1]).toMatchObject({ context: { first_prompt: "Clean the build folder", recent_tool_calls: ["Bash: ls build"] } });
+    expect(f.jev.mock.calls[0]![1]).toMatchObject({ first_prompt: "Clean the build folder", agent_supplied: { recent_tool_calls: ["Bash: ls build"] } });
   });
 
   it.each([
@@ -345,7 +345,7 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
   });
 
   it("allows a risky call the person asked for at 0.85", async () => {
-    const f = fixture({ jev: scored({ risk: 2.4, userRequested: 0.85 }) });
+    const f = fixture({ jev: scored({ risk: 2.4, userRequested: 0.85 }), context: async () => ({ firstPrompt: "Clean the build folder", recent: [] }) });
     await run(f);
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow" });
   });
@@ -379,7 +379,7 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
     const failing = fixture({ jev: scored(), context: async () => { throw new Error("down"); } });
     await run(failing);
     expect(failing.connection.respondToPermission).toHaveBeenCalledTimes(1);
-    expect(failing.jev.mock.calls[0]![1]).not.toHaveProperty("context");
+    expect(failing.jev.mock.calls[0]![1]).not.toHaveProperty("first_prompt");
   });
 
   it("does not ask Jev about a command the fixed rules allow", async () => {
@@ -405,6 +405,42 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
     f.connection.emit("permissionRequested", f.request("r1", undefined, { kind: "plan", name: "ExitPlanMode" }));
     await flush();
     expect(f.jev).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+  });
+});
+
+describe("Paseo gatekeeper: a hazard is for the person alone", () => {
+  it("never asks Jev about a git step refused for an unsafe or unreadable git setup", async () => {
+    // The work folder of the test is not a git repository, so the config check cannot vouch for it.
+    const f = fixture({ jev: scored() });
+    f.connection.emit("permissionRequested", f.shell("r1", "git status"));
+    await flush();
+    expect(f.jev).not.toHaveBeenCalled();
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+  });
+
+  it("never asks Jev about a read of a literal APPROVED: file", async () => {
+    writeFileSync(join(workDir, "APPROVED:x"), "y");
+    const f = fixture({ jev: scored() });
+    f.connection.emit("permissionRequested", f.shell("r1", "cat APPROVED:x"));
+    await flush();
+    expect(f.jev).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+  });
+
+  it("still asks Jev about an ordinary refused command", async () => {
+    const f = fixture({ jev: scored() });
+    f.connection.emit("permissionRequested", f.shell("r1", "rm -rf build"));
+    await flush();
+    expect(f.jev).toHaveBeenCalledTimes(1);
+  });
+
+  it("a risky command with only a notice of OpenMausBot as context opens a card even when Jev says the person asked", async () => {
+    const f = fixture({ jev: scored({ risk: 2, userRequested: 1 }), context: async () => ({ recent: ["Bash: ls"] }) });
+    f.connection.emit("permissionRequested", f.shell("r1", "bash deploy.sh"));
+    await flush();
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
     expect(f.card()).toBeDefined();
   });
 });

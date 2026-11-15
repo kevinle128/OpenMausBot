@@ -12,6 +12,9 @@ export interface PermissionDecision {
   verdict: PermissionVerdict;
   /** A fixed id, safe to log: it never carries the command or file name. */
   rule: string;
+  /** Set on an `ask` that came from a hidden hazard (an unsafe git setting or hook, CDPATH, a real file named `APPROVED:…`): a
+   * model must not be asked to overrule it. */
+  hazard?: true;
 }
 
 /** What a request wants to do, as far as the rules can read it. */
@@ -24,6 +27,8 @@ export interface PermissionContext {
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
   /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  /** Set by `classifyPermission` while it works; not for callers. */
+  hazard?: { hit: boolean };
   /** Replaced by tests. Whether no git setting in this directory makes a read run another program. */
   gitConfigSafe?: (dir: string | undefined) => boolean;
   /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
@@ -178,7 +183,13 @@ function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionCont
   // A path the person approved once with the hook of AgentKit may be any regular file; every other path must be an env file.
   return files.length > 0 && files.every((file) => {
     // The shell opens the literal argument, so a file or link really named like that must not slip through the prefix.
-    if (file.startsWith(APPROVED_PREFIX)) return !literalExists(context.cwd, file) && regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+    if (file.startsWith(APPROVED_PREFIX)) {
+      if (literalExists(context.cwd, file)) {
+        if (context.hazard) context.hazard.hit = true;
+        return false;
+      }
+      return regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+    }
     return isEnvFilePath(file) && envFile(context.cwd, file);
   });
 }
@@ -273,10 +284,10 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
 }
 
 /**
- * A command is allowed outright only when it is one step that reads an env file or runs a read-only `ak secrets`. Steps
- * joined by `|`, `;` or a newline go to Jev, and only when every step is one of those, or a pipe filter after a pipe.
- * Anything else in the line (a substitution, a redirect, `&`, a network or script program) is `ask` without Jev, so
- * no answer from a model can let it through.
+ * Three outcomes. A command is allowed outright when it is one step that reads an env file or runs a read-only `ak secrets`,
+ * or when the whole line only reads (see read-only-commands.ts). Steps joined by `|`, `;` or a newline go to Jev only when
+ * every step is an env-file read, a read-only `ak` step or a pipe filter after a pipe. Anything else is `ask`: the gatekeeper
+ * then lets Jev Guard judge it, except an `ask` with `hazard` set, which only the person may allow.
  */
 function classifyCommand(command: string, context: PermissionContext): PermissionDecision {
   const strict = classifyStrictCommand(command, context);
@@ -286,6 +297,9 @@ function classifyCommand(command: string, context: PermissionContext): Permissio
     cwd: context.cwd,
     gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
     approvedExists: (argument) => literalExists(context.cwd, argument),
+    hazard: () => {
+      if (context.hazard) context.hazard.hit = true;
+    },
   });
   return readOnly ? { verdict: "allow", rule: READ_ONLY_RULE } : strict;
 }
@@ -338,5 +352,7 @@ export function classifyPermission(
       ? { verdict: "allow", rule: "env-file-read" }
       : { verdict: "ask", rule: "other-file" };
   }
-  return classifyCommand(target.command, context);
+  const hazard = { hit: false };
+  const decision = classifyCommand(target.command, { ...context, hazard });
+  return decision.verdict === "ask" && hazard.hit ? { ...decision, hazard: true } : decision;
 }

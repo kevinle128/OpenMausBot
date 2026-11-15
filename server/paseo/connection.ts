@@ -85,6 +85,9 @@ export interface PaseoConnectionOptions {
  * before the daemon has dropped it, and reporting it would open a second card for an answered request. */
 export const RESPONDED_TTL_MS = 60_000;
 
+/** The start of every message OpenMausBot sends an agent about an approval. It is never the person's own request. */
+export const OMB_NOTICE_PREFIX = "already approved ak secrets:";
+
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
 
 export function paseoHomeDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -109,6 +112,8 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   private wake: (() => void) | null = null;
   private endSession: (() => void) | null = null;
   private readonly pending = new Map<string, Map<string, PaseoPermissionRequest>>();
+  /** The messages this process sent to agents, so they are never mistaken for the person's words. */
+  private readonly sentByUs = new Set<string>();
   /** `agentId/requestId` of every request we answered, with the time the mute ends. */
   private readonly responded = new Map<string, number>();
 
@@ -156,6 +161,8 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   async sendMessage(agentId: string, text: string): Promise<void> {
     const client = this.client;
     if (!client?.sendAgentMessage || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    if (this.sentByUs.size > 500) this.sentByUs.clear();
+    this.sentByUs.add(text);
     await client.sendAgentMessage(agentId, text);
   }
 
@@ -186,10 +193,12 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
         : "";
       recent.push(what ? `${name}: ${what}` : name);
     }
-    // The start of the conversation holds the first prompt; a daemon that cannot page from the start leaves the oldest one seen.
-    const firstOf = (entries: typeof tail.entries) => entries.find((entry) => entry.item.type === "user_message" && typeof entry.item.text === "string")?.item.text as string | undefined;
-    let firstPrompt = await client.fetchAgentTimeline(agentId, { direction: "after", limit: 5, projection: "projected" }).then((page) => firstOf(page.entries), () => undefined);
-    firstPrompt ??= firstOf(tail.entries);
+    // The earliest user message, when the daemon keeps one. A notice from OpenMausBot and any other text it sent is not the person's.
+    const ours = (text: string) => text.startsWith(OMB_NOTICE_PREFIX) || this.sentByUs.has(text);
+    const firstPrompt = await client.fetchAgentTimeline(agentId, { direction: "after", limit: 5, projection: "projected" }).then(
+      (page) => page.entries.find((entry) => entry.item.type === "user_message" && typeof entry.item.text === "string" && !ours(entry.item.text))?.item.text as string | undefined,
+      () => undefined,
+    );
     return { ...(firstPrompt ? { firstPrompt } : {}), recent: recent.slice(-6) };
   }
 
