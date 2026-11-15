@@ -61,7 +61,7 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
 
   async function flush(agentId: string): Promise<void> {
     expire();
-    for (const [key, one] of [...queued]) if (one.agentId === agentId && agents.get(agentId)?.status === "idle") await deliver(key, agentId, one.text);
+    for (const [key, one] of queued) if (one.agentId === agentId && agents.get(agentId)?.status === "idle") await deliver(key, agentId, one.text);
   }
 
   async function findAgent(ref: string): Promise<string | null> {
