@@ -445,6 +445,19 @@ describe("Paseo gatekeeper: a hazard is for the person alone", () => {
   });
 });
 
+describe("Paseo gatekeeper: an agent another agent created", () => {
+  it("has no first prompt for Jev, so a risky call is a card even when Jev says it was requested", async () => {
+    const f = fixture({ jev: scored({ risk: 2, userRequested: 1 }), context: async () => ({ firstPrompt: "Clean the build folder", recent: [] }) });
+    const event = f.shell("r1", "rm -rf build");
+    (event.agent as unknown as { labels: Record<string, string> }).labels = { "paseo.parent-agent-id": "parent-1" };
+    f.connection.emit("permissionRequested", event);
+    await flush();
+    expect(f.jev.mock.calls[0]![1]).not.toHaveProperty("first_prompt");
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+  });
+});
+
 describe("Paseo gatekeeper: Jev Guard and agent questions", () => {
   const ask = (f: ReturnType<typeof fixture>, questions: unknown) =>
     f.connection.emit("permissionRequested", f.request("q1", undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));

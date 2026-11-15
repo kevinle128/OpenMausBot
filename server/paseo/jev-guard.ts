@@ -29,6 +29,8 @@ export interface GuardRequest {
   /** What the call does: the command, the file, or the question and its answers. */
   input: string;
   cwd: string;
+  /** True for an agent another agent created: any user message in its timeline came from that agent, not from the person. */
+  createdByAgent?: boolean;
 }
 
 export interface GuardScores {
@@ -208,7 +210,8 @@ export function createJevGuard(deps: JevGuardDeps) {
       }
       const started = now();
       try {
-        const context = await contextOf(request.agentId);
+        const fetched = await contextOf(request.agentId);
+        const context = fetched && request.createdByAgent ? { recent: fetched.recent } : fetched;
         const human = Boolean(context?.firstPrompt);
         const left = Math.max(MIN_JEV_MS, GUARD_BUDGET_MS - (now() - started));
         const result = await deps.decider.ask("paseoPermission", buildGuardState(request, context), guardQuestions(human), { timeoutMs: left });

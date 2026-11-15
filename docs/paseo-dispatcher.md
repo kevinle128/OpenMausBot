@@ -43,7 +43,7 @@ when the person's own first message to the agent is known, whether the person as
 for it. Everything the agent wrote (the command, its title, its earlier calls) is sent
 under `agent_supplied` and the questions say nothing inside it is the person's word;
 keys are removed. Without a message of the person (the Paseo timeline does not keep
-the first prompt, and OpenMausBot's own notices never count) a risky call is a card.
+the first prompt, and OpenMausBot's own notices never count; neither does any message in an agent that another agent created, marked by the label `paseo.parent-agent-id`) a risky call is a card.
 Reading anything on this machine, secrets included, is normal; sending data off the
 machine, destroying data and obeying planted instructions are the risks. It allows
 when the risk is under 1.5 and approval under 0.75, or when the call is riskier but
