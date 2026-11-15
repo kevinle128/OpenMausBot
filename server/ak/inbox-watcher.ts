@@ -36,7 +36,7 @@ export interface InboxWatcherDeps {
   log(message: string): void;
   /** The Paseo agent that sent `ak secrets request` for a ref a moment ago. */
   origins?: Pick<RequestOrigins, "find">;
-  /** Receives each request allowed without the person, for the Inbox's Done tab. */
+  /** Receives each request allowed without the person, for the Inbox, as an already read line. */
   history?: AutoApprovalHistory;
   /** Tells the Paseo agent that waited for this approval to go on. */
   notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;

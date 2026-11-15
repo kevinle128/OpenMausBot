@@ -68,12 +68,24 @@ function setup(over: Partial<PlaceInboxDeps> = {}, dataDir = mkdtempSync(join(tm
 describe("what was allowed without asking", () => {
   const line = (key: string, text = (count: number) => `allowed ${count}`) => ({ botId: "eli", threadId: "eli-main", key, text });
 
-  it("is one line in Done, already read, with no notification and no wait", () => {
+  it("is one listed line, already read, with no notification and no wait", () => {
     const f = setup();
     f.inbox.autoApproved(line("a"));
-    expect(f.inbox.view(OWNER).rows).toMatchObject([{ kind: "notice", tab: "done", unread: false, text: "allowed 1", from: { name: "Eli" } }]);
+    expect(f.inbox.view(OWNER).rows).toMatchObject([{ kind: "notice", tab: "info", unread: false, text: "allowed 1", from: { name: "Eli" } }]);
     expect(f.inbox.count(OWNER)).toBe(0);
     expect(f.sent).toEqual([]);
+  });
+
+  it("moves to Done when the person marks it done, and stays read when merged", () => {
+    const f = setup();
+    f.inbox.autoApproved(line("a"));
+    f.tick(1);
+    f.inbox.autoApproved(line("a"));
+    const row = f.inbox.view(OWNER).rows[0]!;
+    expect(row).toMatchObject({ tab: "info", unread: false, text: "allowed 2" });
+    expect(f.inbox.count(OWNER)).toBe(0);
+    expect(f.inbox.markDone(OWNER, row.id)).toBe("done");
+    expect(f.inbox.view(OWNER).rows[0]).toMatchObject({ tab: "done" });
   });
 
   it("changes the line for the same thing within an hour, with the number of times", () => {

@@ -21,11 +21,11 @@ card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen
 running `ak secrets` for that ref in the last 10 minutes; with none or several,
 nobody is told. A running agent is not interrupted: the message waits until it is
-idle, for up to 10 minutes. The Done line says whether the agent was told.
+idle, for up to 10 minutes. The Inbox line says whether the agent was told.
 Pressing Deny, or closing a question card, leaves the question to be answered in
 Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
 command, the hook's read question, a Vault secret request) is written as one
-read line in the Done tab of the Inbox, headed "OpenMausBot tự duyệt", with no
+already read line listed in the Inbox, headed "OpenMausBot tự duyệt", with no
 notification. The same agent and target within an hour share one line with a
 count. The line never holds a secret value or file content. On a server with a
 team, the history is not written.

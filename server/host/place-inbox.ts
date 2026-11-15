@@ -250,7 +250,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
   /** What was allowed without asking, by the same thing: it stays in memory for the hour that repeats are merged in. */
   const allowed = new Map<string, { lineId: string; count: number; at: number }>();
 
-  /** Something was allowed without asking the person: one line in Done, already read, with no notification and no wait. The
+  /** Something was allowed without asking the person: one line in the info tab, already read, with no notification and no wait. The
    * same `key` again within an hour changes that line instead of adding one, and `text` is given the number of times. */
   function autoApproved(approval: { botId: string; threadId: string; key: string; text(count: number): string }): void {
     const bot = store.bot(approval.botId);
@@ -268,7 +268,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
     } else {
       const guest = deps.guestOf(approval.threadId);
       id = addLine({ id: crypto.randomUUID(), botId: bot.id, threadId: approval.threadId, kind: "notice", from: bot.name.slice(0, 200),
-        ...(guest ? { guest } : {}), text, at: now(), seen: true, done: true }).id;
+        ...(guest ? { guest } : {}), text, at: now(), seen: true }).id;
     }
     allowed.set(approval.key, { lineId: id!, count, at: now() });
   }
