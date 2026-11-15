@@ -12,8 +12,13 @@ inputs:
     description: Unique key for this event. Use the run id, the run attempt and the event name.
     required: true
   repository_name:
-    description: Buzz project route name (pass the BUZZ_REPOSITORY_NAME variable).
-    required: true
+    description: Buzz project route name. Set exactly one of repository_name and channel_name.
+    required: false
+    default: ""
+  channel_name:
+    description: Buzz channel name to post to directly (pass the BUZZ_CHANNEL_NAME variable). Set exactly one of repository_name and channel_name.
+    required: false
+    default: ""
   callback_url:
     description: Buzz App callback URL (pass the BUZZ_APP_CALLBACK_URL secret).
     required: true
@@ -46,17 +51,24 @@ runs:
         CONTENT: ${{ inputs.content }}
         IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
         REPOSITORY_NAME: ${{ inputs.repository_name }}
+        CHANNEL_NAME: ${{ inputs.channel_name }}
       run: |
         set -euo pipefail
+        if [[ -n "$REPOSITORY_NAME" && -n "$CHANNEL_NAME" ]] || [[ -z "$REPOSITORY_NAME" && -z "$CHANNEL_NAME" ]]; then
+          echo "::error::Set exactly one of repository_name and channel_name"
+          exit 1
+        fi
         body="$(mktemp)"
         response="$(mktemp)"
         trap 'rm -f "$body" "$response"' EXIT
         jq -n \
           --arg idempotency_key "$IDEMPOTENCY_KEY" \
           --arg repository_name "$REPOSITORY_NAME" \
+          --arg channel_name "$CHANNEL_NAME" \
           --arg event_type "$EVENT_TYPE" \
           --arg content "$CONTENT" \
-          '{idempotency_key: $idempotency_key, repository_name: $repository_name, event_type: $event_type, content: $content}' > "$body"
+          '{idempotency_key: $idempotency_key, event_type: $event_type, content: $content}
+            + (if $channel_name != "" then {channel_name: $channel_name} else {repository_name: $repository_name} end)' > "$body"
         status="$(curl -sS -o "$response" -w '%{http_code}' -X POST "$BUZZ_APP_CALLBACK_URL" \
           -H "X-Webhook-Secret: $BUZZ_APP_SECRET" \
           -H 'Content-Type: application/json' \

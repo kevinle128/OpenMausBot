@@ -724,7 +724,7 @@ jobs:
           event_type: release.published
           content: ${{ steps.compose.outputs.text }}
           idempotency_key: ${{ github.run_id }}-${{ github.run_attempt }}-build-published
-          repository_name: ${{ vars.BUZZ_REPOSITORY_NAME }}
+          channel_name: ${{ vars.BUZZ_CHANNEL_NAME }}
           callback_url: ${{ secrets.BUZZ_APP_CALLBACK_URL }}
           app_secret: ${{ secrets.BUZZ_APP_SECRET }}
           ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
