@@ -2,7 +2,9 @@ import type { PaseoPermissionRequest, PaseoPermissionResponse } from "./connecti
 import { isRegularFile, type PermissionContext } from "./permission-rules.ts";
 
 /** The words of the privacy hook of AgentKit, which blocks a file read and tells the model to ask the person. */
-const READ_QUESTION = /^I need to read "([^"\n]+)" \((.+?)\)(?=[,.\s]|$)/;
+/** The whole question of the hook for a plain read, with its fixed ending. The longer wording that offers to trust project
+ * rules has a different ending and is never matched. */
+const READ_QUESTION = /^I need to read "([^"\n]+)" \((.+)\), which may contain sensitive data \(API keys, passwords, tokens\)\. Do you approve this one time\?$/;
 const HOOK_HEADER = "File Access";
 export const APPROVE_ONCE = "Yes, approve once";
 export const ASK_USER_QUESTION = /^askuserquestion$/i;

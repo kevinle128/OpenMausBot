@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import type { PaseoPermissionRequest } from "./connection.ts";
@@ -104,6 +104,17 @@ function realRegularFile(cwd: string | undefined, filePath: string): string | nu
   }
 }
 
+/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. */
+function literalExists(cwd: string | undefined, filePath: string): boolean {
+  if (!isAbsolute(filePath) && !cwd) return true;
+  try {
+    lstatSync(resolve(cwd ?? "/", filePath));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
 /** True for an existing regular file, whatever its name. */
 export function isRegularFile(cwd: string | undefined, filePath: string): boolean {
   return realRegularFile(cwd, filePath) !== null;
@@ -186,7 +197,8 @@ function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionCont
   const regularFile = context.regularFile ?? isRegularFile;
   // A path the person approved once with the hook of AgentKit may be any regular file; every other path must be an env file.
   return files.length > 0 && files.every((file) => {
-    if (file.startsWith(APPROVED_PREFIX)) return regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+    // The shell opens the literal argument, so a file or link really named like that must not slip through the prefix.
+    if (file.startsWith(APPROVED_PREFIX)) return !literalExists(context.cwd, file) && regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
     return isEnvFilePath(file) && envFile(context.cwd, file);
   });
 }

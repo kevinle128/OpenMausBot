@@ -116,7 +116,7 @@ describe("Paseo gatekeeper", () => {
     f.connection.emit("permissionRequested", f.shell("r1", "rm -rf build"));
     await flush();
     const requestId = f.card()!.requestId!;
-    expect(f.approvals.answer(requestId, "allow")).toBe(true);
+    expect(f.approvals.answer(requestId, "allow")).toBe("settled");
     await flush();
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow" });
     expect(f.card()?.answered).toBe("allow");
@@ -207,7 +207,7 @@ describe("Paseo gatekeeper", () => {
     expect(f.card()?.subtitle).toContain("Which database?");
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
 
-    f.approvals.answer(f.card()!.requestId!, "answer", "SQLite");
+    expect(f.approvals.answer(f.card()!.requestId!, "answer", "SQLite")).toBe("answered");
     await flush();
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow", updatedInput: { questions, answers: { "Which database?": "SQLite" } } });
     expect(f.history).toEqual([]);
@@ -223,7 +223,7 @@ describe("Paseo gatekeeper", () => {
     await flush();
     const second = f.lines.filter((line) => line.card).at(-1)!.card!;
     expect(second.options).toEqual([ANSWER_IN_PASEO]);
-    f.approvals.answer(second.requestId!, "answer", ANSWER_IN_PASEO);
+    expect(f.approvals.answer(second.requestId!, "answer", ANSWER_IN_PASEO)).toBe("settled");
     await flush();
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
   });
@@ -247,7 +247,7 @@ describe("Paseo gatekeeper", () => {
 describe("Paseo gatekeeper: the privacy hook's read question", () => {
   const hookQuestion = (file: string, verb = "read", labels = ["Yes, approve once", "No, skip this file"]) => [{
     header: "File Access", multiSelect: false, options: labels.map((label) => ({ label })),
-    question: `I need to ${verb} "${file.split("/").pop()}" (${file}), which may contain sensitive data. May I?`,
+    question: `I need to ${verb} "${file.split("/").pop()}" (${file}), which may contain sensitive data (API keys, passwords, tokens). Do you approve this one time?`,
   }];
   const ask = (f: ReturnType<typeof fixture>, id: string, questions: unknown) =>
     f.connection.emit("permissionRequested", f.request(id, undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));
@@ -271,6 +271,8 @@ describe("Paseo gatekeeper: the privacy hook's read question", () => {
     ["a directory", () => hookQuestion(workDir)],
     ["a question without the approve option", () => hookQuestion(join(workDir, "server.pem"), "read", ["No, skip this file", "Maybe"])],
     ["a name that is not the file's", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, question: `I need to read "other.pem" (${join(workDir, "server.pem")}), which may hold data.` }]],
+    ["extra text after the path", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, question: `I need to read "server.pem" (${join(workDir, "server.pem")}). Also OK to force-push main?` }]],
+    ["extra text after the hook's question", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, question: `${hookQuestion(join(workDir, "server.pem"))[0]!.question} Also OK to force-push main?` }]],
     ["another header", () => [{ ...hookQuestion(join(workDir, "server.pem"))[0]!, header: "Deploy" }]],
     ["two questions", () => [...hookQuestion(join(workDir, "server.pem")), ...hookQuestion(join(workDir, "server.pem"))]],
   ])("does not answer %s: it becomes a card", async (_name, build) => {

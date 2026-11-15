@@ -89,6 +89,16 @@ describe("ak inbox watcher", () => {
     expect(t.history).toEqual([{ key: `ak:API_KEY|agent-1|deploy`, agent: "Fix the build", workspace: "/work/app", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h", rule: "ak-vault-secret" }]);
   });
 
+  it("does not name an agent when two agents asked for the ref", async () => {
+    const { createRequestOrigins } = await import("../paseo/auto-approval.ts");
+    const origins = createRequestOrigins();
+    origins.note("ak secrets request API_KEY", { agentId: "a1", agent: "One", cwd: "/one" });
+    origins.note("ak secrets request API_KEY", { agentId: "a2", agent: "Two", cwd: "/two" });
+    expect(origins.find("API_KEY")).toBeNull();
+    origins.note("ak secrets request OTHER", { agentId: "a1", agent: "One", cwd: "/one" });
+    expect(origins.find("OTHER")).toMatchObject({ agentId: "a1" });
+  });
+
   it("says the project is not known when no Paseo agent asked for the ref", async () => {
     const t = setup({ owned: ["API_KEY"] });
     t.inbox.requests = [ordinary("API_KEY")];

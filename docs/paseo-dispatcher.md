@@ -11,7 +11,8 @@ approve once" itself only for the privacy hook's question to read a file (one
 question, the read wording, a path that is a regular file). Every other question
 becomes a card with one button for each answer, or with an **Answer in Paseo**
 button when it has several questions or lets the person pick more than one.
-Each request it allows without asking (a file read, a read-only `ak secrets`
+Pressing Deny, or closing a question card, leaves the question to be answered in
+Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
 command, the hook's read question, a Vault secret request) is written as one
 read line in the Done tab of the Inbox, headed "OpenMausBot tự duyệt", with no
 notification. The same agent and target within an hour share one line with a

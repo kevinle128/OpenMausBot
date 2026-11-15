@@ -15,6 +15,8 @@ export interface ExternalApproval {
   tool: string;
   /** With these, the card is a question: one button for each label, and no tool. A tap hands the label to `onAnswer`. */
   choices?: string[];
+  /** One of the `choices` that answers nothing: it closes the card and leaves the question where it came from. */
+  leave?: string;
   /** Runs once, when a person answers the card. A rejection closes the card as unavailable. */
   onAnswer(decision: ExternalDecision, choice?: string): Promise<void> | void;
 }
@@ -24,6 +26,7 @@ interface Open {
   messageId: string;
   requestId: string;
   choices?: string[];
+  leave?: string;
   onAnswer: ExternalApproval["onAnswer"];
 }
 
@@ -72,7 +75,7 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
           : { title: approval.title, subtitle: approval.subtitle, options: ["Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
       });
       open.set(approval.key, {
-        threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}),
+        threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}), ...(approval.leave ? { leave: approval.leave } : {}),
       });
       byRequest.set(requestId, approval.key);
       return true;
@@ -86,24 +89,24 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
 
     /** A tap on a card. True when it was one of these; the verdict goes on to its owner without being waited for. A question
      * card takes only the text of one of its buttons: closing it without a pick leaves the question where it came from. */
-    answer(requestId: string, behavior: string | undefined, message?: unknown): boolean {
+    answer(requestId: string, behavior: string | undefined, message?: unknown): false | "settled" | "answered" {
       const key = byRequest.get(requestId);
       const card = key === undefined ? undefined : forget(key);
       if (!card) return false;
       if (card.choices) {
         const choice = behavior === "answer" && typeof message === "string" ? card.choices.find((label) => label === message) : undefined;
-        if (choice === undefined) {
+        if (choice === undefined || choice === card.leave) {
           patch(card, { answered: "unavailable", dismissed: true });
-          return true;
+          return "settled";
         }
         patch(card, { answered: choice });
         deliver(card, () => card.onAnswer("allow", choice));
-        return true;
+        return "answered";
       }
       const decision: ExternalDecision = behavior === "allow" ? "allow" : "deny";
       patch(card, { answered: decision });
       deliver(card, () => card.onAnswer(decision));
-      return true;
+      return "settled";
     },
 
     /** A card an earlier run left open can never be answered: it is closed. */

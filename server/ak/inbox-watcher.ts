@@ -2,6 +2,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
@@ -172,7 +173,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const origin = deps.origins?.find(scope.ref) ?? null;
     const label = text(request.agentLabel);
     const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
-    const what = `cấp quyền đọc bí mật ${scope.ref}${scope.purpose ? `, mục đích: ${oneLine(scope.purpose, 100)}` : ""}, ${AK_APPROVAL_TTL}`;
+    const what = `cấp quyền đọc bí mật ${scope.ref}${scope.purpose ? `, mục đích: ${redactSecretsInText(oneLine(scope.purpose, 100))}` : ""}, ${AK_APPROVAL_TTL}`;
     try {
       deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what, rule: "ak-vault-secret" });
     } catch (error) {

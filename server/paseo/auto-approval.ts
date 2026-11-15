@@ -41,28 +41,34 @@ export interface RequestOrigin {
   cwd: string;
 }
 
-/** Remembers which Paseo agent last sent `ak secrets request <REF>`, so the later approval in the `ak` inbox can name it. */
+/** Remembers which Paseo agents sent `ak secrets request <REF>` lately, so the later approval in the `ak` inbox can name the
+ * agent. It names one only when exactly one agent asked for that ref inside the window; otherwise it cannot tell. */
 export function createRequestOrigins(now: () => number = Date.now) {
-  const byRef = new Map<string, RequestOrigin & { at: number }>();
+  const byRef = new Map<string, Map<string, RequestOrigin & { at: number }>>();
+  const live = (ref: string): Array<RequestOrigin & { at: number }> => {
+    const agents = byRef.get(ref);
+    if (!agents) return [];
+    for (const [id, one] of agents) if (now() - one.at > ORIGIN_TTL_MS) agents.delete(id);
+    if (agents.size === 0) byRef.delete(ref);
+    return [...agents.values()];
+  };
   return {
     note(command: string, origin: RequestOrigin): void {
       const ref = akSecretsRequestRef(command);
       if (!ref) return;
-      byRef.delete(ref);
-      byRef.set(ref, { ...origin, at: now() });
+      live(ref);
+      const agents = byRef.get(ref) ?? new Map();
+      agents.set(origin.agentId, { ...origin, at: now() });
+      byRef.set(ref, agents);
       for (const old of byRef.keys()) {
         if (byRef.size <= MAX_ORIGINS) break;
         byRef.delete(old);
       }
     },
     find(ref: string): RequestOrigin | null {
-      const found = byRef.get(ref);
-      if (!found) return null;
-      if (now() - found.at > ORIGIN_TTL_MS) {
-        byRef.delete(ref);
-        return null;
-      }
-      const { at: _at, ...origin } = found;
+      const found = live(ref);
+      if (found.length !== 1) return null;
+      const { at: _at, ...origin } = found[0]!;
       return origin;
     },
   };

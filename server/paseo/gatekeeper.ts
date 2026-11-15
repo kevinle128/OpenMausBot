@@ -114,7 +114,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       title: isQuestion ? "A Paseo agent asks you a question" : "A Paseo agent needs your approval",
       subtitle: `${oneLine(`${label} · ${agent.cwd}`, 200)}\n${oneLine(what, SUBTITLE_CHARS)}`,
       tool: request.name,
-      ...(isQuestion ? { choices: single ? single.labels : [ANSWER_IN_PASEO] } : {}),
+      ...(isQuestion ? { choices: single ? single.labels : [ANSWER_IN_PASEO], ...(single ? {} : { leave: ANSWER_IN_PASEO }) } : {}),
       onAnswer: async (decision, choice) => {
         if (!isQuestion) return respond(decision);
         if (single && choice !== undefined) await connection.respondToPermission(agentId, request.id, questionAnswer(request, single.question, choice));

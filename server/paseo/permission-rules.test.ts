@@ -150,7 +150,7 @@ describe("classifyPermission: shell commands", () => {
 });
 
 describe("classifyPermission: files the person approved once", () => {
-  const plain = { ...namesOnly, regularFile: (_cwd: string | undefined, file: string) => file.startsWith("/work/") };
+  const plain = { ...namesOnly, cwd: "/nonexistent-omb-cwd", regularFile: (_cwd: string | undefined, file: string) => file.startsWith("/work/") };
 
   it.each([
     ["cat APPROVED:/work/keys/server.pem", "allow"],
@@ -165,6 +165,22 @@ describe("classifyPermission: files the person approved once", () => {
     ["rm APPROVED:/work/a.pem", "ask"],
   ])("%j -> %s", (command, verdict) => {
     expect(classifyPermission(shell(command), plain).verdict).toBe(verdict);
+  });
+
+  it("refuses a file or link really named with the prefix", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-approved-"));
+    try {
+      writeFileSync(join(dir, "real.txt"), "x");
+      writeFileSync(join(dir, "APPROVED:real.txt"), "y");
+      symlinkSync("/etc/hosts", join(dir, "APPROVED:link.txt"));
+      writeFileSync(join(dir, "other.txt"), "z");
+      const real: PermissionContext = { cwd: dir };
+      expect(classifyPermission(shell("cat APPROVED:other.txt"), real).verdict).toBe("allow");
+      expect(classifyPermission(shell("cat APPROVED:real.txt"), real).verdict).toBe("ask");
+      expect(classifyPermission(shell("cat APPROVED:link.txt"), real).verdict).toBe("ask");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("names its own rule", () => {
