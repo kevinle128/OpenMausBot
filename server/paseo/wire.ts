@@ -12,7 +12,7 @@ export type PaseoHost = Pick<PaseoBridgeWiring, "approvals" | "decider" | "notif
   /** The Vault whose secrets kept to the Paseo bot are copied to `ak`. */
   vault: NonNullable<PaseoBridgeWiring["ak"]>["vault"];
   dataDir: string;
-  /** Writes one line of what was allowed without asking into the Done tab of the Inbox. */
+  /** Writes one line of what was allowed without asking into the Inbox as an already read line. */
   autoApproved(line: AutoApprovalLine): void;
   enqueueWebhook(input: Parameters<RoutineManager["enqueueWebhook"]>[0]): unknown;
 };

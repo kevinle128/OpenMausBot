@@ -16,16 +16,33 @@ VAR=REF` refs are all secrets OpenMausBot keeps for the Paseo bot) and the
 matching exec request in the `ak` inbox, for 24 hours and for that program and
 variable only. A ref OpenMausBot does not own, and every `ak` write command,
 still ask the person; the secret request card's allow button reads "Allow 24h".
+It allows read-only shell commands without asking, by a fixed rule and never by
+Jev: `git` (diff, log, show, status, blame, list-only branch, rev-parse,
+ls-files, ls-tree, grep, describe, remote -v, config --get/--list), `ls`, `cat`,
+`head`, `tail` (not `-f`), `wc`, `rg`, `grep`, `find` (not -exec, -delete or
+-fprint), `pwd`, `stat`, `file`, `du`, `df`, `which`, `tree`, `realpath`,
+`basename`, `dirname`, `sort`, `uniq`, `cut`, `tr`, `jq`, `diff`, `cmp` and
+`echo`, any path. Pipes and `&&` are allowed when every part is read-only, with
+an optional `cd <dir> &&` first. Any redirect, substitution, `;`, `||`,
+background job, or an option that writes a file or runs a program still asks.
+A `git` step is allowed only when no git setting in its directory, or in any
+checked-out submodule (at most 20), would run a program (a pager, a diff or text
+filter, a file monitor, a signing program, an editor; the standard git-lfs filter
+is accepted), and no `post-index-change` hook exists there, because `git status`
+and `git diff` run that hook. The check uses OpenMausBot's own environment, so it
+assumes the agents run as the same user with no extra `GIT_*` variables, and a
+relative `cd` is refused when `CDPATH` is set. One small write is accepted:
+`sort -T` temporary files; `git status` also refreshes the index.
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen
 running `ak secrets` for that ref in the last 10 minutes; with none or several,
 nobody is told. A running agent is not interrupted: the message waits until it is
-idle, for up to 10 minutes. The Done line says whether the agent was told.
+idle, for up to 10 minutes. The Inbox line says whether the agent was told.
 Pressing Deny, or closing a question card, leaves the question to be answered in
 Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
 command, the hook's read question, a Vault secret request) is written as one
-read line in the Done tab of the Inbox, headed "OpenMausBot tự duyệt", with no
+already read line listed in the Inbox, headed "OpenMausBot tự duyệt", with no
 notification. The same agent and target within an hour share one line with a
 count. The line never holds a secret value or file content. On a server with a
 team, the history is not written.

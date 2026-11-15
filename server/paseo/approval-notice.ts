@@ -10,7 +10,19 @@ export interface ApprovedSecret {
 }
 
 type Port = Pick<PaseoConnection, "on" | "off" | "sendMessage" | "recentShellCommands">;
-type AgentView = { id: string; status: string; updatedAt?: string | number | Date };
+type AgentView = { id: string; status: string; updatedAt?: string | number | Date; title?: string | null; cwd?: string };
+
+/** The agent that was told, for the history line. */
+export interface NoticedAgent {
+  agentId: string;
+  title: string;
+  cwd: string;
+}
+
+export interface NoticeOutcome {
+  result: NoticeResult;
+  agent?: NoticedAgent;
+}
 
 /** The fixed text told to the agent: only the ref, which passed the ref-name check. Never text an agent wrote. */
 export function approvalNoticeText(approved: ApprovedSecret): string {
@@ -64,9 +76,9 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
     for (const [key, one] of queued) if (one.agentId === agentId && agents.get(agentId)?.status === "idle") await deliver(key, agentId, one.text);
   }
 
-  async function findAgent(ref: string): Promise<string | null> {
+  async function findAgent(ref: string): Promise<NoticedAgent | null> {
     const known = deps.origins.find(ref);
-    if (known) return known.agentId;
+    if (known) return { agentId: known.agentId, title: known.agent, cwd: known.cwd };
     const since = now() - ORIGIN_TTL_MS;
     const recent = [...agents.values()].filter((agent) => {
       const at = agent.updatedAt === undefined ? now() : new Date(agent.updatedAt).getTime();
@@ -80,24 +92,27 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
         deps.log(`paseo approval notice: could not read the commands of agent ${agent.id} (${error instanceof Error ? error.message : String(error)})`);
       }
     }
-    return matches.length === 1 ? matches[0]! : null;
+    if (matches.length !== 1) return null;
+    const agent = agents.get(matches[0]!)!;
+    return { agentId: agent.id, title: agent.title?.trim() || agent.id.slice(0, 8), cwd: agent.cwd ?? "" };
   }
 
   return {
-    async approved(approved: ApprovedSecret): Promise<NoticeResult> {
+    async approved(approved: ApprovedSecret): Promise<NoticeOutcome> {
       expire();
-      const agentId = await findAgent(approved.ref);
-      if (!agentId) return "none";
+      const agent = await findAgent(approved.ref);
+      if (!agent) return { result: "none" };
+      const { agentId } = agent;
       const text = approvalNoticeText(approved);
       const key = `${agentId}|${approved.ref}|${approved.program ?? ""}`;
-      if (sentKeys.has(key) || queued.has(key)) return "none";
+      if (sentKeys.has(key) || queued.has(key)) return { result: "none", agent };
       sentKeys.set(key, now() + ORIGIN_TTL_MS);
       if (agents.get(agentId)?.status === "idle") {
         await deliver(key, agentId, text);
-        return "sent";
+        return { result: "sent", agent };
       }
       queued.set(key, { agentId, text, until: now() + ORIGIN_TTL_MS });
-      return "queued";
+      return { result: "queued", agent };
     },
     stop(): void {
       deps.connection.off("agentUpdate", onUpdate as never);

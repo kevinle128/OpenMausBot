@@ -2,6 +2,9 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import type { PaseoPermissionRequest } from "./connection.ts";
+import { gitConfigRunsNoProgram } from "./git-config-check.ts";
+import { READ_ONLY_RULE, readOnlyCommand } from "./read-only-commands.ts";
+import { words } from "./shell-words.ts";
 
 export type PermissionVerdict = "allow" | "ask" | "ambiguous";
 
@@ -21,6 +24,8 @@ export interface PermissionContext {
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
   /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  /** Replaced by tests. Whether no git setting in this directory makes a read run another program. */
+  gitConfigSafe?: (dir: string | undefined) => boolean;
   /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
   ownsRef?: (ref: string) => boolean;
   regularFile?: (cwd: string | undefined, filePath: string) => boolean;
@@ -155,33 +160,6 @@ export function permissionTarget(request: Pick<PaseoPermissionRequest, "detail" 
   return null;
 }
 
-/** Splits a command with no shell syntax into words; quotes group words and are removed. Null when a quote is left open. */
-function words(command: string): string[] | null {
-  const out: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let started = false;
-  for (const char of command) {
-    if (quote) {
-      if (char === quote) quote = null;
-      else current += char;
-    } else if (char === "'" || char === '"') {
-      quote = char;
-      started = true;
-    } else if (/\s/.test(char)) {
-      if (started) out.push(current);
-      current = "";
-      started = false;
-    } else {
-      current += char;
-      started = true;
-    }
-  }
-  if (quote) return null;
-  if (started) out.push(current);
-  return out;
-}
-
 type Step = { kind: "allow"; rule: string } | { kind: "filter" } | { kind: "ask"; rule: string };
 
 function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionContext): boolean {
@@ -231,7 +209,7 @@ function akFlagsAreSafe(sub: string, args: string[]): boolean {
 }
 
 function isPipeFilter(tool: string, args: string[]): boolean {
-  const spec = PIPE_FILTERS[tool];
+  const spec = Object.hasOwn(PIPE_FILTERS, tool) ? PIPE_FILTERS[tool] : undefined;
   if (!spec) return false;
   let plain = 0;
   for (let i = 0; i < args.length; i += 1) {
@@ -301,6 +279,18 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
  * no answer from a model can let it through.
  */
 function classifyCommand(command: string, context: PermissionContext): PermissionDecision {
+  const strict = classifyStrictCommand(command, context);
+  if (strict.verdict !== "ask") return strict;
+  // A line with an `ak` step keeps the path above: it is never read-only here.
+  const readOnly = readOnlyCommand(command, {
+    cwd: context.cwd,
+    gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
+    approvedExists: (argument) => literalExists(context.cwd, argument),
+  });
+  return readOnly ? { verdict: "allow", rule: READ_ONLY_RULE } : strict;
+}
+
+function classifyStrictCommand(command: string, context: PermissionContext): PermissionDecision {
   if (SHELL_SYNTAX.test(command)) return { verdict: "ask", rule: "shell-syntax" };
   const parts = command.split(SEPARATORS);
   const steps: Array<{ tokens: string[] | null; afterPipe: boolean }> = [];

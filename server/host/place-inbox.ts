@@ -180,7 +180,10 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
   });
 
   function view(auth: RequestAuth): InboxView {
-    const rows = [...askRows(auth), ...lines.filter((line) => lineFor(auth, line)).map(lineRow)].sort((a, b) => b.at - a.at).slice(0, VIEW_ROWS);
+    // Every open ask is listed; the rest of the view is filled with the newest lines, so news never pushes an ask out.
+    const asks = askRows(auth);
+    const rest = lines.filter((line) => lineFor(auth, line)).map(lineRow).sort((a, b) => b.at - a.at).slice(0, Math.max(0, VIEW_ROWS - asks.length));
+    const rows = [...asks, ...rest].sort((a, b) => b.at - a.at);
     return { botId: null, threadId: null, rows, anchor: null };
   }
 
@@ -250,7 +253,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
   /** What was allowed without asking, by the same thing: it stays in memory for the hour that repeats are merged in. */
   const allowed = new Map<string, { lineId: string; count: number; at: number }>();
 
-  /** Something was allowed without asking the person: one line in Done, already read, with no notification and no wait. The
+  /** Something was allowed without asking the person: one line in the info tab, already read, with no notification and no wait. The
    * same `key` again within an hour changes that line instead of adding one, and `text` is given the number of times. */
   function autoApproved(approval: { botId: string; threadId: string; key: string; text(count: number): string }): void {
     const bot = store.bot(approval.botId);
@@ -268,7 +271,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
     } else {
       const guest = deps.guestOf(approval.threadId);
       id = addLine({ id: crypto.randomUUID(), botId: bot.id, threadId: approval.threadId, kind: "notice", from: bot.name.slice(0, 200),
-        ...(guest ? { guest } : {}), text, at: now(), seen: true, done: true }).id;
+        ...(guest ? { guest } : {}), text, at: now(), seen: true }).id;
     }
     allowed.set(approval.key, { lineId: id!, count, at: now() });
   }
