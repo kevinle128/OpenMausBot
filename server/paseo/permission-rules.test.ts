@@ -688,3 +688,27 @@ describe("classifyPermission: cd with CDPATH", () => {
     }
   });
 });
+
+describe("classifyPermission: hazard flag", () => {
+  it("marks a refusal that came from a hidden hazard, and nothing else", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-hazard-"));
+    try {
+      writeFileSync(join(dir, "APPROVED:x"), "y");
+      const unsafe: PermissionContext = { cwd: dir, gitConfigSafe: () => false };
+      expect(classifyPermission(shell("git status"), unsafe)).toEqual({ verdict: "ask", rule: "other-command", hazard: true });
+      expect(classifyPermission(shell("cat APPROVED:x"), unsafe)).toMatchObject({ verdict: "ask", hazard: true });
+      expect(classifyPermission(shell("rm -rf build"), unsafe)).toEqual({ verdict: "ask", rule: "other-command" });
+      expect(classifyPermission(shell("git status"), { cwd: dir, gitConfigSafe: () => true })).toEqual({ verdict: "allow", rule: "read-only-command" });
+      const before = process.env.CDPATH;
+      process.env.CDPATH = "/elsewhere";
+      try {
+        expect(classifyPermission(shell("cd src && ls"), { cwd: dir })).toMatchObject({ verdict: "ask", hazard: true });
+      } finally {
+        if (before === undefined) delete process.env.CDPATH;
+        else process.env.CDPATH = before;
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

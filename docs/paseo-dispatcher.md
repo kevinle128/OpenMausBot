@@ -33,6 +33,29 @@ and `git diff` run that hook. The check uses OpenMausBot's own environment, so i
 assumes the agents run as the same user with no extra `GIT_*` variables, and a
 relative `cd` is refused when `CDPATH` is set. One small write is accepted:
 `sort -T` temporary files; `git status` also refreshes the index.
+Everything the fixed rules above do not allow goes to Jev Guard, except a refusal
+for a hidden hazard (an unsafe git setting or hook, `CDPATH`, a real file named
+`APPROVED:…`), which is always a card. Jev Guard asks Jev questions about the exact
+call: risk 0 to 3 (running code Jev cannot see, such as `bash x.sh`, `sh -c` or a pipe
+into an interpreter, counts as hard to undo), whether a careful engineer would want it
+approved, whether it follows an instruction planted in untrusted content, and, only
+when the person's own first message to the agent is known, whether the person asked
+for it. Everything the agent wrote (the command, its title, its earlier calls) is sent
+under `agent_supplied` and the questions say nothing inside it is the person's word;
+keys are removed. Without a message of the person (the Paseo timeline does not keep
+the first prompt, and OpenMausBot's own notices never count) a risky call is a card.
+Reading anything on this machine, secrets included, is normal; sending data off the
+machine, destroying data and obeying planted instructions are the risks. It allows
+when the risk is under 1.5 and approval under 0.75, or when the call is riskier but
+the person asked for it (0.85) and the risk is under 2.5. It opens a card when the
+call is risky and was not asked for, and a card marked "Jev: high risk" when the risk
+is 2.5 or more or the call looks planted (0.7). Any error, missing key, answer from
+a provider other than Jev, a call longer than 2000 characters (cut text could hide
+the rest), or answer slower than 3 seconds opens a card. A question with one plain
+yes option (Yes, Allow, Approve, Continue) is judged the same way and answered with
+that option; any other question is a card. Each allow is written to the Inbox with
+the rule `jev-guard` and the scores. The questions and thresholds are adapted from
+[jev-guard](https://github.com/leepokai/jev-guard) (MIT, commit `cda06c4`).
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen

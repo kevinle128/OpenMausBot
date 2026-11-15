@@ -62,8 +62,8 @@ export interface PaseoClientPort {
   respondToPermission(agentId: string, requestId: string, response: PaseoPermissionResponse): Promise<void>;
   /** Tests that do not need them leave these out. */
   sendAgentMessage?(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
-  fetchAgentTimeline?(agentId: string, options?: { direction?: "tail"; limit?: number; projection?: "projected" }): Promise<{
-    entries: Array<{ item: { type: string; detail?: { type?: string; command?: unknown } } }>;
+  fetchAgentTimeline?(agentId: string, options?: { direction?: "tail" | "after"; limit?: number; projection?: "projected" }): Promise<{
+    entries: Array<{ item: { type: string; text?: unknown; name?: unknown; detail?: { type?: string; command?: unknown; filePath?: unknown } } }>;
   }>;
 }
 
@@ -84,6 +84,9 @@ export interface PaseoConnectionOptions {
 /** How long a request we answered stays muted if the daemon still lists it: a later agent update can carry it again
  * before the daemon has dropped it, and reporting it would open a second card for an answered request. */
 export const RESPONDED_TTL_MS = 60_000;
+
+/** The start of every message OpenMausBot sends an agent about an approval. It is never the person's own request. */
+export const APPROVAL_NOTICE_PREFIX = "already approved ak secrets:";
 
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
 
@@ -109,6 +112,8 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   private wake: (() => void) | null = null;
   private endSession: (() => void) | null = null;
   private readonly pending = new Map<string, Map<string, PaseoPermissionRequest>>();
+  /** The messages this process sent to agents, so they are never mistaken for the person's words. */
+  private readonly sentByUs = new Set<string>();
   /** `agentId/requestId` of every request we answered, with the time the mute ends. */
   private readonly responded = new Map<string, number>();
 
@@ -156,6 +161,8 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   async sendMessage(agentId: string, text: string): Promise<void> {
     const client = this.client;
     if (!client?.sendAgentMessage || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    if (this.sentByUs.size > 500) this.sentByUs.clear();
+    this.sentByUs.add(text);
     await client.sendAgentMessage(agentId, text);
   }
 
@@ -169,6 +176,30 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
       if (item.type === "tool_call" && item.detail?.type === "shell" && typeof item.detail.command === "string") commands.push(item.detail.command);
     }
     return commands;
+  }
+
+  /** The first message the person sent the agent and its last tool calls, for the permission guard. Throws when not connected. */
+  async agentContext(agentId: string, limit = 40): Promise<{ firstPrompt?: string; recent: string[] }> {
+    const client = this.client;
+    if (!client?.fetchAgentTimeline || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    const tail = await client.fetchAgentTimeline(agentId, { direction: "tail", limit, projection: "projected" });
+    const recent: string[] = [];
+    for (const { item } of tail.entries) {
+      if (item.type !== "tool_call") continue;
+      const name = typeof item.name === "string" ? item.name : "tool";
+      const detail = item.detail;
+      const what = detail?.type === "shell" && typeof detail.command === "string" ? detail.command
+        : detail?.type === "read" && typeof detail.filePath === "string" ? detail.filePath
+        : "";
+      recent.push(what ? `${name}: ${what}` : name);
+    }
+    // The earliest user message, when the daemon keeps one. A notice from OpenMausBot and any other text it sent is not the person's.
+    const ours = (text: string) => text.startsWith(APPROVAL_NOTICE_PREFIX) || this.sentByUs.has(text);
+    const firstPrompt = await client.fetchAgentTimeline(agentId, { direction: "after", limit: 5, projection: "projected" }).then(
+      (page) => page.entries.find((entry) => entry.item.type === "user_message" && typeof entry.item.text === "string" && !ours(entry.item.text))?.item.text as string | undefined,
+      () => undefined,
+    );
+    return { ...(firstPrompt ? { firstPrompt } : {}), recent: recent.slice(-6) };
   }
 
   private now(): number {

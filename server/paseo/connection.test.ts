@@ -162,3 +162,26 @@ describe("Paseo MCP entry", () => {
     expect(paseoMcpServerEntry({ daemonPassword: "pw" }).headers).toEqual({ Authorization: "Bearer pw" });
   });
 });
+
+describe("PaseoConnection.agentContext", () => {
+  it("never takes a notice or a message of ours for the first prompt of the person, and does not fall back to the tail", async () => {
+    const client = new FakeClient() as FakeClient & { fetchAgentTimeline?: PaseoClientPort["fetchAgentTimeline"]; sendAgentMessage?: PaseoClientPort["sendAgentMessage"] };
+    const pages: Record<string, Array<{ item: { type: string; text?: string; name?: string; detail?: { type: string; command?: string } } }>> = {
+      after: [
+        { item: { type: "user_message", text: "already approved ak secrets: API_KEY" } },
+        { item: { type: "user_message", text: "something we sent" } },
+        { item: { type: "user_message", text: "Clean the build folder" } },
+      ],
+      tail: [{ item: { type: "tool_call", name: "Bash", detail: { type: "shell", command: "ls build" } } }],
+    };
+    client.fetchAgentTimeline = async (_id, options) => ({ entries: pages[options?.direction ?? "tail"]! });
+    client.sendAgentMessage = async () => {};
+    const { connection } = await connected(client);
+    await connection.sendMessage("a1", "something we sent");
+    expect(await connection.agentContext("a1")).toEqual({ firstPrompt: "Clean the build folder", recent: ["Bash: ls build"] });
+    pages.after = [{ item: { type: "user_message", text: "already approved ak secrets: API_KEY" } }];
+    pages.tail = [{ item: { type: "user_message", text: "Clean the build folder" } }];
+    expect(await connection.agentContext("a1")).toEqual({ recent: [] });
+    await connection.stop();
+  });
+});

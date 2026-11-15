@@ -1,4 +1,4 @@
-import type { PaseoConnection } from "./connection.ts";
+import { APPROVAL_NOTICE_PREFIX, type PaseoConnection } from "./connection.ts";
 import { ORIGIN_TTL_MS, type RequestOrigins } from "./auto-approval.ts";
 
 export type NoticeResult = "sent" | "queued" | "none";
@@ -26,7 +26,7 @@ export interface NoticeOutcome {
 
 /** The fixed text told to the agent: only the ref, which passed the ref-name check. Never text an agent wrote. */
 export function approvalNoticeText(approved: ApprovedSecret): string {
-  return `already approved ak secrets: ${approved.ref}`;
+  return `${APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
 }
 
 /** True when `command` runs `ak secrets` and names the ref as a whole word. */

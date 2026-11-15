@@ -9,6 +9,8 @@ export interface AutoApproval {
   what: string;
   /** A fixed rule id. */
   rule: string;
+  /** More that belongs in the line but not in the key that merges repeats, such as the scores of a model's answer. */
+  detail?: string;
 }
 
 export type AutoApprovalHistory = (entry: AutoApproval) => void;
@@ -29,6 +31,7 @@ export function formatAutoApproval(entry: AutoApproval, count: number): string {
     `Workspace: ${entry.workspace}`,
     `Việc: ${entry.what}`,
     `Luật: ${entry.rule}`,
+    ...(entry.detail ? [`Jev: ${entry.detail}`] : []),
   ].join("\n");
 }
 
