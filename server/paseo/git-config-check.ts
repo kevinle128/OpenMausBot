@@ -15,13 +15,15 @@ const STANDARD_LFS = new Map([
 const TIMEOUT_MS = 1_500;
 const CACHE_MS = 60_000;
 const MAX_SUBMODULES = 20;
+/** The index listing of a large repository is long; a listing past this is an error, so the answer is false. */
+const MAX_OUTPUT = 64 * 1024 * 1024;
 /** `git status` and `git diff` run this hook after they refresh the index. */
 const INDEX_HOOK = "hooks/post-index-change";
 
 const cache = new Map<string, { safe: boolean; until: number }>();
 
 function git(dir: string, args: string[]): string {
-  return execFileSync("git", args, { cwd: dir, timeout: TIMEOUT_MS, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return execFileSync("git", args, { cwd: dir, timeout: TIMEOUT_MS, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: MAX_OUTPUT });
 }
 
 /** True when git exits 1, its "nothing matched" status; any other failure is thrown on. */

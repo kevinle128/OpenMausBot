@@ -5,7 +5,7 @@ import { PaseoConnection } from "./connection.ts";
 import { startDispatcherWake, type DispatcherWakeDeps } from "./dispatcher-wake.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 
-export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins" | "ownsRef"> & {
+export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins" | "ownsRef" | "agentContext"> & {
   /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
   ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
   /** With this, a Paseo agent a Dispatcher bot created wakes that bot's thread when it finishes or fails. */
@@ -39,7 +39,7 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
     const notifier = createApprovalNotifier({ connection, origins, log });
     stops.push(() => notifier.stop());
     let owns: (ref: string) => boolean = () => false;
-    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins, ownsRef: (ref) => owns(ref) }));
+    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins, ownsRef: (ref) => owns(ref), agentContext: (agentId) => connection.agentContext(agentId) }));
     if (dispatcher) stops.push(startDispatcherWake({ ...dispatcher, connection, log }));
     // After the gatekeeper, which closes the cards an earlier run left open.
     if (ak) {

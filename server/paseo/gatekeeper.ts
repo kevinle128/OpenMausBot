@@ -5,25 +5,17 @@ import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord, Store } from "../store.ts";
 import type { PaseoConnection, PaseoPermissionRequested } from "./connection.ts";
 import type { AutoApprovalHistory, RequestOrigins } from "./auto-approval.ts";
+import { approvingOption, createJevGuard, scoresLine, type AgentContext, type GuardOutcome } from "./jev-guard.ts";
 import { classifyPermission, permissionTarget } from "./permission-rules.ts";
 import { APPROVE_ONCE, hookReadQuestion, questionAnswer, readQuestions, type PaseoQuestion } from "./question-rules.ts";
 
 export const PASEO_BOT_ID = "paseo-gatekeeper";
 const PASEO_BOT_NAME = "Paseo";
-export const JEV_TIMEOUT_MS = 1_000;
-export const JEV_MIN_PROBABILITY = 0.9;
 const SUBTITLE_CHARS = 600;
 const MAX_QUESTION_CHOICES = 6;
 const MAX_CHOICE_CHARS = 120;
 /** The one button of a question card the person cannot answer here: the agent's question stays in Paseo. */
 export const ANSWER_IN_PASEO = "Answer in Paseo";
-
-export const JEV_INSTRUCTIONS =
-  "A coding agent asks to run the shell command in `command`, in the directory `cwd`. Answer yes only when everything the " +
-  "command does is one of two things: reading an environment file (a file named .env or .env.something), or running `ak secrets` " +
-  "with a read-only subcommand (get, list, search, describe, request, resolve, audit or grants), with the output staying on the " +
-  "screen. Answer no when any step writes, deletes or changes anything, runs another program that could send data out, sends " +
-  "anything over a network, or when you are not sure.";
 
 /** The Paseo conversation's bot, made on first use. */
 export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotRecord {
@@ -35,7 +27,7 @@ export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotReco
   );
 }
 
-type DeciderPort = Pick<Decider, "yesNo">;
+type DeciderPort = Pick<Decider, "ask">;
 
 export interface PaseoGatekeeperDeps {
   connection: Pick<PaseoConnection, "on" | "off" | "respondToPermission">;
@@ -51,6 +43,8 @@ export interface PaseoGatekeeperDeps {
   origins?: Pick<RequestOrigins, "note">;
   /** True for an `ak` ref OpenMausBot owns: an `ak secrets run` that names only such refs is allowed. */
   ownsRef?: (ref: string) => boolean;
+  /** The agent's first prompt and last tool calls, for Jev Guard. Without it Jev judges the call alone. */
+  agentContext?(agentId: string): Promise<AgentContext | null>;
 }
 
 type Stage = "deciding" | "settled" | "resolved";
@@ -69,18 +63,11 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
 
   const paseoBot = () => ensurePaseoBot(store);
 
-  async function jevAllows(command: string, cwd: string, provider: string): Promise<boolean> {
-    try {
-      const result = await decider.yesNo("paseoPermission", { command: redactSecretsInText(command), cwd, provider }, JEV_INSTRUCTIONS, { timeoutMs: JEV_TIMEOUT_MS });
-      if (!result.ok) {
-        deps.log(`paseo gatekeeper: Jev gave no answer (${result.reason}); asking the person`);
-        return false;
-      }
-      return result.answers.p >= JEV_MIN_PROBABILITY;
-    } catch {
-      return false;
-    }
-  }
+  const guard = createJevGuard({
+    decider,
+    log: (message) => deps.log(message),
+    ...(deps.agentContext ? { agentContext: deps.agentContext } : {}),
+  });
 
   function describe({ agent, request }: PaseoPermissionRequested): { label: string; what: string } {
     const target = permissionTarget(request);
@@ -98,7 +85,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
     return only.labels.every((choice) => choice.length <= MAX_CHOICE_CHARS && redactSecretsInText(choice) === choice) ? only : null;
   }
 
-  async function ask(event: PaseoPermissionRequested, key: string): Promise<void> {
+  async function ask(event: PaseoPermissionRequested, key: string, highRisk?: string): Promise<void> {
     const { agentId, request, agent } = event;
     const isQuestion = request.kind === "question";
     const questions = isQuestion ? readQuestions(request) : null;
@@ -113,8 +100,8 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
     const opened = approvals.open({
       key,
       threadId: bot.threadId,
-      title: isQuestion ? "A Paseo agent asks you a question" : "A Paseo agent needs your approval",
-      subtitle: `${oneLine(`${label} · ${agent.cwd}`, 200)}\n${oneLine(what, SUBTITLE_CHARS)}`,
+      title: `${isQuestion ? "A Paseo agent asks you a question" : "A Paseo agent needs your approval"}${highRisk ? " · Jev: high risk" : ""}`,
+      subtitle: `${oneLine(`${label} · ${agent.cwd}`, 200)}\n${oneLine(what, SUBTITLE_CHARS)}${highRisk ? `\nJev: high risk, because ${highRisk}.` : ""}`,
       tool: request.name,
       ...(isQuestion ? { choices: single ? single.labels : [ANSWER_IN_PASEO], ...(single ? {} : { leave: ANSWER_IN_PASEO }) } : {}),
       onAnswer: async (decision, choice) => {
@@ -130,17 +117,32 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
   }
 
   /** One line for the Inbox: the agent, where it works, what it was allowed to do and which rule allowed it. */
-  function record(event: PaseoPermissionRequested, target: ReturnType<typeof permissionTarget>, rule: string): void {
+  function record(event: PaseoPermissionRequested, target: ReturnType<typeof permissionTarget>, rule: string, extra: { shown?: string; detail?: string } = {}): void {
     if (!deps.history) return;
     const { agentId, agent } = event;
     // The line leaves this process's trust boundary like a card does; a command can carry a key inline.
-    const shown = target ? (target.kind === "command" ? target.command : target.filePath) : event.request.name;
+    const shown = extra.shown ?? (target ? (target.kind === "command" ? target.command : target.filePath) : event.request.name);
     const what = redactSecretsInText(oneLine(target?.kind === "file" ? `đọc file ${shown}` : shown, SUBTITLE_CHARS));
     try {
-      deps.history({ key: `${agentId}|${what}`, agent: describe(event).label, workspace: agent.cwd, what, rule });
+      deps.history({ key: `${agentId}|${what}`, agent: describe(event).label, workspace: agent.cwd, what, rule, ...(extra.detail ? { detail: extra.detail } : {}) });
     } catch (error) {
       deps.log(`paseo gatekeeper: could not write the history line: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** What Jev Guard is asked about: a tool call, or a question with one plain yes option. Null for anything else. */
+  function guardSubject(event: PaseoPermissionRequested, target: ReturnType<typeof permissionTarget>): { input: string; shown?: string; choice: string | null } | null {
+    const { request } = event;
+    if (request.kind === "tool") {
+      const input = target ? (target.kind === "command" ? target.command : `read ${target.filePath}`) : JSON.stringify(request.input ?? request.title ?? request.name);
+      return { input, choice: null };
+    }
+    if (request.kind !== "question") return null;
+    const single = tappable(readQuestions(request));
+    const choice = single ? approvingOption(single.labels) : null;
+    if (!single || choice === null) return null;
+    const asked = `${single.question} [options: ${single.labels.join(" | ")}] [the guard would pick: ${choice}]`;
+    return { input: asked, shown: single.question, choice };
   }
 
   async function handle(event: PaseoPermissionRequested): Promise<void> {
@@ -157,9 +159,19 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : classifyPermission(request, { cwd: agent.cwd, ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) });
       let allowed = decision.verdict === "allow";
       let rule = decision.rule;
-      if (decision.verdict === "ambiguous") {
-        allowed = target?.kind === "command" && (await jevAllows(target.command, agent.cwd, agent.provider));
-        rule = allowed ? "jev-allowed" : "jev-not-allowed";
+      let verdict: GuardOutcome | null = null;
+      let choice: string | null = null;
+      let shown: string | undefined;
+      if (!allowed) {
+        // What the fixed rules did not allow goes to Jev Guard: a tool call, or a question with one plain yes option.
+        const subject = guardSubject(event, target);
+        if (subject) {
+          choice = subject.choice;
+          shown = subject.shown;
+          verdict = await guard.assess({ agentId, agentTitle: describe(event).label, tool: request.name, input: subject.input, cwd: agent.cwd });
+          allowed = verdict.level === "allow";
+          rule = "jev-guard";
+        }
       }
       if (stages.get(key) === "resolved") {
         stages.delete(key);
@@ -168,17 +180,23 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       stages.set(key, "settled");
       if (allowed) {
         const action = request.actions?.find((candidate) => candidate.behavior === "allow");
+        const only = choice !== null ? readQuestions(request)?.[0] : undefined;
         await connection.respondToPermission(
           agentId,
           request.id,
-          hookRead ? questionAnswer(request, hookRead.question, APPROVE_ONCE) : { behavior: "allow", ...(action ? { selectedActionId: action.id } : {}) },
+          hookRead ? questionAnswer(request, hookRead.question, APPROVE_ONCE)
+            : only && choice !== null ? questionAnswer(request, only.question, choice)
+            : { behavior: "allow", ...(action ? { selectedActionId: action.id } : {}) },
         );
         deps.log(`paseo gatekeeper: allowed request ${request.id} of agent ${agentId} (${rule})`);
-        record(event, hookRead ? { kind: "file", filePath: hookRead.filePath } : target, rule);
+        record(event, hookRead ? { kind: "file", filePath: hookRead.filePath } : target, rule, {
+          ...(shown ? { shown } : {}),
+          ...(verdict?.scores ? { detail: scoresLine(verdict.scores) } : {}),
+        });
         return;
       }
       asked = true;
-      await ask(event, key);
+      await ask(event, key, verdict?.level === "deny" ? verdict.why ?? "the call could do serious harm" : undefined);
     } catch (error) {
       deps.log(`paseo gatekeeper: request ${request.id} of agent ${agentId} failed: ${error instanceof Error ? error.message : String(error)}`);
       // A card that failed to open is logged above; only an allow the daemon refused still needs its card.

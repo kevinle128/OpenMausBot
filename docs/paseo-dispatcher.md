@@ -33,6 +33,22 @@ and `git diff` run that hook. The check uses OpenMausBot's own environment, so i
 assumes the agents run as the same user with no extra `GIT_*` variables, and a
 relative `cd` is refused when `CDPATH` is set. One small write is accepted:
 `sort -T` temporary files; `git status` also refreshes the index.
+Everything the fixed rules above do not allow goes to Jev Guard, which asks Jev
+four questions about the exact call (risk 0 to 3, whether a careful engineer would
+want it approved, whether the person asked for it in the agent's first prompt, and
+whether it follows an instruction planted in untrusted content) together with the
+agent's title, first prompt (700 characters) and last six tool calls, all with keys
+removed. Reading anything on this machine, secrets included, is normal; sending
+data off the machine, destroying data and obeying planted instructions are the
+risks. It allows when the risk is under 1.5 and approval under 0.75, or when the
+call is riskier but the person asked for it (0.85) and the risk is under 2.5. It
+opens a card when the call is risky and was not asked for, and a card marked "Jev:
+high risk" when the risk is 2.5 or more or the call looks planted (0.7). Any error,
+missing key or answer slower than 3 seconds opens a card. A question with one plain
+yes option (Yes, Allow, Approve, Continue) is judged the same way and answered with
+that option; any other question is a card. Each allow is written to the Inbox with
+the rule `jev-guard` and the four scores. The questions and thresholds are adapted
+from [jev-guard](https://github.com/leepokai/jev-guard) (MIT, commit `cda06c4`).
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen

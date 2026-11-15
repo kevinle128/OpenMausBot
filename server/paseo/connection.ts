@@ -62,8 +62,8 @@ export interface PaseoClientPort {
   respondToPermission(agentId: string, requestId: string, response: PaseoPermissionResponse): Promise<void>;
   /** Tests that do not need them leave these out. */
   sendAgentMessage?(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
-  fetchAgentTimeline?(agentId: string, options?: { direction?: "tail"; limit?: number; projection?: "projected" }): Promise<{
-    entries: Array<{ item: { type: string; detail?: { type?: string; command?: unknown } } }>;
+  fetchAgentTimeline?(agentId: string, options?: { direction?: "tail" | "after"; limit?: number; projection?: "projected" }): Promise<{
+    entries: Array<{ item: { type: string; text?: unknown; name?: unknown; detail?: { type?: string; command?: unknown; filePath?: unknown } } }>;
   }>;
 }
 
@@ -169,6 +169,28 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
       if (item.type === "tool_call" && item.detail?.type === "shell" && typeof item.detail.command === "string") commands.push(item.detail.command);
     }
     return commands;
+  }
+
+  /** The first message the person sent the agent and its last tool calls, for the permission guard. Throws when not connected. */
+  async agentContext(agentId: string, limit = 40): Promise<{ firstPrompt?: string; recent: string[] }> {
+    const client = this.client;
+    if (!client?.fetchAgentTimeline || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    const tail = await client.fetchAgentTimeline(agentId, { direction: "tail", limit, projection: "projected" });
+    const recent: string[] = [];
+    for (const { item } of tail.entries) {
+      if (item.type !== "tool_call") continue;
+      const name = typeof item.name === "string" ? item.name : "tool";
+      const detail = item.detail;
+      const what = detail?.type === "shell" && typeof detail.command === "string" ? detail.command
+        : detail?.type === "read" && typeof detail.filePath === "string" ? detail.filePath
+        : "";
+      recent.push(what ? `${name}: ${what}` : name);
+    }
+    // The start of the conversation holds the first prompt; a daemon that cannot page from the start leaves the oldest one seen.
+    const firstOf = (entries: typeof tail.entries) => entries.find((entry) => entry.item.type === "user_message" && typeof entry.item.text === "string")?.item.text as string | undefined;
+    let firstPrompt = await client.fetchAgentTimeline(agentId, { direction: "after", limit: 5, projection: "projected" }).then((page) => firstOf(page.entries), () => undefined);
+    firstPrompt ??= firstOf(tail.entries);
+    return { ...(firstPrompt ? { firstPrompt } : {}), recent: recent.slice(-6) };
   }
 
   private now(): number {
