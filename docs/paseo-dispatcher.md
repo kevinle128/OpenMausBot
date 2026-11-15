@@ -16,6 +16,15 @@ VAR=REF` refs are all secrets OpenMausBot keeps for the Paseo bot) and the
 matching exec request in the `ak` inbox, for 24 hours and for that program and
 variable only. A ref OpenMausBot does not own, and every `ak` write command,
 still ask the person; the secret request card's allow button reads "Allow 24h".
+It allows read-only shell commands without asking, by a fixed rule and never by
+Jev: `git` (diff, log, show, status, blame, list-only branch, rev-parse,
+ls-files, ls-tree, grep, describe, remote -v, config --get/--list), `ls`, `cat`,
+`head`, `tail` (not `-f`), `wc`, `rg`, `grep`, `find` (not -exec, -delete or
+-fprint), `pwd`, `stat`, `file`, `du`, `df`, `which`, `tree`, `realpath`,
+`basename`, `dirname`, `sort`, `uniq`, `cut`, `tr`, `jq`, `diff`, `cmp` and
+`echo`, any path. Pipes and `&&` are allowed when every part is read-only, with
+an optional `cd <dir> &&` first. Any redirect, substitution, `;`, `||`,
+background job, or an option that writes a file or runs a program still asks.
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen
