@@ -37,7 +37,7 @@ describe("approval notice delivery", () => {
     const f = fixture({ a1: ["ak secrets request API_KEY"], a2: ["ls"] });
     f.update("a1", "idle");
     f.update("a2", "idle");
-    expect(await f.notifier.approved({ ref: "API_KEY" })).toBe("sent");
+    expect((await f.notifier.approved({ ref: "API_KEY" })).result).toBe("sent");
     expect(f.connection.sendMessage).toHaveBeenCalledTimes(1);
     expect(f.connection.sendMessage).toHaveBeenCalledWith("a1", expect.stringMatching(/^already approved ak secrets: API_KEY/));
   });
@@ -45,28 +45,34 @@ describe("approval notice delivery", () => {
   it("tells nobody when no agent or two agents match", async () => {
     const none = fixture({ a1: ["ls"] });
     none.update("a1", "idle");
-    expect(await none.notifier.approved({ ref: "API_KEY" })).toBe("none");
+    expect((await none.notifier.approved({ ref: "API_KEY" })).result).toBe("none");
     const two = fixture({ a1: ["ak secrets request API_KEY"], a2: ["ak secrets run --env T=API_KEY -- x"] });
     two.update("a1", "idle");
     two.update("a2", "idle");
-    expect(await two.notifier.approved({ ref: "API_KEY" })).toBe("none");
+    expect((await two.notifier.approved({ ref: "API_KEY" })).result).toBe("none");
     expect(two.connection.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("names the agent found through its commands, with its title and directory", async () => {
+    const f = fixture({ a1: ["ak secrets request API_KEY"] });
+    f.connection.emit("agentUpdate", { id: "a1", status: "idle", title: "Fix the build", cwd: "/work/app", updatedAt: new Date().toISOString() });
+    expect((await f.notifier.approved({ ref: "API_KEY" })).agent).toEqual({ agentId: "a1", title: "Fix the build", cwd: "/work/app" });
   });
 
   it("prefers the agent the gatekeeper saw ask for the ref", async () => {
     const f = fixture();
     f.origins.note("ak secrets request API_KEY", { agentId: "a9", agent: "Nine", cwd: "/w" });
     f.update("a9", "idle");
-    expect(await f.notifier.approved({ ref: "API_KEY" })).toBe("sent");
+    expect((await f.notifier.approved({ ref: "API_KEY" })).result).toBe("sent");
     expect(f.connection.sendMessage).toHaveBeenCalledWith("a9", expect.any(String));
   });
 
   it("waits for a running agent to be idle, never interrupts, and sends once", async () => {
     const f = fixture({ a1: ["ak secrets request API_KEY"] });
     f.update("a1", "running");
-    expect(await f.notifier.approved({ ref: "API_KEY" })).toBe("queued");
+    expect((await f.notifier.approved({ ref: "API_KEY" })).result).toBe("queued");
     expect(f.connection.sendMessage).not.toHaveBeenCalled();
-    expect(await f.notifier.approved({ ref: "API_KEY" })).toBe("none");
+    expect((await f.notifier.approved({ ref: "API_KEY" })).result).toBe("none");
     f.update("a1", "idle");
     await Promise.resolve();
     await Promise.resolve();
@@ -90,6 +96,6 @@ describe("approval notice delivery", () => {
     const f = fixture({ a1: ["ak secrets request API_KEY"] });
     f.update("a1", "idle");
     f.tick(11 * 60_000);
-    expect(await f.notifier.approved({ ref: "API_KEY" })).toBe("none");
+    expect((await f.notifier.approved({ ref: "API_KEY" })).result).toBe("none");
   });
 });

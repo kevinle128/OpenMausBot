@@ -23,7 +23,7 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none" } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string } } = {}) {
   const told: Array<{ ref: string; program?: string }> = [];
   const history: AutoApproval[] = [];
   const lines: Message[] = [];
@@ -58,7 +58,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     screenLocked: async () => options.locked === true,
     log: (line) => logs.push(line),
     history: (entry) => history.push(entry),
-    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string }) => { told.push(approved); return options.notify!; } } : {}),
+    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string }) => { told.push(approved); return { result: options.notify!, ...(options.notifiedAgent ? { agent: options.notifiedAgent } : {}) }; } } : {}),
     origins: { find: (ref) => (options.origin && ref === "API_KEY" ? options.origin : null) },
     secretsDir: options.secretsDir ?? "/nonexistent-ak-dir",
     pollMs: options.pollMs ?? 3_600_000,
@@ -107,6 +107,13 @@ describe("ak inbox watcher", () => {
     await t.watcher.checkNow();
     expect(t.told).toEqual([{ ref: "API_KEY" }]);
     expect(t.history[0]!.what).toContain("đã báo agent");
+  });
+
+  it("names the agent the notice found when the gatekeeper never saw it ask", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "sent", notifiedAgent: { agentId: "a1", title: "Fix the build", cwd: "/work/app" } });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.history[0]).toMatchObject({ agent: "Fix the build", workspace: "/work/app" });
   });
 
   it("tells the agent when the person taps Allow on a card, with the program for an exec request", async () => {

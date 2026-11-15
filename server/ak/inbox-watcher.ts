@@ -11,6 +11,8 @@ import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
 
+type Told = Awaited<ReturnType<NonNullable<InboxWatcherDeps["notifyAgent"]>>>;
+
 export const AK_CARD_KEY_PREFIX = "ak:";
 export const AK_APPROVAL_TTL = "24h";
 const PENDING_FILE = "pending.json";
@@ -37,7 +39,7 @@ export interface InboxWatcherDeps {
   /** Receives each request allowed without the person, for the Inbox's Done tab. */
   history?: AutoApprovalHistory;
   /** Tells the Paseo agent that waited for this approval to go on. */
-  notifyAgent?(approved: { ref: string; program?: string }): Promise<"sent" | "queued" | "none">;
+  notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -175,19 +177,21 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   /** One line for the Inbox: the secret's ref and purpose, the 24 hours, and the Paseo agent that asked when it is known. */
   /** The agent that waited is told; a failure is logged and never undoes the approval. */
-  async function tellAgent(scope: Scope, request: AkPendingRequest): Promise<"sent" | "queued" | "none"> {
-    if (!deps.notifyAgent) return "none";
+  async function tellAgent(scope: Scope, request: AkPendingRequest): Promise<Told> {
+    if (!deps.notifyAgent) return { result: "none" };
     try {
       return await deps.notifyAgent({ ref: scope.ref, ...(isExec(request) ? { program: execLabel(request) } : {}) });
     } catch (error) {
       log(`ak inbox: could not tell the agent about "${scope.ref}" (${error instanceof Error ? error.message : String(error)})`);
-      return "none";
+      return { result: "none" };
     }
   }
 
-  function record(scope: Scope, request: AkPendingRequest, told: "sent" | "queued" | "none" = "none"): void {
+  function record(scope: Scope, request: AkPendingRequest, told: Told = { result: "none" }): void {
     if (!deps.history) return;
-    const origin = deps.origins?.find(scope.ref) ?? null;
+    // The agent the notice found by its commands counts as much as the one the gatekeeper saw ask.
+    const seen = deps.origins?.find(scope.ref) ?? null;
+    const origin = told.agent ? { agentId: told.agent.agentId, agent: told.agent.title, cwd: told.agent.cwd || "không rõ project" } : seen;
     const label = text(request.agentLabel);
     const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
     const exec = isExec(request);
@@ -195,7 +199,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const what = exec
       ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}, ${AK_APPROVAL_TTL}`, 300))
       : `cấp quyền đọc bí mật ${scope.ref}${purpose}, ${AK_APPROVAL_TTL}`;
-    const notice = !deps.notifyAgent ? "" : told === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
+    const notice = !deps.notifyAgent ? "" : !told.agent && told.result === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
     try {
       deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
     } catch (error) {
