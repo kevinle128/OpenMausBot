@@ -549,6 +549,36 @@ describe("gitConfigRunsNoProgram", () => {
     expect(gitConfigRunsNoProgram("/nonexistent-omb-dir")).toBe(false);
   });
 
+  it("accepts the exact standard git-lfs filter and a hooks folder, and refuses anything else", () => {
+    const set = (key: string, value: string) => execFileSync("git", ["config", "--add", key, value], { cwd: repo });
+    const reset = () => {
+      forgetGitConfigAnswers();
+      for (const key of ["filter.lfs.clean", "filter.lfs.smudge", "filter.lfs.process", "core.hookspath", "core.pager", "filter.other.clean"]) {
+        try { execFileSync("git", ["config", "--unset-all", key], { cwd: repo }); } catch { /* not set */ }
+      }
+    };
+    reset();
+    set("filter.lfs.clean", "git-lfs clean -- %f");
+    set("filter.lfs.smudge", "git-lfs smudge -- %f");
+    set("filter.lfs.process", "git-lfs filter-process");
+    set("core.hookspath", "/some/hooks");
+    expect(gitConfigRunsNoProgram(repo)).toBe(true);
+    set("core.pager", "less");
+    forgetGitConfigAnswers();
+    expect(gitConfigRunsNoProgram(repo)).toBe(false);
+    reset();
+    set("filter.lfs.clean", "git-lfs clean -- %f; touch x");
+    expect(gitConfigRunsNoProgram(repo)).toBe(false);
+    reset();
+    set("filter.lfs.smudge", "git-lfs smudge -- %f");
+    set("filter.lfs.smudge", "evil");
+    expect(gitConfigRunsNoProgram(repo)).toBe(false);
+    reset();
+    set("filter.other.clean", "git-lfs clean -- %f");
+    expect(gitConfigRunsNoProgram(repo)).toBe(false);
+    reset();
+  });
+
   it("keeps an answer for a minute", () => {
     forgetGitConfigAnswers();
     let clock = 1_000;

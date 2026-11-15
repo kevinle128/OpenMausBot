@@ -1,9 +1,15 @@
 import { execFileSync } from "node:child_process";
 
-/** The settings that make git run another program during a read: a pager, a diff or text filter, a file monitor, a hook folder,
- * a signing program or an editor. Keys are matched as git stores them (section and variable in lower case). */
+/** The settings that make git run another program during a read: a pager, a diff or text filter, a file monitor, a signing
+ * program or an editor. Hooks are not here: the read-only subcommands never run them. Keys are matched as git stores them (section and variable in lower case). */
 const RUNNING_SETTINGS =
-  "^(core\\.fsmonitor|core\\.pager|core\\.hookspath|diff\\.external|diff\\..+\\.(textconv|command)|filter\\..+\\.(clean|smudge|process)|gpg\\.program|gpg\\..+\\.program|pager\\..+|interactive\\.difffilter|sequence\\.editor|core\\.editor)$";
+  "^(core\\.fsmonitor|core\\.pager|diff\\.external|diff\\..+\\.(textconv|command)|filter\\..+\\.(clean|smudge|process)|gpg\\.program|gpg\\..+\\.program|pager\\..+|interactive\\.difffilter|sequence\\.editor|core\\.editor)$";
+/** The standard git-lfs filter settings, which only run `git-lfs`; any other value of these keys is refused. */
+const STANDARD_LFS = new Map([
+  ["filter.lfs.clean", "git-lfs clean -- %f"],
+  ["filter.lfs.smudge", "git-lfs smudge -- %f"],
+  ["filter.lfs.process", "git-lfs filter-process"],
+]);
 const TIMEOUT_MS = 1_500;
 const CACHE_MS = 60_000;
 
@@ -20,7 +26,14 @@ export function gitConfigRunsNoProgram(dir: string | undefined, now: () => numbe
   if (known && known.until > now()) return known.safe;
   let safe = false;
   try {
-    execFileSync("git", ["config", "--get-regexp", RUNNING_SETTINGS], { cwd: dir, timeout: TIMEOUT_MS, stdio: "ignore" });
+    const found = execFileSync("git", ["config", "--get-regexp", RUNNING_SETTINGS], {
+      cwd: dir, timeout: TIMEOUT_MS, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    });
+    // Each line is `key value`. The values are compared and never logged.
+    safe = found.split("\n").filter(Boolean).every((line) => {
+      const at = line.indexOf(" ");
+      return at > 0 && STANDARD_LFS.get(line.slice(0, at)) === line.slice(at + 1).trim();
+    });
   } catch (error) {
     safe = (error as { status?: unknown }).status === 1;
   }
