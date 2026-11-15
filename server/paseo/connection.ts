@@ -60,6 +60,11 @@ export interface PaseoClientPort {
   };
   onAgentAttentionRequired(handler: (notification: AgentAttentionRequiredNotification) => void): () => void;
   respondToPermission(agentId: string, requestId: string, response: PaseoPermissionResponse): Promise<void>;
+  /** Tests that do not need them leave these out. */
+  sendAgentMessage?(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
+  fetchAgentTimeline?(agentId: string, options?: { direction?: "tail"; limit?: number; projection?: "projected" }): Promise<{
+    entries: Array<{ item: { type: string; detail?: { type?: string; command?: unknown } } }>;
+  }>;
 }
 
 export type PaseoPermissionResponse = PaseoAgentPermissionResponse;
@@ -145,6 +150,25 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
     // The request stays pending until the daemon's own update drops it: that update reports it resolved, and an update
     // that still lists it in the meantime is not a new request.
     this.responded.set(respondedKey(agentId, requestId), this.now() + RESPONDED_TTL_MS);
+  }
+
+  /** Sends text to an agent as a user message. The caller sends only to an idle agent: this never interrupts a turn. */
+  async sendMessage(agentId: string, text: string): Promise<void> {
+    const client = this.client;
+    if (!client?.sendAgentMessage || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    await client.sendAgentMessage(agentId, text);
+  }
+
+  /** The shell commands among the agent's last tool calls. */
+  async recentShellCommands(agentId: string, limit = 40): Promise<string[]> {
+    const client = this.client;
+    if (!client?.fetchAgentTimeline || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    const page = await client.fetchAgentTimeline(agentId, { direction: "tail", limit, projection: "projected" });
+    const commands: string[] = [];
+    for (const { item } of page.entries) {
+      if (item.type === "tool_call" && item.detail?.type === "shell" && typeof item.detail.command === "string") commands.push(item.detail.command);
+    }
+    return commands;
   }
 
   private now(): number {

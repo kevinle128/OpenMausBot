@@ -23,7 +23,8 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string } } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none" } = {}) {
+  const told: Array<{ ref: string; program?: string }> = [];
   const history: AutoApproval[] = [];
   const lines: Message[] = [];
   const store = {
@@ -57,6 +58,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     screenLocked: async () => options.locked === true,
     log: (line) => logs.push(line),
     history: (entry) => history.push(entry),
+    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string }) => { told.push(approved); return options.notify!; } } : {}),
     origins: { find: (ref) => (options.origin && ref === "API_KEY" ? options.origin : null) },
     secretsDir: options.secretsDir ?? "/nonexistent-ak-dir",
     pollMs: options.pollMs ?? 3_600_000,
@@ -64,7 +66,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   });
   stops.push(watcher.stop);
   const card = () => lines.find((line) => line.card)?.card;
-  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card, history };
+  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card, history, told };
 }
 
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
@@ -97,6 +99,30 @@ describe("ak inbox watcher", () => {
     expect(origins.find("API_KEY")).toBeNull();
     origins.note("ak secrets request OTHER", { agentId: "a1", agent: "One", cwd: "/one" });
     expect(origins.find("OTHER")).toMatchObject({ agentId: "a1" });
+  });
+
+  it("tells the agent after an automatic approval and marks the history line", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "sent" });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.told).toEqual([{ ref: "API_KEY" }]);
+    expect(t.history[0]!.what).toContain("đã báo agent");
+  });
+
+  it("tells the agent when the person taps Allow on a card, with the program for an exec request", async () => {
+    const t = setup({ notify: "queued" });
+    t.inbox.requests = [exec("DEPLOY_TOKEN")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.card()!.requestId!, "allow");
+    await flush();
+    expect(t.told).toEqual([{ ref: "DEPLOY_TOKEN", program: "/usr/bin/deploy" }]);
+  });
+
+  it("says the agent is not known when nobody was told", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "none" });
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    expect(t.history[0]!.what).toContain("không rõ agent");
   });
 
   it("says the project is not known when no Paseo agent asked for the ref", async () => {

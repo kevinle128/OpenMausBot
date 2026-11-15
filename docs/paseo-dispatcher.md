@@ -16,6 +16,12 @@ VAR=REF` refs are all secrets OpenMausBot keeps for the Paseo bot) and the
 matching exec request in the `ak` inbox, for 24 hours and for that program and
 variable only. A ref OpenMausBot does not own, and every `ak` write command,
 still ask the person; the secret request card's allow button reads "Allow 24h".
+When an `ak` secret request is approved, by OpenMausBot or by the person on the
+card, the Paseo agent that asked is sent one message, `already approved ak
+secrets: <REF>`, so it can run the command again. The agent is the one seen
+running `ak secrets` for that ref in the last 10 minutes; with none or several,
+nobody is told. A running agent is not interrupted: the message waits until it is
+idle, for up to 10 minutes. The Done line says whether the agent was told.
 Pressing Deny, or closing a question card, leaves the question to be answered in
 Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
 command, the hook's read question, a Vault secret request) is written as one

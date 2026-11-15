@@ -36,6 +36,8 @@ export interface InboxWatcherDeps {
   origins?: Pick<RequestOrigins, "find">;
   /** Receives each request allowed without the person, for the Inbox's Done tab. */
   history?: AutoApprovalHistory;
+  /** Tells the Paseo agent that waited for this approval to go on. */
+  notifyAgent?(approved: { ref: string; program?: string }): Promise<"sent" | "queued" | "none">;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -153,7 +155,10 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       onAnswer: async (decision) => {
         handled.add(key);
         try {
-          if (decision === "allow") await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+          if (decision === "allow") {
+            await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+            void tellAgent(scope, request);
+          }
           else await cli.deny(answerScope);
         } catch (error) {
           // The answer did not reach ak and the request is still in the inbox: the next pass opens a new card for it.
@@ -169,7 +174,18 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
   }
 
   /** One line for the Inbox: the secret's ref and purpose, the 24 hours, and the Paseo agent that asked when it is known. */
-  function record(scope: Scope, request: AkPendingRequest): void {
+  /** The agent that waited is told; a failure is logged and never undoes the approval. */
+  async function tellAgent(scope: Scope, request: AkPendingRequest): Promise<"sent" | "queued" | "none"> {
+    if (!deps.notifyAgent) return "none";
+    try {
+      return await deps.notifyAgent({ ref: scope.ref, ...(isExec(request) ? { program: execLabel(request) } : {}) });
+    } catch (error) {
+      log(`ak inbox: could not tell the agent about "${scope.ref}" (${error instanceof Error ? error.message : String(error)})`);
+      return "none";
+    }
+  }
+
+  function record(scope: Scope, request: AkPendingRequest, told: "sent" | "queued" | "none" = "none"): void {
     if (!deps.history) return;
     const origin = deps.origins?.find(scope.ref) ?? null;
     const label = text(request.agentLabel);
@@ -179,8 +195,9 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const what = exec
       ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}, ${AK_APPROVAL_TTL}`, 300))
       : `cấp quyền đọc bí mật ${scope.ref}${purpose}, ${AK_APPROVAL_TTL}`;
+    const notice = !deps.notifyAgent ? "" : told === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
     try {
-      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
+      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
     } catch (error) {
       log(`ak inbox: could not write the history line (${error instanceof Error ? error.message : String(error)})`);
     }
@@ -193,7 +210,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       // An exec request is answered for its own program and variable, exactly as the card's Allow does.
       await cli.approve({ ...scope, ...(isExec(request) ? {} : { env: "" }), ttl: AK_APPROVAL_TTL });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
-      record(scope, request);
+      record(scope, request, await tellAgent(scope, request));
       return true;
     } catch (error) {
       if (guard.report(error)) return true;

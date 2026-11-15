@@ -6,7 +6,7 @@ import type { Store } from "../store.ts";
 import type { VaultStore } from "../vault-store.ts";
 import { createAkCli, type AkCli } from "./cli.ts";
 import { createAkGuard } from "./guard.ts";
-import { startInboxWatcher } from "./inbox-watcher.ts";
+import { startInboxWatcher, type InboxWatcherDeps } from "./inbox-watcher.ts";
 import { startVaultSync } from "./vault-sync.ts";
 
 export interface AkBridgeWiring {
@@ -24,6 +24,8 @@ export interface AkBridgeWiring {
   cli?: AkCli;
   secretsDir?: string;
   /** Receives the live test for the refs this bridge owns, once the Vault sync is running. */
+  /** Tells the Paseo agent that waited for an approval to go on. */
+  notifyAgent?: InboxWatcherDeps["notifyAgent"];
   onOwns?(owns: (ref: string) => boolean): void;
 }
 
@@ -44,6 +46,7 @@ export function startAkBridge(wiring: AkBridgeWiring, log: (message: string) => 
     notify: wiring.notify,
     screenLocked: wiring.screenLocked,
     log,
+    ...(wiring.notifyAgent ? { notifyAgent: wiring.notifyAgent } : {}),
     ...(wiring.origins ? { origins: wiring.origins } : {}),
     ...(wiring.history ? { history: wiring.history } : {}),
     ...(wiring.secretsDir ? { secretsDir: wiring.secretsDir } : {}),
