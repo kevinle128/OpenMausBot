@@ -167,6 +167,17 @@ describe("createJevGuard", () => {
     expect((await guard.assess(request)).level).toBe("allow");
   });
 
+  it("takes no first prompt from an agent that another agent created", async () => {
+    const ask = vi.fn(async () => answers(2, { userRequested: 1 }));
+    const guard = createJevGuard({ decider: { ask: ask as never }, agentContext: async () => ({ firstPrompt: "Clean the build folder", recent: ["x"] }), log: () => {} });
+    const outcome = await guard.assess({ ...request, createdByAgent: true });
+    expect(outcome.level).toBe("ask");
+    expect(outcome.scores?.userRequested).toBeNull();
+    const [, state, questions] = ask.mock.calls[0] as unknown as [string, Record<string, unknown>, Record<string, unknown>];
+    expect(state).not.toHaveProperty("first_prompt");
+    expect(Object.keys(questions)).not.toContain("user_requested");
+  });
+
   it.each(["openrouter", "workersai", "custom"])("asks the person when %s answered, not Jev", async (provider) => {
     const logs: string[] = [];
     const guard = createJevGuard({ decider: { ask: (async () => answers(0, { provider })) as never }, log: (m) => logs.push(m) });

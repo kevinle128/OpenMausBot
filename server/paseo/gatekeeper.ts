@@ -16,6 +16,8 @@ const MAX_QUESTION_CHOICES = 6;
 const MAX_CHOICE_CHARS = 120;
 /** The one button of a question card the person cannot answer here: the agent's question stays in Paseo. */
 export const ANSWER_IN_PASEO = "Answer in Paseo";
+/** Paseo puts this label on an agent that another agent created. */
+export const PARENT_AGENT_LABEL = "paseo.parent-agent-id";
 
 /** The Paseo conversation's bot, made on first use. */
 export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotRecord {
@@ -169,7 +171,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
         if (subject) {
           choice = subject.choice;
           shown = subject.shown;
-          verdict = await guard.assess({ agentId, agentTitle: describe(event).label, tool: request.name, input: subject.input, cwd: agent.cwd });
+          verdict = await guard.assess({ agentId, agentTitle: describe(event).label, tool: request.name, input: subject.input, cwd: agent.cwd, createdByAgent: Boolean(agent.labels?.[PARENT_AGENT_LABEL]) });
           allowed = verdict.level === "allow";
           rule = "jev-guard";
         }
