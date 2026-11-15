@@ -180,7 +180,10 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
   });
 
   function view(auth: RequestAuth): InboxView {
-    const rows = [...askRows(auth), ...lines.filter((line) => lineFor(auth, line)).map(lineRow)].sort((a, b) => b.at - a.at).slice(0, VIEW_ROWS);
+    // Every open ask is listed; the rest of the view is filled with the newest lines, so news never pushes an ask out.
+    const asks = askRows(auth);
+    const rest = lines.filter((line) => lineFor(auth, line)).map(lineRow).sort((a, b) => b.at - a.at).slice(0, Math.max(0, VIEW_ROWS - asks.length));
+    const rows = [...asks, ...rest].sort((a, b) => b.at - a.at);
     return { botId: null, threadId: null, rows, anchor: null };
   }
 

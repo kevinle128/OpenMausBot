@@ -2,6 +2,8 @@
 export interface ShellWord {
   text: string;
   glob: boolean;
+  /** An unquoted `{`: the shell would multiply this word into several. */
+  brace: boolean;
 }
 
 const GLOB_CHARS = new Set(["*", "?", "[", "{"]);
@@ -11,6 +13,7 @@ export function shellWords(command: string): ShellWord[] | null {
   const out: ShellWord[] = [];
   let current = "";
   let glob = false;
+  let brace = false;
   let quote: "'" | '"' | null = null;
   let started = false;
   for (const char of command) {
@@ -20,19 +23,22 @@ export function shellWords(command: string): ShellWord[] | null {
     } else if (char === "'" || char === '"') {
       quote = char;
       started = true;
-    } else if (/\s/.test(char)) {
-      if (started) out.push({ text: current, glob });
+    } else if (char === " " || char === "\t") {
+      // Only a space and a tab separate words, as in the shell; any other white space is part of a word.
+      if (started) out.push({ text: current, glob, brace });
       current = "";
       glob = false;
+      brace = false;
       started = false;
     } else {
       if (GLOB_CHARS.has(char)) glob = true;
+      if (char === "{") brace = true;
       current += char;
       started = true;
     }
   }
   if (quote) return null;
-  if (started) out.push({ text: current, glob });
+  if (started) out.push({ text: current, glob, brace });
   return out;
 }
 

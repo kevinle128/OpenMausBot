@@ -2,6 +2,7 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import type { PaseoPermissionRequest } from "./connection.ts";
+import { gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { READ_ONLY_RULE, readOnlyCommand } from "./read-only-commands.ts";
 import { words } from "./shell-words.ts";
 
@@ -23,6 +24,8 @@ export interface PermissionContext {
   /** Replaced by tests that do not want a real file system. */
   envFile?: (cwd: string | undefined, filePath: string) => boolean;
   /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  /** Replaced by tests. Whether no git setting in this directory makes a read run another program. */
+  gitConfigSafe?: (dir: string | undefined) => boolean;
   /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
   ownsRef?: (ref: string) => boolean;
   regularFile?: (cwd: string | undefined, filePath: string) => boolean;
@@ -206,7 +209,7 @@ function akFlagsAreSafe(sub: string, args: string[]): boolean {
 }
 
 function isPipeFilter(tool: string, args: string[]): boolean {
-  const spec = PIPE_FILTERS[tool];
+  const spec = Object.hasOwn(PIPE_FILTERS, tool) ? PIPE_FILTERS[tool] : undefined;
   if (!spec) return false;
   let plain = 0;
   for (let i = 0; i < args.length; i += 1) {
@@ -278,11 +281,10 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
 function classifyCommand(command: string, context: PermissionContext): PermissionDecision {
   const strict = classifyStrictCommand(command, context);
   if (strict.verdict !== "ask") return strict;
+  // A line with an `ak` step keeps the path above: it is never read-only here.
   const readOnly = readOnlyCommand(command, {
-    otherAllowed: (tokens) => {
-      const step = classifyStep(tokens, context);
-      return step.kind === "allow" && step.rule !== RUN_RULE;
-    },
+    cwd: context.cwd,
+    gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
     approvedExists: (argument) => literalExists(context.cwd, argument),
   });
   return readOnly ? { verdict: "allow", rule: READ_ONLY_RULE } : strict;

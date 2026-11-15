@@ -112,6 +112,17 @@ describe("what was allowed without asking", () => {
   });
 });
 
+describe("the view keeps every open ask", () => {
+  it("lists all asks even when newer lines fill the view", () => {
+    const f = setup();
+    f.ask("eli-main", "r1", {}, 5);
+    for (let i = 0; i < 250; i++) { f.tick(1); f.inbox.autoApproved({ botId: "eli", threadId: "eli-main", key: `k${i}`, text: () => `line ${i}` }); }
+    const rows = f.inbox.view(OWNER).rows;
+    expect(rows).toHaveLength(200);
+    expect(rows.filter((row) => row.kind === "ask")).toHaveLength(1);
+  });
+});
+
 describe("finished work reaches the inbox once", () => {
   const work = (threadId: string, text = "Pricing page updated.") => ({ botId: "mira", threadId, text });
   const asked = { botId: "eli", threadId: "eli-main" };

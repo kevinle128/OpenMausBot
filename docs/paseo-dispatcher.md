@@ -25,6 +25,10 @@ ls-files, ls-tree, grep, describe, remote -v, config --get/--list), `ls`, `cat`,
 `echo`, any path. Pipes and `&&` are allowed when every part is read-only, with
 an optional `cd <dir> &&` first. Any redirect, substitution, `;`, `||`,
 background job, or an option that writes a file or runs a program still asks.
+A `git` step is allowed only when no git setting in its directory (a pager, a diff
+or text filter, a file monitor, a signing program, an editor) would run a program.
+Two small writes are accepted: `sort -T` temporary files and the index refresh of
+`git status`.
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
 secrets: <REF>`, so it can run the command again. The agent is the one seen

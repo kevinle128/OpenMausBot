@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { forgetGitConfigAnswers, gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { akSecretsRequestRef, classifyPermission, isEnvFilePath, type PermissionContext, type PermissionVerdict } from "./permission-rules.ts";
 
 type Request = Parameters<typeof classifyPermission>[0];
@@ -359,7 +360,7 @@ describe("isEnvFilePath", () => {
 });
 
 describe("classifyPermission: read-only commands", () => {
-  const ctx: PermissionContext = { cwd: "/nonexistent-omb-cwd", envFile: () => false };
+  const ctx: PermissionContext = { cwd: "/nonexistent-omb-cwd", envFile: () => false, gitConfigSafe: () => true };
   const verdict = (command: string) => classifyPermission(shell(command), ctx);
 
   it.each([
@@ -443,5 +444,120 @@ describe("classifyPermission: read-only commands", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("classifyPermission: read-only command bypasses", () => {
+  const ctx: PermissionContext = { cwd: "/nonexistent-omb-cwd", gitConfigSafe: () => true };
+  const allowed = (command: string, context: PermissionContext = ctx) => classifyPermission(shell(command), context).verdict === "allow";
+
+  it.each([
+    "git grep -nO\"touch x\" foo",
+    "git grep -iOrm foo",
+    "git grep -O foo",
+    "git diff -no x",
+    "git log -po",
+    "git show -so",
+  ])("refuses a short cluster that writes or runs a program: %j", (command) => {
+    expect(allowed(command)).toBe(false);
+  });
+
+  it.each([
+    "git diff --show-signature",
+    "git log --show-signature",
+    "tree -R",
+    "tree -aR",
+    "tree -Do out.txt",
+    "file -C",
+    "file -bC",
+    "file --compile",
+    "file --comp",
+  ])("refuses %j", (command) => {
+    expect(allowed(command)).toBe(false);
+  });
+
+  it.each([
+    "uniq a{,b}",
+    "uniq a*",
+    "uniq src/*.txt",
+    "ls {a,b}",
+    "ls src/{a,b}",
+    "git log @{u}",
+    "cat a{1..3}",
+  ])("refuses brace expansion and a glob for uniq: %j", (command) => {
+    expect(allowed(command)).toBe(false);
+  });
+
+  it("still allows a quoted brace and one plain uniq operand", () => {
+    expect(allowed("echo '{a,b}'")).toBe(true);
+    expect(allowed("uniq a.txt")).toBe(true);
+    expect(allowed("sort a.txt | uniq -c")).toBe(true);
+  });
+
+  it("allows git only when no setting makes a read run a program, checked in the directory the line works in", () => {
+    const seen: Array<string | undefined> = [];
+    const gitConfigSafe = (dir: string | undefined) => {
+      seen.push(dir);
+      return dir === "/safe";
+    };
+    expect(allowed("git status", { cwd: "/safe", gitConfigSafe })).toBe(true);
+    expect(allowed("git status", { cwd: "/risky", gitConfigSafe })).toBe(false);
+    expect(allowed("cd /safe && git status", { cwd: "/risky", gitConfigSafe })).toBe(true);
+    expect(allowed("cd /risky && git status", { cwd: "/safe", gitConfigSafe })).toBe(false);
+    expect(allowed("cd ~ && git status", { cwd: "/safe", gitConfigSafe })).toBe(false);
+    expect(allowed("ls | wc -l", { cwd: "/risky", gitConfigSafe })).toBe(true);
+    expect(seen).toEqual(["/safe", "/risky", "/safe", "/risky", undefined]);
+  });
+
+  it("an ak step never becomes read-only", () => {
+    expect(classifyPermission(shell("ls && ak secrets get x"), ctx).verdict).toBe("ask");
+    expect(classifyPermission(shell("ak secrets list | wc -l"), ctx).verdict).toBe("ambiguous");
+    expect(classifyPermission(shell("ls | ak secrets get x"), ctx).verdict).toBe("ask");
+  });
+
+  it.each(["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"])("does not take %s for a program, and does not throw", (name) => {
+    expect(allowed(name)).toBe(false);
+    expect(allowed(`cat a | ${name}`)).toBe(false);
+    expect(allowed(`cat .envrc | ${name}`)).toBe(false);
+  });
+
+  it.each(["ls\u000b-la", "ls -la", "ls\f-la", "ls -la", "ls -la "])("refuses white space that is not a space or a tab: %j", (command) => {
+    expect(allowed(command)).toBe(false);
+  });
+});
+
+describe("gitConfigRunsNoProgram", () => {
+  let repo = "";
+  beforeAll(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitcfg-")));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  it("is true for a plain repository, and false once a pager, a filter or a diff tool is set, and for no directory", () => {
+    forgetGitConfigAnswers();
+    expect(gitConfigRunsNoProgram(repo)).toBe(true);
+    for (const [key, value] of [["core.pager", "x"], ["filter.lfs.smudge", "x"], ["diff.external", "x"], ["diff.pdf.textconv", "x"], ["core.fsmonitor", "x"]] as const) {
+      forgetGitConfigAnswers();
+      execFileSync("git", ["config", key, value], { cwd: repo });
+      expect(gitConfigRunsNoProgram(repo), key).toBe(false);
+      execFileSync("git", ["config", "--unset", key], { cwd: repo });
+    }
+    forgetGitConfigAnswers();
+    expect(gitConfigRunsNoProgram(repo)).toBe(true);
+    expect(gitConfigRunsNoProgram(undefined)).toBe(false);
+    expect(gitConfigRunsNoProgram("/nonexistent-omb-dir")).toBe(false);
+  });
+
+  it("keeps an answer for a minute", () => {
+    forgetGitConfigAnswers();
+    let clock = 1_000;
+    expect(gitConfigRunsNoProgram(repo, () => clock)).toBe(true);
+    execFileSync("git", ["config", "core.pager", "x"], { cwd: repo });
+    clock += 30_000;
+    expect(gitConfigRunsNoProgram(repo, () => clock)).toBe(true);
+    clock += 31_000;
+    expect(gitConfigRunsNoProgram(repo, () => clock)).toBe(false);
+    execFileSync("git", ["config", "--unset", "core.pager"], { cwd: repo });
   });
 });

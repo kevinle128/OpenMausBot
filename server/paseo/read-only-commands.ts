@@ -1,9 +1,13 @@
+import { resolve } from "node:path";
+
 import { shellWords, type ShellWord } from "./shell-words.ts";
 
 /** What this rule takes from the other rules in permission-rules.ts. */
 export interface ReadOnlyHooks {
-  /** True for a step the env-file and `ak secrets` read rules already allow. */
-  otherAllowed(tokens: string[]): boolean;
+  /** The agent's working directory; a leading `cd` moves it for the rest of the line. */
+  cwd: string | undefined;
+  /** True when no git setting visible from this directory makes a read run another program. */
+  gitConfigSafe(dir: string | undefined): boolean;
   /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix. */
   approvedExists(argument: string): boolean;
 }
@@ -27,7 +31,7 @@ type Check = (args: string[]) => boolean;
 const anyArg = (args: string[], test: (arg: string) => boolean): boolean => args.some(test);
 const positional = (args: string[]): string[] => args.filter((arg) => !arg.startsWith("-"));
 
-const GIT_WRITES = ["output", "ext-diff", "open-files-in-pager", "exec-path"];
+const GIT_WRITES = ["output", "ext-diff", "open-files-in-pager", "exec-path", "show-signature"];
 const GIT_READ_SUBCOMMANDS = new Set(["diff", "log", "show", "status", "blame", "rev-parse", "ls-files", "ls-tree", "grep", "describe"]);
 const GIT_BRANCH_FLAGS = new Set(["-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose", "--list", "--show-current"]);
 const GIT_CONFIG_FIRST = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l"]);
@@ -43,15 +47,16 @@ function gitIsReadOnly(args: string[]): boolean {
   if (sub === "config") return GIT_CONFIG_FIRST.has(rest[0] ?? "") && rest.slice(1).every((arg) => !arg.startsWith("-") || GIT_CONFIG_FLAGS.has(arg));
   if (!GIT_READ_SUBCOMMANDS.has(sub)) return false;
   if (anyArg(rest, (arg) => isLongOptionOf(arg, GIT_WRITES))) return false;
-  // `-o` writes the output of `diff`, `log` and `show` to a file; `grep -O` opens a pager program.
-  if ((sub === "diff" || sub === "log" || sub === "show") && anyArg(rest, (arg) => arg.startsWith("-o"))) return false;
-  if (sub === "grep" && anyArg(rest, (arg) => arg.startsWith("-O"))) return false;
+  // `-o` writes the output of `diff`, `log` and `show` to a file; `grep -O` opens a pager program. Both may sit inside a
+  // cluster of short flags, as in `-nO`.
+  if ((sub === "diff" || sub === "log" || sub === "show") && anyArg(rest, (arg) => shortCluster(arg, "o"))) return false;
+  if (sub === "grep" && anyArg(rest, (arg) => shortCluster(arg, "O"))) return false;
   return true;
 }
 
 const FIND_UNSAFE = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fls"]);
 
-const PROGRAMS: Record<string, Check> = {
+const PROGRAMS: ReadonlyMap<string, Check> = new Map(Object.entries({
   git: gitIsReadOnly,
   ls: () => true,
   cat: () => true,
@@ -70,35 +75,39 @@ const PROGRAMS: Record<string, Check> = {
   diff: () => true,
   cmp: () => true,
   echo: () => true,
-  tree: (args) => !anyArg(args, (arg) => arg === "-o" || shortCluster(arg, "o")),
-  file: (args) => !anyArg(args, (arg) => shortCluster(arg, "C") || arg === "--compile"),
+  // `-o` and `-R` write files.
+  tree: (args) => !anyArg(args, (arg) => shortCluster(arg, "oR")),
+  file: (args) => !anyArg(args, (arg) => shortCluster(arg, "C") || isLongOptionOf(arg, ["compile"])),
   head: () => true,
   tail: (args) => !anyArg(args, (arg) => shortCluster(arg, "fF") || isLongOptionOf(arg, ["follow", "retry"])),
   sort: (args) => !anyArg(args, (arg) => shortCluster(arg, "o") || isLongOptionOf(arg, ["output", "compress-program"])),
-  // `uniq in out` writes the second file.
+  // `uniq in out` writes the second file; a glob could grow into two.
   uniq: (args) => positional(args).length <= 1,
   grep: (args) => !anyArg(args, (arg) => shortCluster(arg, "f") || isLongOptionOf(arg, ["file"])),
   rg: (args) => !anyArg(args, (arg) => shortCluster(arg, "fz") || isLongOptionOf(arg, ["pre", "pre-glob", "file", "hostname-bin", "search-zip"])),
   find: (args) => !anyArg(args, (arg) => FIND_UNSAFE.has(arg) || arg.startsWith("-fprint")),
-};
+}));
 
-/** True when a word is safe to hand to the program: a glob must start with a plain letter, digit or path mark, so that no
- * file can turn into an option when the shell expands it. */
-const wordIsPlain = (word: ShellWord): boolean => !word.glob || !/^[-*?[{]/.test(word.text);
+/** True when a word is safe to hand to the program: no unquoted brace, and a glob starts with a plain letter, digit or path mark,
+ * so that no file can turn into an option when the shell expands it. */
+const wordIsPlain = (word: ShellWord): boolean => !word.brace && (!word.glob || !/^[-*?[]/.test(word.text));
 
-function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks): boolean {
+function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: string | undefined): boolean {
   if (!tokens.every(wordIsPlain)) return false;
   const texts = tokens.map((token) => token.text);
   if (texts.some((arg) => arg.startsWith(APPROVED) && hooks.approvedExists(arg))) return false;
   const [tool, ...args] = texts as [string, ...string[]];
-  const check = PROGRAMS[tool];
-  if (check) return check(args);
-  return hooks.otherAllowed(texts);
+  const check = PROGRAMS.get(tool);
+  // A program that is not listed, `ak` included, is not read-only here.
+  if (!check || !check(args)) return false;
+  // `uniq` takes one file and no glob, which could expand into a second one.
+  if (tool === "uniq" && tokens.slice(1).some((token) => token.glob)) return false;
+  return tool !== "git" || hooks.gitConfigSafe(dir);
 }
 
-function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks): boolean {
+function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks, dir: string | undefined): boolean {
   const steps = segment.split("|").map((part) => shellWords(part));
-  return steps.every((tokens) => Boolean(tokens?.length) && stepIsReadOnly(tokens!, hooks));
+  return steps.every((tokens) => Boolean(tokens?.length) && stepIsReadOnly(tokens!, hooks, dir));
 }
 
 /**
@@ -107,11 +116,18 @@ function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks): boolean {
  * file or runs another program.
  */
 export function readOnlyCommand(command: string, hooks: ReadOnlyHooks): boolean {
-  if (/[;\n\r]/.test(command)) return false;
+  // Only a space and a tab are white space here; a line feed, a vertical tab, a no-break space and the like are refused.
+  if (/[;]|[^\S \t]/.test(command)) return false;
   const segments = command.split("&&");
   if (segments.some((segment) => FORBIDDEN_SYNTAX.test(segment))) return false;
   let first = 0;
+  let dir = hooks.cwd;
   const leading = shellWords(segments[0]!);
-  if (segments.length > 1 && leading?.length === 2 && leading[0]!.text === "cd" && !leading[1]!.glob && !leading[1]!.text.startsWith("-")) first = 1;
-  return segments.slice(first).every((segment) => pipelineIsReadOnly(segment, hooks));
+  if (segments.length > 1 && leading?.length === 2 && leading[0]!.text === "cd" && !leading[1]!.glob && !leading[1]!.brace && !leading[1]!.text.startsWith("-")) {
+    first = 1;
+    const target = leading[1]!.text;
+    // A `~` or a relative path with no known start leaves the directory unknown, which git steps refuse.
+    dir = target.startsWith("~") || (!target.startsWith("/") && !hooks.cwd) ? undefined : resolve(hooks.cwd ?? "/", target);
+  }
+  return segments.slice(first).every((segment) => pipelineIsReadOnly(segment, hooks, dir));
 }
