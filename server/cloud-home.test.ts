@@ -459,7 +459,7 @@ it.skipIf(!caddyBin)("renders a Caddyfile.tls that Caddy accepts, with Let's Enc
     expect(result.status, result.stderr).toBe(0);
     return result;
   };
-  const issuersOf = (issuers?: string) => (JSON.parse(run("adapt", issuers).stdout) as { apps: { tls?: { automation?: { policies?: { issuers?: unknown[] }[] } } } }).apps.tls?.automation?.policies?.[0]?.issuers;
+  const issuersOf = (issuers?: string) => (JSON.parse(run("adapt", issuers).stdout) as { apps: { tls?: { automation?: { policies?: { issuers?: unknown[] }[] } } } }).apps.tls?.automation?.policies?.[0]?.issuers ?? undefined;
   // Unset and empty: the same config as today, and it validates.
   expect(issuersOf()).toBeUndefined();
   expect(issuersOf("")).toBeUndefined();
