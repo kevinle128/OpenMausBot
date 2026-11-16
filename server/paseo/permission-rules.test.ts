@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { forgetGitConfigAnswers, gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { akSecretsRequestRef, classifyPermission, isEnvFilePath, type PermissionContext, type PermissionVerdict } from "./permission-rules.ts";
@@ -495,18 +495,21 @@ describe("classifyPermission: read-only command bypasses", () => {
   });
 
   it("allows git only when no setting makes a read run a program, checked in the directory the line works in", () => {
+    // An absolute directory carries the current drive on Windows, so the test names the directories through resolve.
+    const safe = resolve("/safe");
+    const risky = resolve("/risky");
     const seen: Array<string | undefined> = [];
     const gitConfigSafe = (dir: string | undefined) => {
       seen.push(dir);
-      return dir === "/safe";
+      return dir === safe;
     };
-    expect(allowed("git status", { cwd: "/safe", gitConfigSafe })).toBe(true);
-    expect(allowed("git status", { cwd: "/risky", gitConfigSafe })).toBe(false);
-    expect(allowed("cd /safe && git status", { cwd: "/risky", gitConfigSafe })).toBe(true);
-    expect(allowed("cd /risky && git status", { cwd: "/safe", gitConfigSafe })).toBe(false);
-    expect(allowed("cd ~ && git status", { cwd: "/safe", gitConfigSafe })).toBe(false);
-    expect(allowed("ls | wc -l", { cwd: "/risky", gitConfigSafe })).toBe(true);
-    expect(seen).toEqual(["/safe", "/risky", "/safe", "/risky", undefined]);
+    expect(allowed("git status", { cwd: safe, gitConfigSafe })).toBe(true);
+    expect(allowed("git status", { cwd: risky, gitConfigSafe })).toBe(false);
+    expect(allowed(`cd ${slashed(safe)} && git status`, { cwd: risky, gitConfigSafe })).toBe(true);
+    expect(allowed(`cd ${slashed(risky)} && git status`, { cwd: safe, gitConfigSafe })).toBe(false);
+    expect(allowed("cd ~ && git status", { cwd: safe, gitConfigSafe })).toBe(false);
+    expect(allowed("ls | wc -l", { cwd: risky, gitConfigSafe })).toBe(true);
+    expect(seen).toEqual([safe, risky, safe, risky, undefined]);
   });
 
   it("an ak step never becomes read-only", () => {
@@ -528,11 +531,19 @@ describe("classifyPermission: read-only command bypasses", () => {
 
 describe("gitConfigRunsNoProgram", () => {
   let repo = "";
+  const noSystemConfig = process.env.GIT_CONFIG_NOSYSTEM;
   beforeAll(() => {
+    // Git for Windows ships a system config with `diff.astextplain.textconv`, which the check rightly refuses; the tests
+    // are about the repository's own settings, so they leave the machine's system config out.
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
     repo = realpathSync(mkdtempSync(join(tmpdir(), "omb-gitcfg-")));
     execFileSync("git", ["init", "-q"], { cwd: repo });
   });
-  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+  afterAll(() => {
+    if (noSystemConfig === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+    else process.env.GIT_CONFIG_NOSYSTEM = noSystemConfig;
+    rmSync(repo, { recursive: true, force: true });
+  });
 
   it("is true for a plain repository, and false once a pager, a filter or a diff tool is set, and for no directory", () => {
     forgetGitConfigAnswers();

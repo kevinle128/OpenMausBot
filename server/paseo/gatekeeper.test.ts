@@ -262,7 +262,7 @@ describe("Paseo gatekeeper", () => {
 describe("Paseo gatekeeper: the privacy hook's read question", () => {
   const hookQuestion = (file: string, verb = "read", labels = ["Yes, approve once", "No, skip this file"]) => [{
     header: "File Access", multiSelect: false, options: labels.map((label) => ({ label })),
-    question: `I need to ${verb} "${file.split("/").pop()}" (${file}), which may contain sensitive data (API keys, passwords, tokens). Do you approve this one time?`,
+    question: `I need to ${verb} "${file.split(/[\\/]/).pop()}" (${file}), which may contain sensitive data (API keys, passwords, tokens). Do you approve this one time?`,
   }];
   const ask = (f: ReturnType<typeof fixture>, id: string, questions: unknown) =>
     f.connection.emit("permissionRequested", f.request(id, undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));
