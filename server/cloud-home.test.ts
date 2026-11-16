@@ -452,7 +452,7 @@ const caddyBin = process.env.OMB_CADDY_BIN || (spawnSync("caddy", ["version"], {
 it.skipIf(!caddyBin)("renders a Caddyfile.tls that Caddy accepts, with Let's Encrypt alone unless the setting is there", () => {
   const dir = directory();
   for (const file of ["Caddyfile.tls", "edge-routes.caddy"]) copyFileSync(join(import.meta.dirname, "../deploy/fly", file), join(dir, file));
-  const base = { PATH: "/usr/bin:/bin", HOME: dir, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), OMB_CLOUD_PUBLIC_HOST: "validate.example.com",
+  const base = { PATH: process.env.PATH || "/usr/bin:/bin", HOME: dir, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), OMB_CLOUD_PUBLIC_HOST: "validate.example.com",
     OMB_CLOUD_EDGE_STORAGE: join(dir, "edge"), OMB_CLOUD_EDGE_TRUSTED_PROXIES: "", OMB_CLOUD_EDGE_CLIENT_IP_HEADER: "X-Forwarded-For", OMB_CLOUD_EDGE_HOLD: "0s" };
   const run = (command: string, issuers?: string) => {
     const result = spawnSync(caddyBin, [command, "--config", join(dir, "Caddyfile.tls"), "--adapter", "caddyfile"], { encoding: "utf8", env: { ...base, ...(issuers === undefined ? {} : { OMB_CLOUD_EDGE_CERT_ISSUERS: issuers }) } });
