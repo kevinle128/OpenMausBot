@@ -452,14 +452,14 @@ const caddyBin = process.env.OMB_CADDY_BIN || (spawnSync("caddy", ["version"], {
 it.skipIf(!caddyBin)("renders a Caddyfile.tls that Caddy accepts, with Let's Encrypt alone unless the setting is there", () => {
   const dir = directory();
   for (const file of ["Caddyfile.tls", "edge-routes.caddy"]) copyFileSync(join(import.meta.dirname, "../deploy/fly", file), join(dir, file));
-  const base = { PATH: "/usr/bin:/bin", HOME: dir, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), OMB_CLOUD_PUBLIC_HOST: "validate.example.com",
+  const base = { PATH: process.env.PATH || "/usr/bin:/bin", HOME: dir, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), OMB_CLOUD_PUBLIC_HOST: "validate.example.com",
     OMB_CLOUD_EDGE_STORAGE: join(dir, "edge"), OMB_CLOUD_EDGE_TRUSTED_PROXIES: "", OMB_CLOUD_EDGE_CLIENT_IP_HEADER: "X-Forwarded-For", OMB_CLOUD_EDGE_HOLD: "0s" };
   const run = (command: string, issuers?: string) => {
     const result = spawnSync(caddyBin, [command, "--config", join(dir, "Caddyfile.tls"), "--adapter", "caddyfile"], { encoding: "utf8", env: { ...base, ...(issuers === undefined ? {} : { OMB_CLOUD_EDGE_CERT_ISSUERS: issuers }) } });
     expect(result.status, result.stderr).toBe(0);
     return result;
   };
-  const issuersOf = (issuers?: string) => (JSON.parse(run("adapt", issuers).stdout) as { apps: { tls?: { automation?: { policies?: { issuers?: unknown[] }[] } } } }).apps.tls?.automation?.policies?.[0]?.issuers;
+  const issuersOf = (issuers?: string) => (JSON.parse(run("adapt", issuers).stdout) as { apps: { tls?: { automation?: { policies?: { issuers?: unknown[] }[] } } } }).apps.tls?.automation?.policies?.[0]?.issuers ?? undefined;
   // Unset and empty: the same config as today, and it validates.
   expect(issuersOf()).toBeUndefined();
   expect(issuersOf("")).toBeUndefined();
@@ -592,13 +592,16 @@ it("ships an edge and a Fly template that keep the server private", () => {
   expect(fly).not.toContain("OMB_HOSTED_");
 });
 
-it("the Cloud launcher starts the server again only when it asks to after a restore, and only a few times in a row", () => {
+it("the Cloud launcher starts the server again when it asks to after a restore or after a crash (with a pause), and only a few times in a row", () => {
   const launcher = readFileSync(join(import.meta.dirname, "cloud-home-start.ts"), "utf8");
   expect(launcher).toContain("const policy = restartPolicy();");
   // The volume is prepared (and the previous machine's lease cleared) through one helper, as `maus`, before any child starts.
   expect(launcher).toContain("const prepare = () => prepareCloudHomeData(home, cloudHomeDataDir(env, home), config.machineId);");
-  expect(launcher.indexOf("prepared = prepare();")).toBeLessThan(launcher.indexOf("runServer();"));
-  expect(launcher).toContain("if (!policy.again(code, stopping)) return false;");
+  expect(launcher.indexOf("prepared = prepare();")).toBeLessThan(launcher.indexOf("\n  runServer();"));
+  expect(launcher).toContain("if (!policy.again(code, stopping, signal)) return false;");
+  expect(launcher).toContain("if (policy.delayMs() > 0) restartTimer = setTimeout(runServer, policy.delayMs());");
+  // A stop during the pause ends the wait, so a stopped home exits at once.
+  expect(launcher).toContain("if (restartTimer) clearTimeout(restartTimer);");
   for (const code of [0, 1, null]) expect(restartPolicy().again(code)).toBe(false);
   expect(restartPolicy().again(RESTART_EXIT_CODE, true)).toBe(false);
   const policy = restartPolicy(() => 0);
