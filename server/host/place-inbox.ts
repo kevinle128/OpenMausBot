@@ -81,6 +81,8 @@ export interface PlaceInboxDeps {
   /** Conversations resting on the person for a card a running turn does not hold open: a password, a sign-in, an app to
    * connect, or an ask left open after its turn ended. */
   waiting?(): Array<PersonWait & { threadId: string }>;
+  /** The saved lines changed: an open Inbox reads the list again, so a line with no notification shows at once. */
+  changed?(): void;
   now?: () => number;
 }
 
@@ -106,6 +108,7 @@ export function createPlaceInbox(deps: PlaceInboxDeps) {
     } catch (error) {
       console.warn(`place inbox: could not save ${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    deps.changed?.();
   };
 
   const workingFor = (threadId: string): { botId: string; name: string } | undefined => {
