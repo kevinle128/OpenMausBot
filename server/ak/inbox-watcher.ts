@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, watch, type FSWatcher } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -9,7 +9,7 @@ import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
 import { AkError, type AkCli, type AkGrant, type AkPendingRequest } from "./cli.ts";
-import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
+import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
 
@@ -319,9 +319,11 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         try {
           if (decision === "allow") {
             await allow(request, scope, answerScope);
-            void tellAgent(scope, request);
+            void tellAgent(scope, request).then((told) => record(scope, request, told, { decision: "allow" }));
+          } else {
+            await cli.deny(answerScope);
+            record(scope, request, undefined, { decision: "deny" });
           }
-          else await cli.deny(answerScope);
         } catch (error) {
           // The answer did not reach ak and the request is still in the inbox: the next pass opens a new card for it.
           handled.delete(key);
@@ -347,7 +349,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     }
   }
 
-  function record(scope: Scope, request: AkPendingRequest, told: Told = { result: "none" }): void {
+  function record(scope: Scope, request: AkPendingRequest, told: Told = { result: "none" }, answer?: PersonAnswer): void {
     if (!deps.history) return;
     // The agent the notice found by its commands counts as much as the one the gatekeeper saw ask.
     const seen = deps.origins?.find(scope.ref) ?? null;
@@ -356,12 +358,18 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const agent = origin?.agent ?? (label ? oneLine(label, 60) : scope.agent ? scope.agent.replace(/^sha256:/, "").slice(0, 12) : "không rõ");
     const exec = isExec(request);
     const purpose = scope.purpose ? `, mục đích: ${redactSecretsInText(oneLine(scope.purpose, 100))}` : "";
+    // A refusal grants nothing, so its line names no lifetime and no notice to the agent.
+    const denied = answer !== undefined && "decision" in answer && answer.decision === "deny";
+    const ttl = denied ? "" : `, ${AK_APPROVAL_TTL}`;
     const what = exec
-      ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}, ${AK_APPROVAL_TTL}`, 300))
-      : `cấp quyền đọc bí mật ${scope.ref}${purpose}, ${AK_APPROVAL_TTL}`;
-    const notice = !deps.notifyAgent ? "" : !told.agent && told.result === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
+      ? redactSecretsInText(oneLine(`cấp quyền chạy ${execLabel(request)} với bí mật ${scope.ref} trong biến ${scope.env ?? "(không tên)"}${purpose}${ttl}`, 300))
+      : `cấp quyền đọc bí mật ${scope.ref}${purpose}${ttl}`;
+    const notice = denied || !deps.notifyAgent ? "" : !told.agent && told.result === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
     try {
-      deps.history({ key: `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`, rule: exec ? "ak-exec-owned-ref" : "ak-vault-secret" });
+      const key = `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`;
+      // Each answer of the person is its own line; only what was allowed without asking merges repeats.
+      deps.history({ key: answer ? `${key}|answer|${randomUUID()}` : key, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`,
+        rule: answer ? "person" : exec ? "ak-exec-owned-ref" : "ak-vault-secret", ...(answer ? { answer } : {}) });
     } catch (error) {
       log(`ak inbox: could not write the history line (${error instanceof Error ? error.message : String(error)})`);
     }

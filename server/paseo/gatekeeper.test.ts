@@ -145,6 +145,18 @@ describe("Paseo gatekeeper", () => {
     f.approvals.answer(f.card()!.requestId!, "deny");
     await flush();
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "deny" });
+    expect(f.history).toEqual([{ key: "agent-1|r1|answer", agent: "Fix the build", workspace: workDir, what: "rm -rf build", rule: "person", answer: { decision: "deny" } }]);
+  });
+
+  it("writes one history line for each card the person allows, never merged with another", async () => {
+    const f = fixture();
+    for (const id of ["r1", "r2"]) {
+      f.connection.emit("permissionRequested", f.shell(id, "rm -rf build"));
+      await flush();
+      f.approvals.answer(f.lines.findLast((line) => line.card)!.card!.requestId!, "allow");
+      await flush();
+    }
+    expect(f.history.map((line) => [line.key, line.answer])).toEqual([["agent-1|r1|answer", { decision: "allow" }], ["agent-1|r2|answer", { decision: "allow" }]]);
   });
 
   it("closes the card as unavailable when the verdict cannot reach the agent", async () => {
@@ -155,6 +167,7 @@ describe("Paseo gatekeeper", () => {
     f.approvals.answer(f.card()!.requestId!, "allow");
     await flush();
     expect(f.card()).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect(f.history).toEqual([]);
   });
 
   it("closes the card when Paseo reports the request settled elsewhere", async () => {
@@ -225,7 +238,7 @@ describe("Paseo gatekeeper", () => {
     expect(f.approvals.answer(f.card()!.requestId!, "answer", "SQLite")).toBe("answered");
     await flush();
     expect(f.connection.respondToPermission).toHaveBeenCalledWith("agent-1", "r1", { behavior: "allow", updatedInput: { questions, answers: { "Which database?": "SQLite" } } });
-    expect(f.history).toEqual([]);
+    expect(f.history).toEqual([{ key: "agent-1|r1|answer", agent: "Fix the build", workspace: workDir, what: "Which database?", rule: "person", answer: { choice: "SQLite" } }]);
   });
 
   it("leaves a question in Paseo when the card is closed without a button, or when it has several questions", async () => {
