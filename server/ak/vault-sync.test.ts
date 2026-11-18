@@ -97,14 +97,15 @@ describe("isAkRef", () => {
 });
 
 describe("Vault to ak sync", () => {
-  it("adds a secret kept to the Paseo bot, sending the value on stdin only", async () => {
-    const t = setup([secret("a", "API_KEY"), secret("b", "OTHER", { bots: "all" }), secret("c", "OTHER_BOT", { bots: ["someone-else"] })]);
+  it("adds a secret kept to the Paseo bot or shared with every bot, sending the value on stdin only", async () => {
+    const t = setup([secret("a", "API_KEY"), secret("b", "SHARED", { bots: "all" }), secret("c", "OTHER_BOT", { bots: ["someone-else"] })]);
     const sync = t.start();
     await sync.reconcile();
-    expect(t.ak.calls).toEqual(["set API_KEY"]);
-    expect(t.ak.values).toEqual([["API_KEY", `${VALUE}-a`]]);
+    expect([...t.ak.calls].sort()).toEqual(["set API_KEY", "set SHARED"]);
+    expect([...t.ak.values].sort()).toEqual([["API_KEY", `${VALUE}-a`], ["SHARED", `${VALUE}-b`]]);
     expect(sync.owns("API_KEY")).toBe(true);
-    expect(sync.owns("OTHER")).toBe(false);
+    expect(sync.owns("SHARED")).toBe(true);
+    expect(sync.owns("OTHER_BOT")).toBe(false);
     expect(t.logs.join("\n")).not.toContain(VALUE);
     expect(t.ledger()).not.toContain(VALUE);
   });
