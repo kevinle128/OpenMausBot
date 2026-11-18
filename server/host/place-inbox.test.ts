@@ -78,6 +78,16 @@ describe("what was allowed without asking", () => {
     expect(f.sent).toEqual([]);
   });
 
+  it("tells open Inbox views to read the list again, for a new line and for a merged one", () => {
+    let changes = 0;
+    const f = setup({ changed: () => { changes += 1; } });
+    f.inbox.autoApproved(line("a"));
+    expect(changes).toBe(1);
+    f.tick(1);
+    f.inbox.autoApproved(line("a"));
+    expect(changes).toBe(2);
+  });
+
   it("moves to Done when the person marks it done, and stays read when merged", () => {
     const f = setup();
     f.inbox.autoApproved(line("a"));
