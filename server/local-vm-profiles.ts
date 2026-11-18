@@ -146,9 +146,7 @@ export async function rescueInstalledApps(runtime: string, target: LocalVmTarget
     const copied = await lstat(staging);
     if (!copied.isDirectory()) return "none";
     if (existing && !(existing.isDirectory() && await isEmptyDirectory(durable))) {
-      try {
-        if (!await sameAppTree(staging, durable)) throw new Error("different app trees");
-      } catch {
+      if (!await sameAppTree(staging, durable)) {
         throw new Error("could not preserve installed desktop apps because the durable app area differs from the old desktop");
       }
       return "kept";

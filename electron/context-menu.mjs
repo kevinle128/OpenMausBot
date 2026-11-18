@@ -42,9 +42,13 @@ export function fileLink(url) {
 /** A file link to a picture, video or audio, by its name or a chat player's link; the download's type is checked again. */
 export function mediaLink(url) {
   if (!fileLink(url)) return false;
-  const target = new URL(url);
-  if (target.pathname.endsWith("/file") && target.searchParams.has("media")) return true;
-  return MEDIA_EXTENSION.test(decodeURIComponent(target.pathname));
+  try {
+    const target = new URL(url);
+    if (target.pathname.endsWith("/file") && target.searchParams.has("media")) return true;
+    return MEDIA_EXTENSION.test(decodeURIComponent(target.pathname));
+  } catch {
+    return false;
+  }
 }
 
 /** A name safe to write in our own folder: no folders, control or reserved characters, no Windows device name. */

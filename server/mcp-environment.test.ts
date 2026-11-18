@@ -17,6 +17,13 @@ describe("the npm cache an MCP command gets", () => {
   it("keeps a cache that works, and a server's own setting always wins", () => {
     expect(mcpCommandEnvironment({ npm_config_cache: "/home/me/.npm" }, {}, () => true).npm_config_cache).toBe("/home/me/.npm");
     expect(mcpCommandEnvironment({ npm_config_cache: "/data/.npm" }, { npm_config_cache: "/srv/cache" }, () => false).npm_config_cache).toBe("/srv/cache");
+    const cased = mcpCommandEnvironment({ NPM_CONFIG_CACHE: "/data/.npm" }, { npm_config_cache: "/srv/cache" }, () => false);
+    expect(cased.NPM_CONFIG_CACHE).toBeUndefined();
+    expect(cased.npm_config_cache).toBe("/srv/cache");
+  });
+
+  it("treats an empty cache variable as unset and checks npm's default under the home folder", () => {
+    expect(mcpCommandEnvironment({ NPM_CONFIG_CACHE: "", HOME: "/data", LOCALAPPDATA: "C:\\data" }, {}, () => false).npm_config_cache).toContain("openmausbot-mcp-npm-");
   });
 
   it("counts a cache that does not exist yet as writable when its nearest folder is", () => {

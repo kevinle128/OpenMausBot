@@ -197,7 +197,7 @@ export class ChatMcpClient {
     if (this.closing) return this.closing;
     this.closed = true;
     // Read before the pending rejections below: only a call still in flight at entry is genuinely uncertain.
-    const inFlight = this.pending.size > 0;
+    const inFlight = [...this.pending.values()].some((entry) => entry.method === "tools/call");
     for (const entry of this.pending.values()) entry.reject(new Error("MCP session closed"));
     this.pending.clear();
     this.buffer = "";
@@ -367,7 +367,11 @@ export async function refitChatTools(session: ChatToolSession, error: unknown, k
 export async function joinLateChatTools(session: ChatToolSession, runtime: readonly ChatToolDefinition[]): Promise<string[] | undefined> {
   const kept = session.definitions.filter((definition) => runtime.includes(definition));
   const lines = await session.join();
-  if (lines !== undefined) session.definitions.push(...kept);
+  if (lines !== undefined) {
+    for (const definition of kept) {
+      if (!session.definitions.some((entry) => entry.function.name === definition.function.name)) session.definitions.push(definition);
+    }
+  }
   return lines;
 }
 

@@ -404,7 +404,7 @@ createInterface({ input: child.stdout }).on("line", (line) => {
   }
   if (BUDGET > 0 && request?.kind === "list" && message.error === undefined && isRecord(result) && Array.isArray(result.tools)) {
     const tools = result.tools.filter((tool: unknown) => !isRecord(tool) || tool.name !== QUERY_TOOL_NAME);
-    if (result.nextCursor === undefined) tools.push(QUERY_TOOL);
+    if (!result.nextCursor || TOOL_LIMIT !== undefined) tools.push(QUERY_TOOL);
     result.tools = tools;
   }
   if (TOOL_LIMIT !== undefined && request?.kind === "list" && message.error === undefined && isRecord(result)) {

@@ -336,7 +336,7 @@ export async function generateImageWith(
     if (image.mime === "image/gif" && !request.gif) throw new Error("unsupported image format");
     return { bytes: image.bytes, mime: image.mime };
   } catch {
-    fail(`${provider.name} returned invalid or oversized image data; expected PNG, JPEG, or WebP`, 502);
+    fail(`${provider.name} returned invalid or oversized image data; expected ${request.gif ? "GIF" : "PNG, JPEG, or WebP"}`, 502);
   }
 }
 
