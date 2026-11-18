@@ -1,4 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +7,7 @@ import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
-import type { AkCli, AkPendingRequest } from "./cli.ts";
+import { AkError, type AkCli, type AkPendingRequest } from "./cli.ts";
 import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
@@ -25,7 +26,7 @@ const TEXT_CHARS = 160;
 const BAD_REF_LOG_LIMIT = 50;
 
 export interface InboxWatcherDeps {
-  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny">;
+  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec">;
   guard: AkGuard;
   approvals: ExternalApprovals;
   /** True for a ref OpenMausBot wrote to ak from the Vault: the only refs that are approved without a person. */
@@ -40,6 +41,8 @@ export interface InboxWatcherDeps {
   history?: AutoApprovalHistory;
   /** Tells the Paseo agent that waited for this approval to go on. */
   notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
+  /** The `sha256:<hex>` of a program's file; replaced by tests. */
+  hashFile?(path: string): string;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -96,6 +99,21 @@ function execLabel(request: AkPendingRequest): string {
   return "a program";
 }
 
+const sha256OfFile = (path: string): string => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+
+/** `ak secrets approve` names a request by agent, project, purpose and variable only, so it refuses two exec requests that differ in the program. */
+const isAmbiguous = (error: unknown): boolean => error instanceof AkError && error.exitCode === 2 && /waiting requests match/.test(error.message);
+
+/** The absolute program path and pinned hash of an exec request, when the inbox lists them. */
+function execProgram(request: AkPendingRequest): { path: string; hash?: string } | null {
+  const { exec } = request;
+  if (!exec || typeof exec !== "object") return null;
+  const fields = exec as Record<string, unknown>;
+  const path = text(fields.path);
+  const hash = text(fields.hash);
+  return path?.startsWith("/") ? { path, ...(hash ? { hash } : {}) } : null;
+}
+
 /**
  * Answers the secret requests Paseo agents leave in the `ak` inbox. A request, ordinary or exec, for a secret the person put
  * in the Vault for the Paseo bot is allowed for 24 hours at once. A request for any other ref becomes a card.
@@ -138,6 +156,28 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     deps.notify(buildNotification("approval", bot, bot.threadId, oneLine(label, 200)));
   }
 
+  /** Allows the request. When `approve` cannot tell two exec requests apart, the grant names the program of this one. */
+  async function allow(request: AkPendingRequest, scope: Scope, answerScope: Scope): Promise<void> {
+    try {
+      await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+    } catch (error) {
+      const program = isExec(request) && scope.agent !== undefined && scope.env ? execProgram(request) : null;
+      if (!isAmbiguous(error) || !program || scope.agent === undefined || !scope.env) throw error;
+      // The grant pins whatever the file is now, so a program changed since the request is refused here.
+      if (program.hash !== undefined && (deps.hashFile ?? sha256OfFile)(program.path) !== program.hash) {
+        throw new AkError("failed", null, "The program changed since it asked, so it was not allowed");
+      }
+      const label = text(request.agentLabel);
+      await cli.grantExec({
+        ref: scope.ref, ttl: AK_APPROVAL_TTL, agent: scope.agent, env: scope.env, program: program.path,
+        ...(scope.project !== undefined ? { project: scope.project } : {}),
+        ...(scope.purpose !== undefined ? { purpose: scope.purpose } : {}),
+        ...(label ? { agentLabel: label } : {}),
+      });
+      log(`ak inbox: several requests for "${scope.ref}" matched, so it was allowed by its program ${program.path}`);
+    }
+  }
+
   async function ask(request: AkPendingRequest, scope: Scope, key: string): Promise<void> {
     const exec = isExec(request);
     const label = text(request.agentLabel);
@@ -158,7 +198,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         handled.add(key);
         try {
           if (decision === "allow") {
-            await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+            await allow(request, scope, answerScope);
             void tellAgent(scope, request);
           }
           else await cli.deny(answerScope);
@@ -212,7 +252,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     handled.add(key);
     try {
       // An exec request is answered for its own program and variable, exactly as the card's Allow does.
-      await cli.approve({ ...scope, ...(isExec(request) ? {} : { env: "" }), ttl: AK_APPROVAL_TTL });
+      await allow(request, scope, { ...scope, ...(isExec(request) ? {} : { env: "" }) });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
       record(scope, request, await tellAgent(scope, request));
       return true;

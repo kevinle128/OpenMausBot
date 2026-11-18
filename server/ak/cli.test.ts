@@ -55,6 +55,12 @@ describe("ak commands", () => {
     for (const call of calls) expect(call.args.filter((arg) => arg.startsWith("-") && !arg.includes("="))).toEqual(["--json", "--no-interactive"]);
   });
 
+  it("grants an exec scope by its program with every value as flag=value", async () => {
+    const { calls, run } = recorder();
+    await createAkCli(run).grantExec({ ref: "R", ttl: "24h", agent: "sha256:abc", env: "SSHPASS", program: "/usr/bin/true", project: "default", agentLabel: "claude" });
+    expect(calls[0]?.args).toEqual(["secrets", "grant", "R", "--agent=sha256:abc", "--exec=/usr/bin/true", "--env=SSHPASS", "--ttl=24h", "--purpose=", "--project=default", "--agent-label=claude", "--json", "--no-interactive"]);
+  });
+
   it("lists the inbox whether ak returns an array or an object", async () => {
     expect(await createAkCli(recorder({ stdout: JSON.stringify({ data: [{ ref: "A" }] }) }).run).pendingRequests()).toEqual([{ ref: "A" }]);
     expect(await createAkCli(recorder({ stdout: JSON.stringify({ data: { requests: [{ ref: "B" }] } }) }).run).pendingRequests()).toEqual([{ ref: "B" }]);

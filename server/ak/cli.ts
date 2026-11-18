@@ -161,6 +161,8 @@ export interface AkCli {
   pendingRequests(): Promise<AkPendingRequest[]>;
   approve(options: RequestScope & { ref: string; ttl: string }): Promise<void>;
   deny(options: RequestScope & { ref: string }): Promise<void>;
+  /** Allows one exec scope by its program and agent. `approve` cannot name the program, so two requests that differ only in it are ambiguous there. */
+  grantExec(options: { ref: string; ttl: string; agent: string; env: string; program: string; project?: string; purpose?: string; agentLabel?: string }): Promise<void>;
   set(ref: string, value: string, options?: { force?: boolean }): Promise<void>;
   rotate(ref: string, value: string): Promise<void>;
   delete(ref: string): Promise<void>;
@@ -197,6 +199,13 @@ export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnkn
     },
     async deny({ ref, ...scope }) {
       await call(["secrets", "approve", ref, "--state=deny", ...narrow(scope)]);
+    },
+    async grantExec({ ref, ttl, agent, env, program, project, purpose, agentLabel }) {
+      await call([
+        "secrets", "grant", ref, `--agent=${agent}`, `--exec=${program}`, `--env=${env}`, `--ttl=${ttl}`, `--purpose=${purpose ?? ""}`,
+        ...(project !== undefined ? [`--project=${project}`] : []),
+        ...(agentLabel ? [`--agent-label=${agentLabel}`] : []),
+      ]);
     },
     async set(ref, value, options) {
       await call(["secrets", "set", ref, "--value=-", "--no-push", ...(options?.force ? ["--force"] : [])], value);

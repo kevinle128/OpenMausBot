@@ -11,6 +11,7 @@ import { AkError, createAkCli, type AkCli, type AkPendingRequest, type AkRunner 
 import { createAkGuard } from "./guard.ts";
 import { startInboxWatcher } from "./inbox-watcher.ts";
 
+const PROGRAM_HASH = "sha256:aa";
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const AGENT = "sha256:0123456789abcdef0123456789abcdef";
 
@@ -40,6 +41,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   const inbox: { requests: AkPendingRequest[]; listError: Error | null } = { requests: [], listError: null };
   const approve = vi.fn<AkCli["approve"]>(async () => {});
   const deny = vi.fn<AkCli["deny"]>(async () => {});
+  const grantExec = vi.fn<AkCli["grantExec"]>(async () => {});
   const pendingRequests = vi.fn(async () => {
     if (inbox.listError) throw inbox.listError;
     return inbox.requests;
@@ -49,7 +51,8 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   const guard = createAkGuard((line) => logs.push(line));
   const owned = new Set(options.owned ?? []);
   const watcher = startInboxWatcher({
-    cli: { pendingRequests, approve, deny },
+    cli: { pendingRequests, approve, deny, grantExec },
+    hashFile: () => PROGRAM_HASH,
     guard,
     approvals,
     owns: (ref) => owned.has(ref),
@@ -66,7 +69,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   });
   stops.push(watcher.stop);
   const card = () => lines.find((line) => line.card)?.card;
-  return { watcher, approvals, inbox, approve, deny, pendingRequests, logs, notified, guard, lines, card, history, told };
+  return { watcher, approvals, inbox, approve, deny, grantExec, pendingRequests, logs, notified, guard, lines, card, history, told };
 }
 
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
@@ -190,6 +193,28 @@ describe("ak inbox watcher", () => {
     t.approvals.answer(t.card()!.requestId!, "allow");
     await flush();
     expect(t.approve).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, project: "app", purpose: "run", env: "TOKEN", ttl: "24h" });
+  });
+
+  it("allows an exec request by its program when approve finds two waiting requests that differ only in the program", async () => {
+    const t = setup({ owned: ["OTHER"] });
+    const program = (path: string, hash = PROGRAM_HASH) => ({ ...exec("DEPLOY_TOKEN"), exec: { env: "TOKEN", path, hash } });
+    t.inbox.requests = [program("/usr/bin/deploy"), program("/usr/bin/true")];
+    await t.watcher.checkNow();
+    t.approve.mockRejectedValueOnce(new AkError("invalid", 2, "secrets approve: 2 waiting requests match; narrow it with --agent, --project, --purpose or --env"));
+    t.approvals.answer(t.lines[0]!.card!.requestId!, "allow");
+    await flush();
+    expect(t.grantExec).toHaveBeenCalledTimes(1);
+    expect(t.grantExec).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, project: "app", purpose: "run", env: "TOKEN", program: "/usr/bin/deploy", ttl: "24h" });
+  });
+
+  it("does not allow by program when the program file no longer matches the hash it asked with", async () => {
+    const t = setup({ owned: ["OTHER"] });
+    t.inbox.requests = [{ ...exec("DEPLOY_TOKEN"), exec: { env: "TOKEN", path: "/usr/bin/deploy", hash: "sha256:changed" } }];
+    await t.watcher.checkNow();
+    t.approve.mockRejectedValueOnce(new AkError("invalid", 2, "secrets approve: 2 waiting requests match; narrow it with --agent, --project, --purpose or --env"));
+    t.approvals.answer(t.card()!.requestId!, "allow");
+    await flush();
+    expect(t.grantExec).not.toHaveBeenCalled();
   });
 
   it("opens a new card when answering a card fails and the request is still in the inbox", async () => {
