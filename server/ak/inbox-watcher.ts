@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync, watch, type FSWatcher } from "node:fs";
+import { constants, watch, type FSWatcher } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +8,7 @@ import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
-import { AkError, type AkCli, type AkPendingRequest } from "./cli.ts";
+import { AkError, type AkCli, type AkGrant, type AkPendingRequest } from "./cli.ts";
 import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
@@ -26,7 +27,7 @@ const TEXT_CHARS = 160;
 const BAD_REF_LOG_LIMIT = 50;
 
 export interface InboxWatcherDeps {
-  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec">;
+  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec" | "revokeExec" | "grants">;
   guard: AkGuard;
   approvals: ExternalApprovals;
   /** True for a ref OpenMausBot wrote to ak from the Vault: the only refs that are approved without a person. */
@@ -42,7 +43,9 @@ export interface InboxWatcherDeps {
   /** Tells the Paseo agent that waited for this approval to go on. */
   notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
   /** The `sha256:<hex>` of a program's file; replaced by tests. */
-  hashFile?(path: string): string;
+  hashFile?(path: string): Promise<string>;
+  /** The file a path leads to once symbolic links are followed; replaced by tests. */
+  realPath?(path: string): Promise<string>;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -79,6 +82,11 @@ function scopeOf(request: AkPendingRequest): Scope | null {
     const value = text(request[field]);
     if (value !== undefined) scope[field] = value;
   }
+  // `ak secrets approve --json` lists the variable of an exec request inside `exec`, not at the top.
+  if (scope.env === undefined && request.exec && typeof request.exec === "object") {
+    const env = text((request.exec as Record<string, unknown>).env);
+    if (env) scope.env = env;
+  }
   return scope;
 }
 
@@ -93,13 +101,30 @@ function execLabel(request: AkPendingRequest): string {
   if (typeof exec === "string") return exec;
   if (exec && typeof exec === "object") {
     const fields = exec as Record<string, unknown>;
-    const program = text(fields.program) ?? text(fields.path) ?? text(fields.name);
+    // The path is what a grant names, so it is what the person is shown.
+    const program = text(fields.path) ?? text(fields.program) ?? text(fields.name);
     if (program) return program;
   }
   return "a program";
 }
 
-const sha256OfFile = (path: string): string => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+/** Streams a regular file. `O_NONBLOCK` keeps opening a named pipe from waiting for a writer, and the `fstat` refuses anything but a file. */
+async function sha256OfFile(path: string): Promise<string> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!(await file.stat()).isFile()) throw new Error("not a regular file");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1 << 20);
+    for (;;) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return `sha256:${hash.digest("hex")}`;
+  } finally {
+    await file.close();
+  }
+}
 
 /** `ak secrets approve` names a request by agent, project, purpose and variable only, so it refuses two exec requests that differ in the program. */
 const isAmbiguous = (error: unknown): boolean => error instanceof AkError && error.exitCode === 2 && /waiting requests match/.test(error.message);
@@ -156,24 +181,75 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     deps.notify(buildNotification("approval", bot, bot.threadId, oneLine(label, 200)));
   }
 
+  const hashOf = deps.hashFile ?? sha256OfFile;
+  const resolve = deps.realPath ?? ((path: string) => realpath(path));
+
+  /** Two paths name one program when they are equal or lead to the same file, such as a Homebrew link into the Cellar. */
+  async function sameProgram(a: string, b: string): Promise<boolean> {
+    if (a === b) return true;
+    try {
+      return (await resolve(a)) === (await resolve(b));
+    } catch {
+      return false;
+    }
+  }
+
+  /** True when `grant` covers exactly this exec request: same secret, agent, project, purpose, variable, program and hash, and it has not expired. */
+  async function covers(grant: AkGrant, scope: Scope, program: { path: string; hash: string }): Promise<boolean> {
+    const exec = grant.exec;
+    if (grant.state !== "allow" || !exec || typeof exec !== "object") return false;
+    if (grant.ref !== scope.ref || grant.fingerprint !== scope.agent || grant.project !== scope.project || (grant.purpose ?? "") !== (scope.purpose ?? "")) return false;
+    if (exec.env !== scope.env || exec.hash !== program.hash || typeof exec.path !== "string") return false;
+    if (grant.expiresAt !== undefined && !(Date.parse(grant.expiresAt) > Date.now())) return false;
+    return sameProgram(exec.path, program.path);
+  }
+
+  /** A request still in the inbox that an earlier answer already granted, so a restart does not ask again or grant again. */
+  async function alreadyGranted(request: AkPendingRequest, scope: Scope): Promise<boolean> {
+    const program = isExec(request) ? execProgram(request) : null;
+    if (!program?.hash || scope.agent === undefined || scope.project === undefined || !scope.env) return false;
+    const found = { path: program.path, hash: program.hash };
+    try {
+      for (const grant of await cli.grants()) if (await covers(grant, scope, found)) return true;
+    } catch (error) {
+      if (guard.report(error)) return false;
+      log(`ak inbox: could not read the grants (${describeAkError(error)})`);
+    }
+    return false;
+  }
+
+  /** The grant `ak` recorded must be for the program and hash the request named. `ak` resolves the program itself, so this is checked. */
+  async function grantedAsAsked(result: unknown, scope: Scope, program: { path: string; hash: string }): Promise<boolean> {
+    const recorded = result && typeof result === "object" ? ((result as { grant?: unknown }).grant ?? result) : null;
+    const exec = recorded && typeof recorded === "object" ? (recorded as { exec?: AkGrant["exec"] }).exec : null;
+    if (exec && typeof exec.hash === "string" && typeof exec.path === "string") {
+      return exec.hash === program.hash && (await sameProgram(exec.path, program.path));
+    }
+    for (const grant of await cli.grants()) if (await covers(grant, scope, program)) return true;
+    return false;
+  }
+
   /** Allows the request. When `approve` cannot tell two exec requests apart, the grant names the program of this one. */
   async function allow(request: AkPendingRequest, scope: Scope, answerScope: Scope): Promise<void> {
     try {
       await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
     } catch (error) {
-      const program = isExec(request) && scope.agent !== undefined && scope.env ? execProgram(request) : null;
-      if (!isAmbiguous(error) || !program || scope.agent === undefined || !scope.env) throw error;
-      // The grant pins whatever the file is now, so a program changed since the request is refused here.
-      if (program.hash !== undefined && (deps.hashFile ?? sha256OfFile)(program.path) !== program.hash) {
+      const program = isExec(request) ? execProgram(request) : null;
+      if (!isAmbiguous(error) || !program || scope.agent === undefined || scope.project === undefined || !scope.env) throw error;
+      // The grant pins whatever the file is now, so the request must carry the hash it asked with and the file must still have it.
+      if (!program.hash) throw new AkError("failed", null, "The request has no program hash, so it was not allowed");
+      if ((await hashOf(program.path).catch(() => "")) !== program.hash) {
         throw new AkError("failed", null, "The program changed since it asked, so it was not allowed");
       }
+      const found = { path: program.path, hash: program.hash };
       const label = text(request.agentLabel);
-      await cli.grantExec({
-        ref: scope.ref, ttl: AK_APPROVAL_TTL, agent: scope.agent, env: scope.env, program: program.path,
-        ...(scope.project !== undefined ? { project: scope.project } : {}),
-        ...(scope.purpose !== undefined ? { purpose: scope.purpose } : {}),
-        ...(label ? { agentLabel: label } : {}),
-      });
+      const exec = { ref: scope.ref, agent: scope.agent, env: scope.env, program: program.path, project: scope.project, ...(scope.purpose !== undefined ? { purpose: scope.purpose } : {}) };
+      const result = await cli.grantExec({ ...exec, ttl: AK_APPROVAL_TTL, ...(label ? { agentLabel: label } : {}) });
+      const matches = await grantedAsAsked(result, scope, found).catch(() => false);
+      if (!matches) {
+        await cli.revokeExec(exec);
+        throw new AkError("failed", null, "ak recorded a grant for a different program than the request named, so the grant was removed");
+      }
       log(`ak inbox: several requests for "${scope.ref}" matched, so it was allowed by its program ${program.path}`);
     }
   }
@@ -288,6 +364,10 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       const key = keyOf(request, scope);
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;
+      if (await alreadyGranted(request, scope)) {
+        handled.add(key);
+        continue;
+      }
       if (deps.owns(scope.ref)) {
         if (await autoApprove(scope, key, request)) continue;
         // Allowing it failed three times: a person decides.

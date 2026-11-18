@@ -59,6 +59,8 @@ describe("ak commands", () => {
     const { calls, run } = recorder();
     await createAkCli(run).grantExec({ ref: "R", ttl: "24h", agent: "sha256:abc", env: "SSHPASS", program: "/usr/bin/true", project: "default", agentLabel: "claude" });
     expect(calls[0]?.args).toEqual(["secrets", "grant", "R", "--agent=sha256:abc", "--exec=/usr/bin/true", "--env=SSHPASS", "--ttl=24h", "--purpose=", "--project=default", "--agent-label=claude", "--json", "--no-interactive"]);
+    await createAkCli(run).revokeExec({ ref: "R", agent: "sha256:abc", env: "SSHPASS", program: "/usr/bin/true", project: "default" });
+    expect(calls[1]?.args).toEqual(["secrets", "revoke", "R", "--agent=sha256:abc", "--exec=/usr/bin/true", "--env=SSHPASS", "--purpose=", "--project=default", "--json", "--no-interactive"]);
   });
 
   it("lists the inbox whether ak returns an array or an object", async () => {

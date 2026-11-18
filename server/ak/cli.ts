@@ -62,6 +62,27 @@ export interface AkPendingRequest {
   [field: string]: unknown;
 }
 
+/** One recorded grant from `ak secrets grants --json`. An exec grant names the variable, the program and its hash. */
+export interface AkGrant {
+  ref: string;
+  project?: string;
+  fingerprint?: string;
+  purpose?: string;
+  state?: string;
+  expiresAt?: string;
+  exec?: { env?: string; path?: string; hash?: string } | null;
+  [field: string]: unknown;
+}
+
+interface ExecScope {
+  ref: string;
+  agent: string;
+  env: string;
+  program: string;
+  project: string;
+  purpose?: string;
+}
+
 interface RequestScope {
   agent?: string;
   project?: string;
@@ -162,7 +183,10 @@ export interface AkCli {
   approve(options: RequestScope & { ref: string; ttl: string }): Promise<void>;
   deny(options: RequestScope & { ref: string }): Promise<void>;
   /** Allows one exec scope by its program and agent. `approve` cannot name the program, so two requests that differ only in it are ambiguous there. */
-  grantExec(options: { ref: string; ttl: string; agent: string; env: string; program: string; project?: string; purpose?: string; agentLabel?: string }): Promise<void>;
+  grantExec(options: ExecScope & { ttl: string; agentLabel?: string }): Promise<unknown>;
+  /** Removes the grants of one exec scope, whatever hash they hold. */
+  revokeExec(options: ExecScope): Promise<void>;
+  grants(): Promise<AkGrant[]>;
   set(ref: string, value: string, options?: { force?: boolean }): Promise<void>;
   rotate(ref: string, value: string): Promise<void>;
   delete(ref: string): Promise<void>;
@@ -201,11 +225,23 @@ export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnkn
       await call(["secrets", "approve", ref, "--state=deny", ...narrow(scope)]);
     },
     async grantExec({ ref, ttl, agent, env, program, project, purpose, agentLabel }) {
-      await call([
-        "secrets", "grant", ref, `--agent=${agent}`, `--exec=${program}`, `--env=${env}`, `--ttl=${ttl}`, `--purpose=${purpose ?? ""}`,
-        ...(project !== undefined ? [`--project=${project}`] : []),
+      const result = await call([
+        "secrets", "grant", ref, `--agent=${agent}`, `--exec=${program}`, `--env=${env}`, `--ttl=${ttl}`, `--purpose=${purpose ?? ""}`, `--project=${project}`,
         ...(agentLabel ? [`--agent-label=${agentLabel}`] : []),
       ]);
+      // The grant is already written, so output that is not JSON must not throw: the caller reads the grants back instead.
+      try {
+        return parseData<unknown>(result);
+      } catch {
+        return null;
+      }
+    },
+    async revokeExec({ ref, agent, env, program, project, purpose }) {
+      await call(["secrets", "revoke", ref, `--agent=${agent}`, `--exec=${program}`, `--env=${env}`, `--purpose=${purpose ?? ""}`, `--project=${project}`]);
+    },
+    async grants() {
+      const data = parseData<unknown>(await call(["secrets", "grants"]));
+      return Array.isArray(data) ? (data as AkGrant[]) : [];
     },
     async set(ref, value, options) {
       await call(["secrets", "set", ref, "--value=-", "--no-push", ...(options?.force ? ["--force"] : [])], value);
