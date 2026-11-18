@@ -11,7 +11,12 @@ export interface AutoApproval {
   rule: string;
   /** More that belongs in the line but not in the key that merges repeats, such as the scores of a model's answer. */
   detail?: string;
+  /** Set when the person answered the card: the line names their answer instead of a rule. */
+  answer?: PersonAnswer;
 }
+
+/** What the person answered on a card: allow, deny, or the label of the choice they picked. */
+export type PersonAnswer = { decision: "allow" | "deny" } | { choice: string };
 
 export type AutoApprovalHistory = (entry: AutoApproval) => void;
 
@@ -25,12 +30,14 @@ export interface AutoApprovalLine {
 
 /** The text of the history line; `count` is how many times the same thing was allowed in the last hour. */
 export function formatAutoApproval(entry: AutoApproval, count: number): string {
+  const { answer } = entry;
+  const head = !answer ? "✓ OpenMausBot tự duyệt" : "choice" in answer ? `✓ Bạn đã chọn: ${answer.choice}` : answer.decision === "allow" ? "✓ Bạn đã duyệt" : "✗ Bạn đã từ chối";
   return [
-    `✓ OpenMausBot tự duyệt${count > 1 ? ` (${count} lần)` : ""}`,
+    `${head}${count > 1 ? ` (${count} lần)` : ""}`,
     `Agent: ${entry.agent}`,
     `Workspace: ${entry.workspace}`,
     `Việc: ${entry.what}`,
-    `Luật: ${entry.rule}`,
+    ...(answer ? [] : [`Luật: ${entry.rule}`]),
     ...(entry.detail ? [`Jev: ${entry.detail}`] : []),
   ].join("\n");
 }

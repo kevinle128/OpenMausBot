@@ -151,10 +151,36 @@ describe("ak inbox watcher", () => {
     expect(t.history).toMatchObject([{ workspace: "không rõ project" }]);
   });
 
-  it("writes no history line for a request that went to a card", async () => {
+  it("writes no history line for a request that went to a card until the person answers it", async () => {
     const t = setup();
     t.inbox.requests = [ordinary("STRANGER")];
     await t.watcher.checkNow();
+    expect(t.history).toEqual([]);
+  });
+
+  it("writes one history line for the person's Allow and one for their Deny, each with its answer", async () => {
+    const t = setup();
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.card()!.requestId!, "allow");
+    await flush();
+    expect(t.history).toMatchObject([{ rule: "person", answer: { decision: "allow" }, what: "cấp quyền đọc bí mật STRANGER, mục đích: deploy, 24h" }]);
+
+    t.inbox.requests = [ordinary("OTHER")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.lines.findLast((line) => line.card)!.card!.requestId!, "deny");
+    await flush();
+    expect(t.history[1]).toMatchObject({ rule: "person", answer: { decision: "deny" }, what: "cấp quyền đọc bí mật OTHER, mục đích: deploy" });
+    expect(t.history[0]!.key).not.toBe(t.history[1]!.key);
+  });
+
+  it("writes no history line when the person's answer does not reach ak", async () => {
+    const t = setup();
+    t.deny.mockRejectedValueOnce(new Error("ak is locked"));
+    t.inbox.requests = [ordinary("STRANGER")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.card()!.requestId!, "deny");
+    await flush();
     expect(t.history).toEqual([]);
   });
 

@@ -4,7 +4,7 @@ import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord, Store } from "../store.ts";
 import type { PaseoConnection, PaseoPermissionRequested } from "./connection.ts";
-import type { AutoApprovalHistory, RequestOrigins } from "./auto-approval.ts";
+import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "./auto-approval.ts";
 import { approvingOption, createJevGuard, scoresLine, type AgentContext, type GuardOutcome } from "./jev-guard.ts";
 import { classifyPermission, permissionTarget } from "./permission-rules.ts";
 import { APPROVE_ONCE, hookReadQuestion, questionAnswer, readQuestions, type PaseoQuestion } from "./question-rules.ts";
@@ -107,8 +107,13 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       tool: request.name,
       ...(isQuestion ? { choices: single ? single.labels : [ANSWER_IN_PASEO], ...(single ? {} : { leave: ANSWER_IN_PASEO }) } : {}),
       onAnswer: async (decision, choice) => {
-        if (!isQuestion) return respond(decision);
-        if (single && choice !== undefined) await connection.respondToPermission(agentId, request.id, questionAnswer(request, single.question, choice));
+        if (!isQuestion) {
+          await respond(decision);
+          record(event, permissionTarget(request), "person", { answer: { decision } });
+        } else if (single && choice !== undefined) {
+          await connection.respondToPermission(agentId, request.id, questionAnswer(request, single.question, choice));
+          record(event, null, "person", { shown: single.question, answer: { choice } });
+        }
       },
     });
     if (!opened) return;
@@ -119,14 +124,16 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
   }
 
   /** One line for the Inbox: the agent, where it works, what it was allowed to do and which rule allowed it. */
-  function record(event: PaseoPermissionRequested, target: ReturnType<typeof permissionTarget>, rule: string, extra: { shown?: string; detail?: string } = {}): void {
+  function record(event: PaseoPermissionRequested, target: ReturnType<typeof permissionTarget>, rule: string, extra: { shown?: string; detail?: string; answer?: PersonAnswer } = {}): void {
     if (!deps.history) return;
     const { agentId, agent } = event;
     // The line leaves this process's trust boundary like a card does; a command can carry a key inline.
-    const shown = extra.shown ?? (target ? (target.kind === "command" ? target.command : target.filePath) : event.request.name);
+    const shown = extra.shown ?? (target ? (target.kind === "command" ? target.command : target.filePath) : event.request.title ?? event.request.description ?? event.request.name);
     const what = redactSecretsInText(oneLine(target?.kind === "file" ? `đọc file ${shown}` : shown, SUBTITLE_CHARS));
     try {
-      deps.history({ key: `${agentId}|${what}`, agent: describe(event).label, workspace: agent.cwd, what, rule, ...(extra.detail ? { detail: extra.detail } : {}) });
+      // Each answer of the person is its own line; only what was allowed without asking merges repeats.
+      const key = extra.answer ? `${agentId}|${event.request.id}|answer` : `${agentId}|${what}`;
+      deps.history({ key, agent: describe(event).label, workspace: agent.cwd, what, rule, ...(extra.detail ? { detail: extra.detail } : {}), ...(extra.answer ? { answer: extra.answer } : {}) });
     } catch (error) {
       deps.log(`paseo gatekeeper: could not write the history line: ${error instanceof Error ? error.message : String(error)}`);
     }

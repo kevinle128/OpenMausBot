@@ -963,9 +963,7 @@ export type ServerFrame =
   | { kind: "thread"; threadId: string; activeLeafId: string }
   | { kind: "bot"; bot: WireBot; /** Only on a stream opened with `?frames=thread`: `bot.tasks` holds just the changed threads; keep the rest. */ tasksPartial?: true }
   | { kind: "group"; group: WireGroup }
-  | { kind: "notify"; notification: NotificationLogEntry }
-  /** The Inbox list changed on the server (a line with no notification, such as an auto-approval): read it again. */
-  | { kind: "inbox" }
+  | { kind: "notify"; notification: NotificationLogEntry } | { /** The Inbox list changed on the server (a line with no notification): read it again. */ kind: "inbox" }
   | { kind: "notifications.read"; threadId: string; ids: string[] }
   | { kind: "group.deleted"; groupId: string }
   | { kind: "routine"; routine: Routine }
