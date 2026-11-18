@@ -8,7 +8,7 @@ import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
-import { AkError, type AkCli, type AkGrant, type AkPendingRequest, type AkRemoteRequest } from "./cli.ts";
+import { AkError, isAkRemoteId, type AkCli, type AkGrant, type AkPendingRequest, type AkRemoteRequest } from "./cli.ts";
 import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
@@ -73,6 +73,8 @@ interface Scope {
 }
 
 const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+/** Text with something in it besides spaces, so an empty name falls through to the next one. */
+const nonEmpty = (value: unknown): string | undefined => (text(value)?.trim() ? (value as string) : undefined);
 const oneLine = (value: string, max = TEXT_CHARS): string => {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -99,8 +101,8 @@ function scopeOf(request: AkPendingRequest): Scope | null {
 
 /** A request from another device, read like a local one; null when it has no usable id or ref. */
 function remoteScopeOf(item: AkRemoteRequest): Scope | null {
-  const id = text(item.id);
-  const ref = text(item.ref) ?? text(item.secret) ?? text(item.name);
+  const id = nonEmpty(item.id);
+  const ref = nonEmpty(item.ref) ?? nonEmpty(item.secret) ?? nonEmpty(item.name);
   if (!id || !ref) return null;
   const scope = scopeOf({ ...item, ref });
   return scope ? { ...scope, remoteId: id } : null;
@@ -109,8 +111,8 @@ function remoteScopeOf(item: AkRemoteRequest): Scope | null {
 /** The name of the device that asked, when the listing gives one as text or as an object with a name. */
 function deviceLabel(request: AkPendingRequest): string | undefined {
   const device = (request as AkRemoteRequest).device;
-  if (typeof device === "string") return device;
-  if (device && typeof device === "object") return text((device as Record<string, unknown>).name) ?? text((device as Record<string, unknown>).label);
+  if (typeof device === "string") return nonEmpty(device);
+  if (device && typeof device === "object") return nonEmpty((device as Record<string, unknown>).name) ?? nonEmpty((device as Record<string, unknown>).label);
   return undefined;
 }
 
@@ -186,6 +188,11 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
   let failures = 0;
   let lastFailure = "";
   let shapeLogged = false;
+  const remotePollMs = deps.remotePollMs ?? REMOTE_POLL_MS;
+  let remoteList: AkRemoteRequest[] = [];
+  let remoteNextAt = 0;
+  let remoteFailure = "";
+  let remoteShapeLogged = false;
 
   const logShapeOnce = (keys: string[]) => {
     if (shapeLogged) return;
@@ -198,6 +205,13 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     if (badRefs.has(ref) || badRefs.size >= BAD_REF_LOG_LIMIT) return;
     badRefs.add(ref);
     log(`ak inbox: ignored a request whose ref is not a valid ref: ${JSON.stringify(oneLine(ref, 60))}`);
+  };
+
+  const badRemoteIds = new Set<string>();
+  const warnBadRemoteId = (id: string) => {
+    if (badRemoteIds.has(id) || badRemoteIds.size >= BAD_REF_LOG_LIMIT) return;
+    badRemoteIds.add(id);
+    log(`ak inbox: ignored a request from another device whose id is not a valid id: ${JSON.stringify(oneLine(id, 60))}`);
   };
 
   async function notifyIfLocked(label: string): Promise<void> {
@@ -364,6 +378,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         } catch (error) {
           // The answer did not reach ak and the request is still in the inbox: the next pass opens a new card for it.
           handled.delete(key);
+          // A remote request may have been answered on another device: list again before a new card opens.
+          if (scope.remoteId) remoteNextAt = 0;
           guard.report(error);
           throw error;
         }
@@ -423,6 +439,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       return true;
     } catch (error) {
       if (guard.report(error)) return true;
+      // A remote request may have been answered on another device: list again before the next attempt.
+      if (scope.remoteId) remoteNextAt = 0;
       const count = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, count);
       log(`ak inbox: could not allow "${scope.ref}" (${describeAkError(error)})`);
@@ -434,13 +452,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     }
   }
 
-  const remotePollMs = deps.remotePollMs ?? REMOTE_POLL_MS;
-  let remoteList: AkRemoteRequest[] = [];
-  let remoteNextAt = 0;
-  let remoteFailure = "";
-  let remoteShapeLogged = false;
-
-  /** Lists the requests from other devices at most every `remotePollMs`. Never throws: a sync that is off or a failure that lasts is logged once. */
+  /** Lists the requests from other devices at most every `remotePollMs`. Throws only when ak refuses to run under an agent; a sync that is off or a failure that lasts is logged once. */
   async function refreshRemote(): Promise<void> {
     if (!cli.remoteRequests || Date.now() < remoteNextAt) return;
     try {
@@ -448,7 +460,10 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       remoteNextAt = Date.now() + remotePollMs;
       remoteFailure = "";
     } catch (error) {
-      if (guard.report(error)) return;
+      if (guard.report(error)) {
+        remoteList = [];
+        throw error;
+      }
       const off = error instanceof AkError && error.kind === "sync-off";
       // Without sync there are no remote requests, so their cards close; after another failure the last list stays.
       if (off) remoteList = [];
@@ -461,13 +476,17 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   async function pass(): Promise<void> {
     await refreshRemote();
+    if (stopped || guard.blocked) return;
     const pending = await cli.pendingRequests();
+    if (stopped || guard.blocked) return;
     const live = new Set<string>();
     const entries: Array<{ request: AkPendingRequest; scope: Scope | null; remote: boolean }> = [
       ...pending.map((request) => ({ request, remote: false, scope: request !== null && typeof request === "object" ? scopeOf(request) : null })),
       ...remoteList.map((request) => ({ request: request as AkPendingRequest, remote: true, scope: request !== null && typeof request === "object" ? remoteScopeOf(request) : null })),
     ];
     for (const { request, scope, remote } of entries) {
+      // A refusal to run under an agent, or a stop, while this pass waited on ak: nothing more is asked or answered.
+      if (stopped || guard.blocked) return;
       if (!scope) {
         const keys = request !== null && typeof request === "object" ? Object.keys(request) : [typeof request];
         if (!remote) logShapeOnce(keys);
@@ -481,6 +500,11 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       // The ref is text from outside: a name `ak` would not accept as a ref gets no card and reaches no `ak` command.
       if (!isAkRef(scope.ref)) {
         warnBadRef(scope.ref);
+        continue;
+      }
+      // The same for the id of a remote request: ak would refuse it, so a card for it could never be answered.
+      if (scope.remoteId !== undefined && !isAkRemoteId(scope.remoteId)) {
+        warnBadRemoteId(scope.remoteId);
         continue;
       }
       const key = keyOf(request, scope);

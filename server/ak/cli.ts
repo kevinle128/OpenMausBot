@@ -243,9 +243,12 @@ function narrow(scope: RequestScope): string[] {
   return flags;
 }
 
-/** The id goes first, before flags; an id that starts with "-" would be read as a flag, so it never reaches ak. */
+/** True for an id ak may be given for a request from another device; an id that starts with "-" would be read as a flag. */
+export const isAkRemoteId = (id: string): boolean => /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(id);
+
+/** The id goes first, before flags, so an id that is not a valid id never reaches ak. */
 function remoteId(id: string): string[] {
-  if (!/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(id)) throw new AkError("invalid", null, "The request id is not a valid id");
+  if (!isAkRemoteId(id)) throw new AkError("invalid", null, "The request id is not a valid id");
   return [id];
 }
 

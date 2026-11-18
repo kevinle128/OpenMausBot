@@ -24,7 +24,7 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string } } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string }; remotePollMs?: number; noRemote?: boolean } = {}) {
   const told: Array<{ ref: string; program?: string }> = [];
   const history: AutoApproval[] = [];
   const lines: Message[] = [];
@@ -59,8 +59,8 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   const guard = createAkGuard((line) => logs.push(line));
   const owned = new Set(options.owned ?? []);
   const watcher = startInboxWatcher({
-    cli: { pendingRequests, approve, deny, grantExec, revokeExec, grants, remoteRequests, approveRemote, denyRemote },
-    remotePollMs: 0,
+    cli: { pendingRequests, approve, deny, grantExec, revokeExec, grants, ...(options.noRemote ? {} : { remoteRequests, approveRemote, denyRemote }) },
+    remotePollMs: options.remotePollMs ?? 0,
     hashFile: async () => PROGRAM_HASH,
     realPath: async (path) => (path === "/opt/homebrew/bin/deploy" ? "/usr/bin/deploy" : path),
     guard,
@@ -615,11 +615,92 @@ describe("requests from other devices", () => {
     expect(t.lines).toEqual([]);
   });
 
-  it("lists remote requests at most once per interval, and not at all without sync support in the cli", async () => {
-    const t = setup();
-    expect(t.remoteRequests).toHaveBeenCalledTimes(1);
+  it("lists remote requests at most once per interval, and backs off after a failure or with sync off", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = setup({ remotePollMs: 5_000 });
+      await t.watcher.checkNow();
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(5_000);
+      t.inbox.remoteError = new AkError("failed", 1, "offline");
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(2);
+      vi.advanceTimersByTime(29_999);
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(2);
+      vi.advanceTimersByTime(1);
+      t.inbox.remoteError = syncOff();
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(59_999);
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(1);
+      await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps answering local requests when the cli cannot list remote requests", async () => {
+    const t = setup({ owned: ["API_KEY"], noRemote: true });
+    t.inbox.requests = [ordinary("API_KEY")];
     await t.watcher.checkNow();
-    expect(t.remoteRequests.mock.calls.length).toBeGreaterThan(1);
+    expect(t.remoteRequests).not.toHaveBeenCalled();
+    expect(t.approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists again before retrying a remote answer that failed, so a request answered elsewhere opens no card", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = setup({ owned: ["API_KEY"], remotePollMs: 5_000 });
+      t.approveRemote.mockRejectedValueOnce(new AkError("failed", 1, "already answered"));
+      // The first listing, already started, finds the request; it is answered elsewhere before the next one.
+      t.inbox.remote.push(remote("3f2a", "API_KEY"));
+      t.inbox.remote = [];
+      for (let i = 0; i < 3; i += 1) await t.watcher.checkNow();
+      expect(t.remoteRequests).toHaveBeenCalledTimes(2);
+      expect(t.approveRemote).toHaveBeenCalledTimes(1);
+      expect(t.lines).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the pass and calls ak no more when listing remote requests is refused under an agent", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.remote = [remote("aa11", "STRANGER")];
+    await t.watcher.checkNow();
+    expect(t.approvals.keys()).toHaveLength(1);
+    const calls = t.pendingRequests.mock.calls.length;
+    t.inbox.requests = [ordinary("API_KEY")];
+    t.inbox.remoteError = new AkError("agent-above-process", 6, "refused");
+    await t.watcher.checkNow();
+    expect(t.guard.blocked).toBe(true);
+    expect(t.pendingRequests.mock.calls.length).toBe(calls);
+    expect(t.approve).not.toHaveBeenCalled();
+    expect(t.approvals.keys()).toEqual([]);
+    expect(t.logs.filter((line) => line.includes("refused to run"))).toHaveLength(1);
+  });
+
+  it("ignores a remote request whose id ak would refuse: no card, no answer, one log line", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.remote = [remote("--yes", "API_KEY"), remote("a/b", "STRANGER")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.approveRemote).not.toHaveBeenCalled();
+    expect(t.lines).toEqual([]);
+    expect(t.logs.filter((line) => line.includes("id is not a valid id"))).toHaveLength(2);
+  });
+
+  it("names another device when the device name is empty, and reads the ref past an empty one", async () => {
+    const t = setup();
+    t.inbox.remote = [remote("aa11", "", { secret: "STRANGER", device: { name: " ", label: "" } })];
+    await t.watcher.checkNow();
+    expect(t.card()?.subtitle).toContain("STRANGER");
+    expect(t.card()?.subtitle).toContain("From another device");
   });
 });
 
