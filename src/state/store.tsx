@@ -3108,7 +3108,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "groupPatched", group });
           break;
         }
-        case "inbox": void refreshInbox(); break; case "notify": // An "inbox" frame: the list changed on the server, read it again.
+        case "inbox": void refreshInbox(); break; case "notify":
           // The wrapped dispatch: only it PATCHes unread:false back to the server.
           showNotification(
             frame.notification,

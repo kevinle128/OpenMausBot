@@ -128,7 +128,7 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
     if (!deps.history) return;
     const { agentId, agent } = event;
     // The line leaves this process's trust boundary like a card does; a command can carry a key inline.
-    const shown = extra.shown ?? (target ? (target.kind === "command" ? target.command : target.filePath) : event.request.name);
+    const shown = extra.shown ?? (target ? (target.kind === "command" ? target.command : target.filePath) : event.request.title ?? event.request.description ?? event.request.name);
     const what = redactSecretsInText(oneLine(target?.kind === "file" ? `đọc file ${shown}` : shown, SUBTITLE_CHARS));
     try {
       // Each answer of the person is its own line; only what was allowed without asking merges repeats.

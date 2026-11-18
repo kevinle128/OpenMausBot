@@ -148,6 +148,15 @@ describe("Paseo gatekeeper", () => {
     expect(f.history).toEqual([{ key: "agent-1|r1|answer", agent: "Fix the build", workspace: workDir, what: "rm -rf build", rule: "person", answer: { decision: "deny" } }]);
   });
 
+  it("names what the card showed on the line of an answered card with no command or file", async () => {
+    const f = fixture();
+    f.connection.emit("permissionRequested", f.request("r1", { type: "write", filePath: join(workDir, "a.ts") }, { name: "Write", title: "Write a.ts" }));
+    await flush();
+    f.approvals.answer(f.card()!.requestId!, "allow");
+    await flush();
+    expect(f.history).toMatchObject([{ what: "Write a.ts", rule: "person", answer: { decision: "allow" } }]);
+  });
+
   it("writes one history line for each card the person allows, never merged with another", async () => {
     const f = fixture();
     for (const id of ["r1", "r2"]) {
