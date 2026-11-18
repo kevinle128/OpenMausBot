@@ -76,6 +76,12 @@ export function createLateToolResults(now: () => number = Date.now) {
     turnFor(header: string | string[] | undefined, threadId: string, botId: string, toolUseId: string): string | null {
       return live().find((turn) => turn.threadId === threadId && turn.botId === botId && turn.toolUseIds.has(toolUseId) && presents(header, turn.token))?.turnId ?? null;
     },
+    /** The ended turn whose tool call still waits for its full output, for the same bot's live hooks bearer in the same
+     * conversation: a background hook reads the token file when it runs, so after the next turn rewrote that file it
+     * carries the next turn's bearer. That bearer already speaks for this bot and conversation, so no other turn is opened. */
+    turnForLiveHooks(threadId: string, botId: string, toolUseId: string): string | null {
+      return live().find((turn) => turn.threadId === threadId && turn.botId === botId && turn.toolUseIds.has(toolUseId))?.turnId ?? null;
+    },
     saved(threadId: string, turnId: string, toolUseId: string): void {
       for (const turn of ended) if (turn.threadId === threadId && turn.turnId === turnId) turn.toolUseIds.delete(toolUseId);
     },

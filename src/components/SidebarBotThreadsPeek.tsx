@@ -7,7 +7,6 @@ import { isTypeaheadKey, typeaheadMatch, typeaheadText, type Typeahead } from "@
 import { localizedTaskTitle } from "@/lib/task-title";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import type { Action, Bot, Task } from "@/state/store";
-import { botOpensTo } from "@/state/thread-navigation";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { MENU_GUTTER, MENU_ICON, MENU_META, MENU_ROW, MENU_SEPARATOR, MENU_SHEET } from "./menu-recipe";
 import { useHeldMenuMotion } from "./MenuMotion";
@@ -19,8 +18,14 @@ const EDGE = 8;
 
 type PeekBot = Pick<Bot, "id" | "name" | "threadId" | "switchingTo" | "mainThreadId" | "tasks">;
 
+/** The bot's main thread when it is one of its threads, else none. The thread on screen never stands in for it: that would
+ * star a private thread and hide its Archive and Delete. */
+export function peekMainThread(bot: Pick<PeekBot, "mainThreadId" | "tasks">): string | undefined {
+  return bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId) ? bot.mainThreadId : undefined;
+}
+
 export function peekThreads(bot: Pick<PeekBot, "threadId" | "mainThreadId" | "tasks">, current?: string): Task[] {
-  const main = botOpensTo(bot, false);
+  const main = peekMainThread(bot);
   const others = (bot.tasks ?? [])
     .filter((task) => task.threadId !== main && !task.routineRunId && !task.openedBy?.burstId && !task.closedBy && !isArchived(task) && !isSnoozed(task))
     .sort((a, b) => threadRecency(b) - threadRecency(a));
@@ -49,7 +54,7 @@ const ROW_TIME = "min-w-13 text-end tabular-nums";
 const ROW_TIME_YIELDS = "transition-opacity group-hover/peek:opacity-0 group-focus-within/peek:opacity-0 touch:min-w-21 touch:opacity-0 motion-reduce:transition-none";
 
 export function SidebarBotThreadsPeek({ bot, onScreen = false, dispatch }: { bot: PeekBot; onScreen?: boolean; dispatch: Dispatch<Action> }) {
-  const main = botOpensTo(bot, false), current = onScreen ? bot.switchingTo ?? bot.threadId : undefined;
+  const main = peekMainThread(bot), current = onScreen ? bot.switchingTo ?? bot.threadId : undefined;
   const tasks = bot.tasks ?? [];
   useSnoozeExpiry(tasks);
   // A snooze ends by the clock alone, so the nearest deadline still ahead stands in for it.

@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Task } from "@/state/store";
-import { PEEK_LIMIT, peekPlace, peekThreads, SidebarBotThreadsPeek } from "./SidebarBotThreadsPeek";
+import { PEEK_LIMIT, peekMainThread, peekPlace, peekThreads, SidebarBotThreadsPeek } from "./SidebarBotThreadsPeek";
 
 const task = (threadId: string, extra: Partial<Task> = {}): Task => ({ threadId, title: threadId, createdAt: 1, ...extra });
 const bot = (tasks: Task[], threadId = "main") => ({ threadId, mainThreadId: "main", tasks: [task("main"), ...tasks] });
@@ -19,6 +19,12 @@ describe("peekThreads", () => {
     const listed = peekThreads(bot([task("new", { updatedAt: 50 }), ...four]));
     expect(ids(listed)).toEqual(["main", "new", "b", "c"]);
     expect(listed).toHaveLength(PEEK_LIMIT + 1);
+  });
+
+  it("takes no conversation as the main one when the main thread is not among the bot's threads", () => {
+    const shown = { threadId: "private", mainThreadId: "gone", tasks: [task("private", { updatedAt: 20 }), task("other", { updatedAt: 10 })] };
+    expect(peekMainThread(shown)).toBeUndefined();
+    expect(ids(peekThreads(shown, "private"))).toEqual(["private", "other"]);
   });
 
   it("lists the main conversation first while another one is on screen", () => {

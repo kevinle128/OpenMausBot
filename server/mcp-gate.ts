@@ -403,7 +403,7 @@ createInterface({ input: child.stdout }).on("line", (line) => {
     result.tools = fitToolList(result.tools, SCHEMA_PROFILE, (note) => process.stderr.write(`mcp-gate(${NAME}): ${note}\n`));
   }
   const listsQueryTool = BUDGET > 0 && request?.kind === "list" && message.error === undefined && isRecord(result) && Array.isArray(result.tools);
-  if (listsQueryTool) result.tools = result.tools.filter((tool: unknown) => !isRecord(tool) || tool.name !== QUERY_TOOL_NAME);
+  if (listsQueryTool && isRecord(result) && Array.isArray(result.tools)) result.tools = result.tools.filter((tool: unknown) => !isRecord(tool) || tool.name !== QUERY_TOOL_NAME);
   if (TOOL_LIMIT !== undefined && request?.kind === "list" && message.error === undefined && isRecord(result)) {
     // query_result keeps one slot of the limit, so a full page never pushes it out.
     const upstreamLimit = listsQueryTool ? Math.max(0, TOOL_LIMIT - 1) : TOOL_LIMIT;
