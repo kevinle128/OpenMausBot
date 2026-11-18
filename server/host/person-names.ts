@@ -49,6 +49,6 @@ export function createPersonNames(dataDir: string): PersonNames {
       else names.set(personKey(session), name);
       writeFileAtomic(file, `${JSON.stringify({ v: 1, names: Object.fromEntries(names) }, null, 2)}\n`, { mode: 0o600 });
     },
-    lineNames: (fallback) => (names.size ? (line) => byKey(line.sender?.id) ?? line.sender?.name ?? fallback : fallback),
+    lineNames: (fallback) => (names.size ? (line) => byKey(line.sender?.id) ?? fallback : fallback),
   };
 }

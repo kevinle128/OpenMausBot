@@ -36,6 +36,7 @@ export function mcpCommandEnvironment(base: NodeJS.ProcessEnv, serverEnv: Record
   }
   const inherited = inheritedNpmCache({ ...base, ...serverEnv });
   if (!inherited || canWrite(inherited)) return { ...base, ...serverEnv };
-  for (const key of Object.keys(env)) if (key.toLowerCase() === "npm_config_cache") delete env[key];
-  return { ...env, npm_config_cache: mcpNpmCache, ...serverEnv };
+  const merged: NodeJS.ProcessEnv = { ...env, ...serverEnv };
+  for (const key of Object.keys(merged)) if (key.toLowerCase() === "npm_config_cache") delete merged[key];
+  return { ...merged, npm_config_cache: mcpNpmCache };
 }
