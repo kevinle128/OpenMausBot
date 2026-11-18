@@ -78,10 +78,10 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
 // The shape `ak secrets approve --json` lists: the variable, program and hash are inside `exec`.
 const exec = (ref: string, path = "/usr/bin/deploy", hash: string | null = PROGRAM_HASH): AkPendingRequest => ({
-  ref, fingerprint: AGENT, agentLabel: "claude", project: "app", purpose: "run", count: 1, exec: { env: "TOKEN", path, ...(hash ? { hash } : {}) },
+  ref, fingerprint: AGENT, agentLabel: "claude", project: "app", purpose: "run", count: 1, firstSeen: "2026-11-18T07:00:00Z", lastSeen: "2026-11-18T07:25:00Z", exec: { env: "TOKEN", path, ...(hash ? { hash } : {}) },
 });
 const grantFor = (ref: string, path = "/usr/bin/deploy", hash = PROGRAM_HASH, extra: Partial<AkGrant> = {}): AkGrant => ({
-  ref, fingerprint: AGENT, project: "app", purpose: "run", state: "allow", exec: { env: "TOKEN", path, hash }, ...extra,
+  ref, fingerprint: AGENT, project: "app", purpose: "run", state: "allow", createdAt: "2026-11-18T07:30:00Z", exec: { env: "TOKEN", path, hash }, ...extra,
 });
 
 describe("ak inbox watcher", () => {
@@ -249,8 +249,9 @@ describe("ak inbox watcher", () => {
     const t = setup({ owned: ["OTHER"] });
     t.grantExec.mockResolvedValueOnce({ exec: { env: "TOKEN", path: "/usr/bin/true", hash: "sha256:bb" } });
     await answerAmbiguous(t, [exec("DEPLOY_TOKEN")]);
-    expect(t.revokeExec).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, env: "TOKEN", program: "/usr/bin/deploy", project: "app", purpose: "run" });
+    expect(t.revokeExec).toHaveBeenCalledWith({ ref: "DEPLOY_TOKEN", agent: AGENT, env: "TOKEN", program: "/usr/bin/true", project: "app", purpose: "run" });
     expect(t.lines[0]?.card).toMatchObject({ answered: "unavailable", dismissed: true });
+    expect(t.logs.join("\n")).toContain("another program or hash");
   });
 
   it("reads the grants back when ak returns no hash, and revokes when none matches", async () => {
@@ -258,6 +259,46 @@ describe("ak inbox watcher", () => {
     await answerAmbiguous(t, [exec("DEPLOY_TOKEN")]);
     expect(t.grants).toHaveBeenCalled();
     expect(t.revokeExec).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes the path read back from the grants when ak returned no path, and names that path", async () => {
+    const t = setup({ owned: ["OTHER"] });
+    t.inbox.grants = [grantFor("DEPLOY_TOKEN", "/usr/bin/true", "sha256:bb")];
+    t.revokeExec.mockImplementationOnce(async () => {
+      t.inbox.grants = [];
+    });
+    await answerAmbiguous(t, [exec("DEPLOY_TOKEN")]);
+    expect(t.revokeExec).toHaveBeenCalledWith(expect.objectContaining({ program: "/usr/bin/true" }));
+    expect(t.logs.join("\n")).not.toContain("by hand");
+  });
+
+  it("says the wrong grant may still be there when revoke refuses the program or the grant is still listed", async () => {
+    const refused = setup({ owned: ["OTHER"] });
+    refused.grantExec.mockResolvedValueOnce({ exec: { env: "TOKEN", path: "/usr/bin/true", hash: "sha256:bb" } });
+    refused.revokeExec.mockRejectedValueOnce(new AkError("invalid", 2, "program not found"));
+    await answerAmbiguous(refused, [exec("DEPLOY_TOKEN")]);
+    expect(refused.logs.join("\n")).toContain("revoke refused the program");
+    expect(refused.logs.join("\n")).toContain("run ak secrets revoke by hand");
+
+    const listed = setup({ owned: ["OTHER"] });
+    listed.inbox.grants = [grantFor("DEPLOY_TOKEN", "/usr/bin/true", "sha256:bb")];
+    listed.grantExec.mockResolvedValueOnce({ exec: { env: "TOKEN", path: "/usr/bin/true", hash: "sha256:bb" } });
+    await answerAmbiguous(listed, [exec("DEPLOY_TOKEN")]);
+    expect(listed.logs.join("\n")).toContain("the wrong grant is still listed");
+  });
+
+  it("logs a grants failure that lasts once, and the reason a failed read-back leads to a revoke", async () => {
+    const t = setup({ owned: ["OTHER"] });
+    t.grants.mockRejectedValue(new AkError("backend", 5, "grants locked"));
+    t.inbox.requests = [exec("DEPLOY_TOKEN")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.logs.filter((line) => line.includes("could not read the grants"))).toHaveLength(1);
+    t.approve.mockRejectedValueOnce(AMBIGUOUS);
+    t.approvals.answer(t.lines[0]!.card!.requestId!, "allow");
+    await flush();
+    expect(t.logs.join("\n")).toContain("the grants could not be read back");
+    expect(t.revokeExec).toHaveBeenCalled();
   });
 
   it("does not grant by program when the request has no hash, when the file changed, or when the project is missing", async () => {
@@ -276,6 +317,16 @@ describe("ak inbox watcher", () => {
     expect(t.approve).not.toHaveBeenCalled();
     expect(t.grantExec).not.toHaveBeenCalled();
     expect(t.lines).toEqual([]);
+  });
+
+  it("still asks when the earlier grant was recorded before the agent last asked, or is for another project, purpose or agent", async () => {
+    for (const grant of [grantFor("DEPLOY_TOKEN", "/usr/bin/deploy", PROGRAM_HASH, { createdAt: "2026-11-18T07:20:00Z" }), grantFor("DEPLOY_TOKEN", "/usr/bin/deploy", PROGRAM_HASH, { project: "other" }), grantFor("DEPLOY_TOKEN", "/usr/bin/deploy", PROGRAM_HASH, { purpose: "other" }), grantFor("DEPLOY_TOKEN", "/usr/bin/deploy", PROGRAM_HASH, { fingerprint: "sha256:other" })]) {
+      const t = setup({ owned: ["OTHER"] });
+      t.inbox.grants = [grant];
+      t.inbox.requests = [exec("DEPLOY_TOKEN")];
+      await t.watcher.checkNow();
+      expect(t.card()).toBeDefined();
+    }
   });
 
   it("still asks when the earlier grant is expired, has another hash or is for another variable", async () => {

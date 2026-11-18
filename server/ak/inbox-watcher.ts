@@ -194,39 +194,86 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     }
   }
 
-  /** True when `grant` covers exactly this exec request: same secret, agent, project, purpose, variable, program and hash, and it has not expired. */
-  async function covers(grant: AkGrant, scope: Scope, program: { path: string; hash: string }): Promise<boolean> {
-    const exec = grant.exec;
-    if (grant.state !== "allow" || !exec || typeof exec !== "object") return false;
-    if (grant.ref !== scope.ref || grant.fingerprint !== scope.agent || grant.project !== scope.project || (grant.purpose ?? "") !== (scope.purpose ?? "")) return false;
-    if (exec.env !== scope.env || exec.hash !== program.hash || typeof exec.path !== "string") return false;
+  /** The grant is an allow for this secret, agent, project, purpose and variable, whatever its program. */
+  const sameScope = (grant: AkGrant, scope: Scope): boolean =>
+    grant.state === "allow" && grant.ref === scope.ref && grant.fingerprint === scope.agent
+    && grant.project === scope.project && (grant.purpose ?? "") === (scope.purpose ?? "") && grant.exec?.env === scope.env;
+
+  /** True when `grant` covers exactly this exec request: same scope, program and hash, not expired and, with `since`, recorded at or after it. */
+  async function covers(grant: AkGrant, scope: Scope, program: { path: string; hash: string }, since?: number): Promise<boolean> {
+    if (!sameScope(grant, scope) || !grant.exec || grant.exec.hash !== program.hash || typeof grant.exec.path !== "string") return false;
     if (grant.expiresAt !== undefined && !(Date.parse(grant.expiresAt) > Date.now())) return false;
-    return sameProgram(exec.path, program.path);
+    if (since !== undefined && !(Date.parse(grant.createdAt as string) >= since)) return false;
+    return sameProgram(grant.exec.path, program.path);
   }
 
-  /** A request still in the inbox that an earlier answer already granted, so a restart does not ask again or grant again. */
+  let grantsFailure = "";
+  /** Reads the grants; a failure that lasts is logged once, until a read works again. */
+  async function readGrants(): Promise<AkGrant[] | null> {
+    try {
+      const grants = await cli.grants();
+      grantsFailure = "";
+      return grants;
+    } catch (error) {
+      if (guard.report(error)) return null;
+      const message = `ak inbox: could not read the grants (${describeAkError(error)})`;
+      if (message !== grantsFailure) log(message);
+      grantsFailure = message;
+      return null;
+    }
+  }
+
+  /**
+   * A request still in the inbox that an earlier answer already granted, so a restart does not ask again or grant again.
+   * Only a grant recorded at or after the last time the agent asked counts: an agent that asks again was refused again.
+   */
   async function alreadyGranted(request: AkPendingRequest, scope: Scope): Promise<boolean> {
     const program = isExec(request) ? execProgram(request) : null;
     if (!program?.hash || scope.agent === undefined || scope.project === undefined || !scope.env) return false;
+    const since = Date.parse(text(request.lastSeen) ?? "");
+    if (Number.isNaN(since)) return false;
     const found = { path: program.path, hash: program.hash };
-    try {
-      for (const grant of await cli.grants()) if (await covers(grant, scope, found)) return true;
-    } catch (error) {
-      if (guard.report(error)) return false;
-      log(`ak inbox: could not read the grants (${describeAkError(error)})`);
-    }
+    for (const grant of (await readGrants()) ?? []) if (await covers(grant, scope, found, since)) return true;
     return false;
   }
 
-  /** The grant `ak` recorded must be for the program and hash the request named. `ak` resolves the program itself, so this is checked. */
-  async function grantedAsAsked(result: unknown, scope: Scope, program: { path: string; hash: string }): Promise<boolean> {
+  /**
+   * Whether the grant `ak` recorded is for the program and hash the request named; `ak` resolves the program itself.
+   * `path` is the program `ak` really wrote, which is what a revoke must name.
+   */
+  async function grantedAsAsked(result: unknown, scope: Scope, program: { path: string; hash: string }): Promise<{ ok: boolean; path?: string; reason: string }> {
     const recorded = result && typeof result === "object" ? ((result as { grant?: unknown }).grant ?? result) : null;
     const exec = recorded && typeof recorded === "object" ? (recorded as { exec?: AkGrant["exec"] }).exec : null;
     if (exec && typeof exec.hash === "string" && typeof exec.path === "string") {
-      return exec.hash === program.hash && (await sameProgram(exec.path, program.path));
+      const ok = exec.hash === program.hash && (await sameProgram(exec.path, program.path));
+      return { ok, path: exec.path, reason: ok ? "" : "the grant ak returned names another program or hash" };
     }
-    for (const grant of await cli.grants()) if (await covers(grant, scope, program)) return true;
-    return false;
+    const grants = await cli.grants().catch((error: unknown) => error);
+    if (!Array.isArray(grants)) return { ok: false, reason: `the grants could not be read back (${describeAkError(grants)})` };
+    for (const grant of grants as AkGrant[]) if (await covers(grant, scope, program)) return { ok: true, reason: "" };
+    const wrong = (grants as AkGrant[]).filter((grant) => sameScope(grant, scope)).sort((a, b) => Date.parse(b.createdAt as string) - Date.parse(a.createdAt as string))[0];
+    return { ok: false, ...(typeof wrong?.exec?.path === "string" ? { path: wrong.exec.path } : {}), reason: "no grant read back matches the program and hash of the request" };
+  }
+
+  /** Removes the grant `ak` wrote for the wrong program and checks it is gone. Throws the reason it could not be removed. */
+  async function removeWrongGrant(exec: Parameters<AkCli["revokeExec"]>[0], scope: Scope, program: { path: string; hash: string }, path: string, reason: string): Promise<never> {
+    const stuck = (detail: string) => {
+      const message = `A grant for another program than the request named may still be there (${detail}); run ak secrets revoke by hand`;
+      log(`ak inbox: ${message} for "${scope.ref}" at ${path}`);
+      return new AkError("failed", null, message);
+    };
+    log(`ak inbox: removing the grant for "${scope.ref}" at ${path}: ${reason}`);
+    try {
+      await cli.revokeExec({ ...exec, program: path });
+    } catch (error) {
+      throw stuck(error instanceof AkError && error.exitCode === 2 ? `ak revoke refused the program: ${error.message}` : describeAkError(error));
+    }
+    const after = await cli.grants().catch((error: unknown) => error);
+    if (!Array.isArray(after)) throw stuck(`the grants could not be read to confirm: ${describeAkError(after)}`);
+    for (const grant of after as AkGrant[]) {
+      if (sameScope(grant, scope) && typeof grant.exec?.path === "string" && (await sameProgram(grant.exec.path, path)) && !(await covers(grant, scope, program))) throw stuck("the wrong grant is still listed");
+    }
+    throw new AkError("failed", null, "ak recorded a grant for a different program than the request named, so the grant was removed");
   }
 
   /** Allows the request. When `approve` cannot tell two exec requests apart, the grant names the program of this one. */
@@ -245,11 +292,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       const label = text(request.agentLabel);
       const exec = { ref: scope.ref, agent: scope.agent, env: scope.env, program: program.path, project: scope.project, ...(scope.purpose !== undefined ? { purpose: scope.purpose } : {}) };
       const result = await cli.grantExec({ ...exec, ttl: AK_APPROVAL_TTL, ...(label ? { agentLabel: label } : {}) });
-      const matches = await grantedAsAsked(result, scope, found).catch(() => false);
-      if (!matches) {
-        await cli.revokeExec(exec);
-        throw new AkError("failed", null, "ak recorded a grant for a different program than the request named, so the grant was removed");
-      }
+      const verdict = await grantedAsAsked(result, scope, found);
+      if (!verdict.ok) return removeWrongGrant(exec, scope, found, verdict.path ?? program.path, verdict.reason);
       log(`ak inbox: several requests for "${scope.ref}" matched, so it was allowed by its program ${program.path}`);
     }
   }
