@@ -1,4 +1,6 @@
-import { watch, type FSWatcher } from "node:fs";
+import { createHash } from "node:crypto";
+import { constants, watch, type FSWatcher } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +8,7 @@ import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
-import type { AkCli, AkPendingRequest } from "./cli.ts";
+import { AkError, type AkCli, type AkGrant, type AkPendingRequest } from "./cli.ts";
 import type { AutoApprovalHistory, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
@@ -25,7 +27,7 @@ const TEXT_CHARS = 160;
 const BAD_REF_LOG_LIMIT = 50;
 
 export interface InboxWatcherDeps {
-  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny">;
+  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec" | "revokeExec" | "grants">;
   guard: AkGuard;
   approvals: ExternalApprovals;
   /** True for a ref OpenMausBot wrote to ak from the Vault: the only refs that are approved without a person. */
@@ -40,6 +42,10 @@ export interface InboxWatcherDeps {
   history?: AutoApprovalHistory;
   /** Tells the Paseo agent that waited for this approval to go on. */
   notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
+  /** The `sha256:<hex>` of a program's file; replaced by tests. */
+  hashFile?(path: string): Promise<string>;
+  /** The file a path leads to once symbolic links are followed; replaced by tests. */
+  realPath?(path: string): Promise<string>;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
   debounceMs?: number;
@@ -76,6 +82,11 @@ function scopeOf(request: AkPendingRequest): Scope | null {
     const value = text(request[field]);
     if (value !== undefined) scope[field] = value;
   }
+  // `ak secrets approve --json` lists the variable of an exec request inside `exec`, not at the top.
+  if (scope.env === undefined && request.exec && typeof request.exec === "object") {
+    const env = text((request.exec as Record<string, unknown>).env);
+    if (env) scope.env = env;
+  }
   return scope;
 }
 
@@ -90,10 +101,42 @@ function execLabel(request: AkPendingRequest): string {
   if (typeof exec === "string") return exec;
   if (exec && typeof exec === "object") {
     const fields = exec as Record<string, unknown>;
-    const program = text(fields.program) ?? text(fields.path) ?? text(fields.name);
+    // The path is what a grant names, so it is what the person is shown.
+    const program = text(fields.path) ?? text(fields.program) ?? text(fields.name);
     if (program) return program;
   }
   return "a program";
+}
+
+/** Streams a regular file. `O_NONBLOCK` keeps opening a named pipe from waiting for a writer, and the `fstat` refuses anything but a file. */
+async function sha256OfFile(path: string): Promise<string> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!(await file.stat()).isFile()) throw new Error("not a regular file");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1 << 20);
+    for (;;) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return `sha256:${hash.digest("hex")}`;
+  } finally {
+    await file.close();
+  }
+}
+
+/** `ak secrets approve` names a request by agent, project, purpose and variable only, so it refuses two exec requests that differ in the program. */
+const isAmbiguous = (error: unknown): boolean => error instanceof AkError && error.exitCode === 2 && /waiting requests match/.test(error.message);
+
+/** The absolute program path and pinned hash of an exec request, when the inbox lists them. */
+function execProgram(request: AkPendingRequest): { path: string; hash?: string } | null {
+  const { exec } = request;
+  if (!exec || typeof exec !== "object") return null;
+  const fields = exec as Record<string, unknown>;
+  const path = text(fields.path);
+  const hash = text(fields.hash);
+  return path?.startsWith("/") ? { path, ...(hash ? { hash } : {}) } : null;
 }
 
 /**
@@ -138,6 +181,123 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     deps.notify(buildNotification("approval", bot, bot.threadId, oneLine(label, 200)));
   }
 
+  const hashOf = deps.hashFile ?? sha256OfFile;
+  const resolve = deps.realPath ?? ((path: string) => realpath(path));
+
+  /** Two paths name one program when they are equal or lead to the same file, such as a Homebrew link into the Cellar. */
+  async function sameProgram(a: string, b: string): Promise<boolean> {
+    if (a === b) return true;
+    try {
+      return (await resolve(a)) === (await resolve(b));
+    } catch {
+      return false;
+    }
+  }
+
+  /** The grant is an allow for this secret, agent, project, purpose and variable, whatever its program. */
+  const sameScope = (grant: AkGrant, scope: Scope): boolean =>
+    grant.state === "allow" && grant.ref === scope.ref && grant.fingerprint === scope.agent
+    && grant.project === scope.project && (grant.purpose ?? "") === (scope.purpose ?? "") && grant.exec?.env === scope.env;
+
+  /** True when `grant` covers exactly this exec request: same scope, program and hash, not expired and, with `since`, recorded at or after it. */
+  async function covers(grant: AkGrant, scope: Scope, program: { path: string; hash: string }, since?: number): Promise<boolean> {
+    if (!sameScope(grant, scope) || !grant.exec || grant.exec.hash !== program.hash || typeof grant.exec.path !== "string") return false;
+    if (grant.expiresAt !== undefined && !(Date.parse(grant.expiresAt) > Date.now())) return false;
+    if (since !== undefined && !(Date.parse(grant.createdAt as string) >= since)) return false;
+    return sameProgram(grant.exec.path, program.path);
+  }
+
+  let grantsFailure = "";
+  /** Reads the grants; a failure that lasts is logged once, until a read works again. */
+  async function readGrants(): Promise<AkGrant[] | null> {
+    try {
+      const grants = await cli.grants();
+      grantsFailure = "";
+      return grants;
+    } catch (error) {
+      if (guard.report(error)) return null;
+      const message = `ak inbox: could not read the grants (${describeAkError(error)})`;
+      if (message !== grantsFailure) log(message);
+      grantsFailure = message;
+      return null;
+    }
+  }
+
+  /**
+   * A request still in the inbox that an earlier answer already granted, so a restart does not ask again or grant again.
+   * Only a grant recorded at or after the last time the agent asked counts: an agent that asks again was refused again.
+   */
+  async function alreadyGranted(request: AkPendingRequest, scope: Scope): Promise<boolean> {
+    const program = isExec(request) ? execProgram(request) : null;
+    if (!program?.hash || scope.agent === undefined || scope.project === undefined || !scope.env) return false;
+    const since = Date.parse(text(request.lastSeen) ?? "");
+    if (Number.isNaN(since)) return false;
+    const found = { path: program.path, hash: program.hash };
+    for (const grant of (await readGrants()) ?? []) if (await covers(grant, scope, found, since)) return true;
+    return false;
+  }
+
+  /**
+   * Whether the grant `ak` recorded is for the program and hash the request named; `ak` resolves the program itself.
+   * `path` is the program `ak` really wrote, which is what a revoke must name.
+   */
+  async function grantedAsAsked(result: unknown, scope: Scope, program: { path: string; hash: string }): Promise<{ ok: boolean; path?: string; reason: string }> {
+    const recorded = result && typeof result === "object" ? ((result as { grant?: unknown }).grant ?? result) : null;
+    const exec = recorded && typeof recorded === "object" ? (recorded as { exec?: AkGrant["exec"] }).exec : null;
+    if (exec && typeof exec.hash === "string" && typeof exec.path === "string") {
+      const ok = exec.hash === program.hash && (await sameProgram(exec.path, program.path));
+      return { ok, path: exec.path, reason: ok ? "" : "the grant ak returned names another program or hash" };
+    }
+    const grants = await cli.grants().catch((error: unknown) => error);
+    if (!Array.isArray(grants)) return { ok: false, reason: `the grants could not be read back (${describeAkError(grants)})` };
+    for (const grant of grants as AkGrant[]) if (await covers(grant, scope, program)) return { ok: true, reason: "" };
+    const wrong = (grants as AkGrant[]).filter((grant) => sameScope(grant, scope)).sort((a, b) => Date.parse(b.createdAt as string) - Date.parse(a.createdAt as string))[0];
+    return { ok: false, ...(typeof wrong?.exec?.path === "string" ? { path: wrong.exec.path } : {}), reason: "no grant read back matches the program and hash of the request" };
+  }
+
+  /** Removes the grant `ak` wrote for the wrong program and checks it is gone. Throws the reason it could not be removed. */
+  async function removeWrongGrant(exec: Parameters<AkCli["revokeExec"]>[0], scope: Scope, program: { path: string; hash: string }, path: string, reason: string): Promise<never> {
+    const stuck = (detail: string) => {
+      const message = `A grant for another program than the request named may still be there (${detail}); run ak secrets revoke by hand`;
+      log(`ak inbox: ${message} for "${scope.ref}" at ${path}`);
+      return new AkError("failed", null, message);
+    };
+    log(`ak inbox: removing the grant for "${scope.ref}" at ${path}: ${reason}`);
+    try {
+      await cli.revokeExec({ ...exec, program: path });
+    } catch (error) {
+      throw stuck(error instanceof AkError && error.exitCode === 2 ? `ak revoke refused the program: ${error.message}` : describeAkError(error));
+    }
+    const after = await cli.grants().catch((error: unknown) => error);
+    if (!Array.isArray(after)) throw stuck(`the grants could not be read to confirm: ${describeAkError(after)}`);
+    for (const grant of after as AkGrant[]) {
+      if (sameScope(grant, scope) && typeof grant.exec?.path === "string" && (await sameProgram(grant.exec.path, path)) && !(await covers(grant, scope, program))) throw stuck("the wrong grant is still listed");
+    }
+    throw new AkError("failed", null, "ak recorded a grant for a different program than the request named, so the grant was removed");
+  }
+
+  /** Allows the request. When `approve` cannot tell two exec requests apart, the grant names the program of this one. */
+  async function allow(request: AkPendingRequest, scope: Scope, answerScope: Scope): Promise<void> {
+    try {
+      await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+    } catch (error) {
+      const program = isExec(request) ? execProgram(request) : null;
+      if (!isAmbiguous(error) || !program || scope.agent === undefined || scope.project === undefined || !scope.env) throw error;
+      // The grant pins whatever the file is now, so the request must carry the hash it asked with and the file must still have it.
+      if (!program.hash) throw new AkError("failed", null, "The request has no program hash, so it was not allowed");
+      if ((await hashOf(program.path).catch(() => "")) !== program.hash) {
+        throw new AkError("failed", null, "The program changed since it asked, so it was not allowed");
+      }
+      const found = { path: program.path, hash: program.hash };
+      const label = text(request.agentLabel);
+      const exec = { ref: scope.ref, agent: scope.agent, env: scope.env, program: program.path, project: scope.project, ...(scope.purpose !== undefined ? { purpose: scope.purpose } : {}) };
+      const result = await cli.grantExec({ ...exec, ttl: AK_APPROVAL_TTL, ...(label ? { agentLabel: label } : {}) });
+      const verdict = await grantedAsAsked(result, scope, found);
+      if (!verdict.ok) return removeWrongGrant(exec, scope, found, verdict.path ?? program.path, verdict.reason);
+      log(`ak inbox: several requests for "${scope.ref}" matched, so it was allowed by its program ${program.path}`);
+    }
+  }
+
   async function ask(request: AkPendingRequest, scope: Scope, key: string): Promise<void> {
     const exec = isExec(request);
     const label = text(request.agentLabel);
@@ -158,7 +318,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         handled.add(key);
         try {
           if (decision === "allow") {
-            await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
+            await allow(request, scope, answerScope);
             void tellAgent(scope, request);
           }
           else await cli.deny(answerScope);
@@ -212,7 +372,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     handled.add(key);
     try {
       // An exec request is answered for its own program and variable, exactly as the card's Allow does.
-      await cli.approve({ ...scope, ...(isExec(request) ? {} : { env: "" }), ttl: AK_APPROVAL_TTL });
+      await allow(request, scope, { ...scope, ...(isExec(request) ? {} : { env: "" }) });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
       record(scope, request, await tellAgent(scope, request));
       return true;
@@ -248,6 +408,10 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       const key = keyOf(request, scope);
       live.add(key);
       if (handled.has(key) || approvals.has(key)) continue;
+      if (await alreadyGranted(request, scope)) {
+        handled.add(key);
+        continue;
+      }
       if (deps.owns(scope.ref)) {
         if (await autoApprove(scope, key, request)) continue;
         // Allowing it failed three times: a person decides.
