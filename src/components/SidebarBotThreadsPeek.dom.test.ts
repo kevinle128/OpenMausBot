@@ -50,6 +50,20 @@ afterEach(async () => {
 });
 
 describe("the sheet of a bot's other conversations", () => {
+  it("keeps Archive and Delete on the conversation on screen when the main thread is not among the bot's threads", async () => {
+    scroller = document.createElement("div");
+    document.body.append(scroller);
+    root = createRoot(scroller);
+    await act(async () => {
+      root.render(createElement("div", { "data-row": "" }, createElement(SidebarBotThreadsPeek, {
+        bot: { id: "atlas", name: "Atlas", threadId: "private", mainThreadId: "gone", tasks: [task("private"), task("other")] }, onScreen: true, dispatch })));
+    });
+    row = scroller.querySelector<HTMLElement>("[data-row]")!;
+    await open();
+    expect(action("private", "archive")).not.toBeNull();
+    expect(action("private", "delete")).not.toBeNull();
+  });
+
   it("opens on a click of the chevron only, never on hover, and stays open when the pointer moves away", async () => {
     await mount([task("a")]);
     await cross(chat, row);
