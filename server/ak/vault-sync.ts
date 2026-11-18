@@ -39,12 +39,13 @@ export interface ScopedSecret {
   updatedAt: number;
 }
 
-/** The secrets kept to the Paseo bot: its own choice in the Vault's bot picker, so a secret meant for other bots is never
- * copied to `ak`. A name that is not a valid ref is skipped; of two secrets with one name the newest is used. */
+/** The secrets the Paseo bot may use: those shared with every bot, and those that name it in the Vault's bot picker. A
+ * secret kept to other bots only is never copied to `ak`. A name that is not a valid ref is skipped; of two secrets with
+ * one name the newest is used. */
 export function paseoScopedSecrets(vault: Pick<VaultStore, "listSecrets">, botId: string, onSkip?: (name: string, why: string) => void): Map<string, ScopedSecret> {
   const byName = new Map<string, ScopedSecret>();
   for (const secret of vault.listSecrets(TEAM_READER)) {
-    if (secret.bots === "all" || !secret.bots.includes(botId)) continue;
+    if (secret.bots !== "all" && !secret.bots.includes(botId)) continue;
     if (!isAkRef(secret.name)) {
       onSkip?.(secret.name, "not a valid ak ref");
       continue;
