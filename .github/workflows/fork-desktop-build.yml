@@ -262,7 +262,8 @@ jobs:
           # stays in the search list for the whole job.
           ca_cert="$RUNNER_TEMP/DeveloperIDG2CA.cer"
           curl -fsSL --retry 3 -o "$ca_cert" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $ca_cert" | shasum -a 256 -c -
+          # The digest lives in a checksum file: a test keeps 64-hex digests out of the workflows.
+          (cd "$RUNNER_TEMP" && shasum -a 256 -c "$GITHUB_WORKSPACE/scripts/certs/DeveloperIDG2CA.cer.sha256")
           security add-certificates -k "$keychain" "$ca_cert"
           rm -f "$ca_cert"
           security list-keychains -d user -s "$keychain" login.keychain
