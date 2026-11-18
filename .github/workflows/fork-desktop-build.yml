@@ -255,6 +255,17 @@ jobs:
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain" > /dev/null
           security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+          # codesign must build the chain leaf -> Developer ID G2 -> Apple Root
+          # CA. The mini has only the root, and the login keychain that used to
+          # hold G2 is out of reach for a job under PM2. The public G2
+          # certificate from Apple goes into the same throwaway keychain, which
+          # stays in the search list for the whole job.
+          ca_cert="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          curl -fsSL --retry 3 -o "$ca_cert" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          # The digest lives in a checksum file: a test keeps 64-hex digests out of the workflows.
+          (cd "$RUNNER_TEMP" && shasum -a 256 -c "$GITHUB_WORKSPACE/scripts/certs/DeveloperIDG2CA.cer.sha256")
+          security add-certificates -k "$keychain" "$ca_cert"
+          rm -f "$ca_cert"
           security list-keychains -d user -s "$keychain" login.keychain
           rm -f "$RUNNER_TEMP/cert.p12"
           key_dir="$RUNNER_TEMP/private_keys"
