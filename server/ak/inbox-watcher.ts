@@ -8,7 +8,7 @@ import { redactSecretsInText } from "../../shared/redact.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord } from "../store.ts";
-import { AkError, type AkCli, type AkGrant, type AkPendingRequest } from "./cli.ts";
+import { AkError, type AkCli, type AkGrant, type AkPendingRequest, type AkRemoteRequest } from "./cli.ts";
 import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "../paseo/auto-approval.ts";
 import { describeAkError, type AkGuard } from "./guard.ts";
 import { isAkRef } from "./vault-sync.ts";
@@ -21,13 +21,16 @@ const PENDING_FILE = "pending.json";
 const DEBOUNCE_MS = 200;
 const POLL_MS = 2_000;
 const POLL_MAX_MS = 60_000;
+/** Requests from other devices have no local file to watch, so they are listed on the check cycle, at most this often: each listing opens sealed requests over the network. */
+const REMOTE_POLL_MS = 5_000;
+const REMOTE_KEY_PREFIX = `${AK_CARD_KEY_PREFIX}remote:`;
 const AUTO_APPROVE_ATTEMPTS = 3;
 const KNOWN_FIELDS = new Set(["ref", "agent", "fingerprint", "agentLabel", "project", "purpose", "env", "exec", "firstSeen", "lastSeen", "count"]);
 const TEXT_CHARS = 160;
 const BAD_REF_LOG_LIMIT = 50;
 
 export interface InboxWatcherDeps {
-  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec" | "revokeExec" | "grants">;
+  cli: Pick<AkCli, "pendingRequests" | "approve" | "deny" | "grantExec" | "revokeExec" | "grants"> & Partial<Pick<AkCli, "remoteRequests" | "approveRemote" | "denyRemote">>;
   guard: AkGuard;
   approvals: ExternalApprovals;
   /** True for a ref OpenMausBot wrote to ak from the Vault: the only refs that are approved without a person. */
@@ -50,6 +53,8 @@ export interface InboxWatcherDeps {
   secretsDir?: string;
   debounceMs?: number;
   pollMs?: number;
+  /** The least time between two listings of the requests from other devices; a sync that is off or failing is retried 12 and 6 times slower. */
+  remotePollMs?: number;
 }
 
 export function agentkitSecretsDir(source: NodeJS.ProcessEnv = process.env): string {
@@ -63,6 +68,8 @@ interface Scope {
   purpose?: string;
   /** The environment variable of an exec request. */
   env?: string;
+  /** Set for a request from another device: it is answered by this id with `ak secrets approvals`. */
+  remoteId?: string;
 }
 
 const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
@@ -90,11 +97,29 @@ function scopeOf(request: AkPendingRequest): Scope | null {
   return scope;
 }
 
+/** A request from another device, read like a local one; null when it has no usable id or ref. */
+function remoteScopeOf(item: AkRemoteRequest): Scope | null {
+  const id = text(item.id);
+  const ref = text(item.ref) ?? text(item.secret) ?? text(item.name);
+  if (!id || !ref) return null;
+  const scope = scopeOf({ ...item, ref });
+  return scope ? { ...scope, remoteId: id } : null;
+}
+
+/** The name of the device that asked, when the listing gives one as text or as an object with a name. */
+function deviceLabel(request: AkPendingRequest): string | undefined {
+  const device = (request as AkRemoteRequest).device;
+  if (typeof device === "string") return device;
+  if (device && typeof device === "object") return text((device as Record<string, unknown>).name) ?? text((device as Record<string, unknown>).label);
+  return undefined;
+}
+
 const isExec = (request: AkPendingRequest): boolean =>
   Boolean(text(request.env)) || (request.exec !== undefined && request.exec !== null && request.exec !== "" && request.exec !== false);
 
+/** A key for a remote request is `ak:remote:<id>`; a local key is `ak:[...]`, so the two never meet. */
 const keyOf = (request: AkPendingRequest, scope: Scope): string =>
-  `${AK_CARD_KEY_PREFIX}${JSON.stringify([scope.ref, scope.agent ?? null, scope.project ?? null, scope.purpose ?? null, scope.env ?? null, request.exec ?? null])}`;
+  scope.remoteId ? `${REMOTE_KEY_PREFIX}${scope.remoteId}` : `${AK_CARD_KEY_PREFIX}${JSON.stringify([scope.ref, scope.agent ?? null, scope.project ?? null, scope.purpose ?? null, scope.env ?? null, request.exec ?? null])}`;
 
 function execLabel(request: AkPendingRequest): string {
   const { exec } = request;
@@ -229,7 +254,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
    */
   async function alreadyGranted(request: AkPendingRequest, scope: Scope): Promise<boolean> {
     const program = isExec(request) ? execProgram(request) : null;
-    if (!program?.hash || scope.agent === undefined || scope.project === undefined || !scope.env) return false;
+    if (scope.remoteId || !program?.hash || scope.agent === undefined || scope.project === undefined || !scope.env) return false;
     const since = Date.parse(text(request.lastSeen) ?? "");
     if (Number.isNaN(since)) return false;
     const found = { path: program.path, hash: program.hash };
@@ -278,6 +303,11 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   /** Allows the request. When `approve` cannot tell two exec requests apart, the grant names the program of this one. */
   async function allow(request: AkPendingRequest, scope: Scope, answerScope: Scope): Promise<void> {
+    // A request from another device is answered by its id for the same time; the program match below is only for local requests.
+    if (scope.remoteId) {
+      if (!cli.approveRemote) throw new AkError("unavailable", null, "This ak cannot answer requests from other devices");
+      return cli.approveRemote({ id: scope.remoteId, ttl: AK_APPROVAL_TTL });
+    }
     try {
       await cli.approve({ ...answerScope, ttl: AK_APPROVAL_TTL });
     } catch (error) {
@@ -302,7 +332,9 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     const exec = isExec(request);
     const label = text(request.agentLabel);
     const agent = label ? `agent ${oneLine(label, 60)}` : scope.agent ? `agent ${scope.agent.replace(/^sha256:/, "").slice(0, 12)}` : "an agent";
+    const device = scope.remoteId ? (deviceLabel(request) ?? "another device") : undefined;
     const lines = [oneLine(`${scope.ref} · ${agent}${scope.purpose ? ` · ${scope.purpose}` : ""}`)];
+    if (device) lines.push(oneLine(`From ${device}`));
     if (exec) lines.push(oneLine(`Only for ${execLabel(request)}, in the variable ${scope.env ?? "(unnamed)"}`));
     const bot = deps.bot();
     // An ordinary answer names the ordinary request, so an exec request for the same ref is never answered by it.
@@ -321,7 +353,12 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
             await allow(request, scope, answerScope);
             void tellAgent(scope, request).then((told) => record(scope, request, told, { decision: "allow" }));
           } else {
-            await cli.deny(answerScope);
+            if (scope.remoteId) {
+              if (!cli.denyRemote) throw new AkError("unavailable", null, "This ak cannot answer requests from other devices");
+              await cli.denyRemote({ id: scope.remoteId });
+            } else {
+              await cli.deny(answerScope);
+            }
             record(scope, request, undefined, { decision: "deny" });
           }
         } catch (error) {
@@ -366,7 +403,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       : `cấp quyền đọc bí mật ${scope.ref}${purpose}${ttl}`;
     const notice = denied || !deps.notifyAgent ? "" : !told.agent && told.result === "none" ? " · không rõ agent, chưa báo" : " · đã báo agent";
     try {
-      const key = `${AK_CARD_KEY_PREFIX}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`;
+      const key = `${AK_CARD_KEY_PREFIX}${scope.remoteId ? "remote|" : ""}${scope.ref}|${origin?.agentId ?? scope.agent ?? ""}|${scope.purpose ?? ""}|${exec ? `${execLabel(request)}|${scope.env ?? ""}` : ""}`;
       // Each answer of the person is its own line; only what was allowed without asking merges repeats.
       deps.history({ key: answer ? `${key}|answer|${randomUUID()}` : key, agent, workspace: origin?.cwd ?? "không rõ project", what: `${what}${notice}`,
         rule: answer ? "person" : exec ? "ak-exec-owned-ref" : "ak-vault-secret", ...(answer ? { answer } : {}) });
@@ -397,17 +434,50 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     }
   }
 
+  const remotePollMs = deps.remotePollMs ?? REMOTE_POLL_MS;
+  let remoteList: AkRemoteRequest[] = [];
+  let remoteNextAt = 0;
+  let remoteFailure = "";
+  let remoteShapeLogged = false;
+
+  /** Lists the requests from other devices at most every `remotePollMs`. Never throws: a sync that is off or a failure that lasts is logged once. */
+  async function refreshRemote(): Promise<void> {
+    if (!cli.remoteRequests || Date.now() < remoteNextAt) return;
+    try {
+      remoteList = await cli.remoteRequests();
+      remoteNextAt = Date.now() + remotePollMs;
+      remoteFailure = "";
+    } catch (error) {
+      if (guard.report(error)) return;
+      const off = error instanceof AkError && error.kind === "sync-off";
+      // Without sync there are no remote requests, so their cards close; after another failure the last list stays.
+      if (off) remoteList = [];
+      remoteNextAt = Date.now() + remotePollMs * (off ? 12 : 6);
+      const message = off ? "ak inbox: requests from other devices are not read because ak sync is off on this device" : `ak inbox: could not read the requests from other devices (${describeAkError(error)})`;
+      if (message !== remoteFailure) log(message);
+      remoteFailure = message;
+    }
+  }
+
   async function pass(): Promise<void> {
+    await refreshRemote();
     const pending = await cli.pendingRequests();
     const live = new Set<string>();
-    for (const request of pending) {
-      const isObject = request !== null && typeof request === "object";
-      const scope = isObject ? scopeOf(request) : null;
+    const entries: Array<{ request: AkPendingRequest; scope: Scope | null; remote: boolean }> = [
+      ...pending.map((request) => ({ request, remote: false, scope: request !== null && typeof request === "object" ? scopeOf(request) : null })),
+      ...remoteList.map((request) => ({ request: request as AkPendingRequest, remote: true, scope: request !== null && typeof request === "object" ? remoteScopeOf(request) : null })),
+    ];
+    for (const { request, scope, remote } of entries) {
       if (!scope) {
-        logShapeOnce(isObject ? Object.keys(request) : [typeof request]);
+        const keys = request !== null && typeof request === "object" ? Object.keys(request) : [typeof request];
+        if (!remote) logShapeOnce(keys);
+        else if (!remoteShapeLogged) {
+          remoteShapeLogged = true;
+          log(`ak inbox: unexpected remote request shape, keys: ${keys.join(", ") || "(none)"}`);
+        }
         continue;
       }
-      if (!shapeLogged && Object.keys(request).some((field) => !KNOWN_FIELDS.has(field))) logShapeOnce(Object.keys(request));
+      if (!remote && !shapeLogged && Object.keys(request).some((field) => !KNOWN_FIELDS.has(field))) logShapeOnce(Object.keys(request));
       // The ref is text from outside: a name `ak` would not accept as a ref gets no card and reaches no `ak` command.
       if (!isAkRef(scope.ref)) {
         warnBadRef(scope.ref);

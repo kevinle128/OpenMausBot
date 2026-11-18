@@ -7,7 +7,7 @@ import type { AutoApproval } from "../paseo/auto-approval.ts";
 import { createExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
-import { AkError, createAkCli, type AkCli, type AkGrant, type AkPendingRequest, type AkRunner } from "./cli.ts";
+import { AkError, createAkCli, type AkCli, type AkGrant, type AkPendingRequest, type AkRemoteRequest, type AkRunner } from "./cli.ts";
 import { createAkGuard } from "./guard.ts";
 import { startInboxWatcher } from "./inbox-watcher.ts";
 
@@ -38,7 +38,13 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     messagesFor: () => lines,
   };
   const approvals = createExternalApprovals({ store: store as never });
-  const inbox: { requests: AkPendingRequest[]; listError: Error | null; grants: AkGrant[] } = { requests: [], listError: null, grants: [] };
+  const inbox: { requests: AkPendingRequest[]; listError: Error | null; grants: AkGrant[]; remote: AkRemoteRequest[]; remoteError: Error | null } = { requests: [], listError: null, grants: [], remote: [], remoteError: null };
+  const remoteRequests = vi.fn(async () => {
+    if (inbox.remoteError) throw inbox.remoteError;
+    return inbox.remote;
+  });
+  const approveRemote = vi.fn<AkCli["approveRemote"]>(async () => {});
+  const denyRemote = vi.fn<AkCli["denyRemote"]>(async () => {});
   const approve = vi.fn<AkCli["approve"]>(async () => {});
   const deny = vi.fn<AkCli["deny"]>(async () => {});
   const grantExec = vi.fn<AkCli["grantExec"]>(async () => null);
@@ -53,7 +59,8 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   const guard = createAkGuard((line) => logs.push(line));
   const owned = new Set(options.owned ?? []);
   const watcher = startInboxWatcher({
-    cli: { pendingRequests, approve, deny, grantExec, revokeExec, grants },
+    cli: { pendingRequests, approve, deny, grantExec, revokeExec, grants, remoteRequests, approveRemote, denyRemote },
+    remotePollMs: 0,
     hashFile: async () => PROGRAM_HASH,
     realPath: async (path) => (path === "/opt/homebrew/bin/deploy" ? "/usr/bin/deploy" : path),
     guard,
@@ -72,7 +79,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   });
   stops.push(watcher.stop);
   const card = () => lines.find((line) => line.card)?.card;
-  return { watcher, approvals, inbox, approve, deny, grantExec, revokeExec, grants, pendingRequests, logs, notified, guard, lines, card, history, told };
+  return { remoteRequests, approveRemote, denyRemote, watcher, approvals, inbox, approve, deny, grantExec, revokeExec, grants, pendingRequests, logs, notified, guard, lines, card, history, told };
 }
 
 const ordinary = (ref: string): AkPendingRequest => ({ ref, agent: AGENT, project: "app", purpose: "deploy" });
@@ -500,6 +507,119 @@ describe("ak inbox watcher", () => {
     await vi.waitFor(() => expect(t.pendingRequests.mock.calls.length).toBeGreaterThan(before), { timeout: 3_000 });
     const afterWatch = t.pendingRequests.mock.calls.length;
     await vi.waitFor(() => expect(t.pendingRequests.mock.calls.length).toBeGreaterThan(afterWatch + 1), { timeout: 3_000 });
+  });
+});
+
+describe("requests from other devices", () => {
+  const remote = (id: string, ref: string, extra: Partial<AkRemoteRequest> = {}): AkRemoteRequest => ({ id, ref, project: "app", purpose: "deploy", agentLabel: "claude", device: "MacBook", ...extra });
+  const syncOff = () => new AkError("sync-off", 10, "secrets approvals list: sync is not enabled on this device");
+
+  it("allows a remote request for an owned ref by its id for 24 hours, once, and records it", async () => {
+    const t = setup({ owned: ["API_KEY"], notify: "sent" });
+    t.inbox.remote = [remote("3f2a", "API_KEY")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.approveRemote).toHaveBeenCalledTimes(1);
+    expect(t.approveRemote).toHaveBeenCalledWith({ id: "3f2a", ttl: "24h" });
+    expect(t.approve).not.toHaveBeenCalled();
+    expect(t.lines).toEqual([]);
+    expect(t.told).toEqual([{ ref: "API_KEY" }]);
+    expect(t.history).toMatchObject([{ rule: "ak-vault-secret", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h · đã báo agent" }]);
+  });
+
+  it("puts a remote request for an unknown ref on a card and answers Allow and Deny through approvals", async () => {
+    const t = setup();
+    t.inbox.remote = [remote("aa11", "STRANGER"), remote("bb22", "OTHER")];
+    await t.watcher.checkNow();
+    const cards = t.lines.filter((line) => line.card).map((line) => line.card!);
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({ options: ["Allow 24h", "Deny"] });
+    expect(cards[0]?.subtitle).toContain("From MacBook");
+    t.approvals.answer(cards[0]!.requestId!, "allow");
+    t.approvals.answer(cards[1]!.requestId!, "deny");
+    await flush();
+    expect(t.approveRemote).toHaveBeenCalledWith({ id: "aa11", ttl: "24h" });
+    expect(t.denyRemote).toHaveBeenCalledWith({ id: "bb22" });
+    expect(t.approve).not.toHaveBeenCalled();
+    expect(t.deny).not.toHaveBeenCalled();
+    expect(t.history.map((entry) => (entry.answer as { decision: string }).decision).sort()).toEqual(["allow", "deny"]);
+    expect(t.history.find((entry) => (entry.answer as { decision: string }).decision === "deny")!.what).not.toContain("24h");
+  });
+
+  it("asks again when the answer does not reach ak, and closes the card once the request leaves the list", async () => {
+    const t = setup();
+    t.denyRemote.mockRejectedValueOnce(new Error("ak is locked"));
+    t.inbox.remote = [remote("aa11", "STRANGER")];
+    await t.watcher.checkNow();
+    t.approvals.answer(t.card()!.requestId!, "deny");
+    await flush();
+    expect(t.history).toEqual([]);
+    await t.watcher.checkNow();
+    expect(t.lines.filter((line) => line.card)).toHaveLength(2);
+    t.inbox.remote = [];
+    await t.watcher.checkNow();
+    expect(t.approvals.keys()).toEqual([]);
+  });
+
+  it("keeps a remote and a local request for the same ref apart", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.requests = [ordinary("API_KEY")];
+    t.inbox.remote = [remote("3f2a", "API_KEY", { fingerprint: AGENT, agent: AGENT })];
+    await t.watcher.checkNow();
+    expect(t.approve).toHaveBeenCalledTimes(1);
+    expect(t.approveRemote).toHaveBeenCalledTimes(1);
+    const strange = setup();
+    strange.inbox.requests = [ordinary("STRANGER")];
+    strange.inbox.remote = [remote("3f2a", "STRANGER", { project: "app", purpose: "deploy", agent: AGENT })];
+    await strange.watcher.checkNow();
+    expect(strange.lines.filter((line) => line.card)).toHaveLength(2);
+    expect(new Set(strange.approvals.keys()).size).toBe(2);
+    strange.approvals.answer(strange.lines.findLast((line) => line.card)!.card!.requestId!, "deny");
+    await flush();
+    expect(strange.denyRemote).toHaveBeenCalledWith({ id: "3f2a" });
+    expect(strange.deny).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet when sync is off: one log line, the local inbox keeps working, cards of remote requests close", async () => {
+    const t = setup({ owned: ["API_KEY"] });
+    t.inbox.remote = [remote("aa11", "STRANGER")];
+    await t.watcher.checkNow();
+    expect(t.lines.filter((line) => line.card)).toHaveLength(1);
+    t.inbox.remoteError = syncOff();
+    t.inbox.requests = [ordinary("API_KEY")];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.logs.filter((line) => line.includes("sync is off"))).toHaveLength(1);
+    expect(t.approve).toHaveBeenCalledTimes(1);
+    expect(t.approvals.keys()).toEqual([]);
+    expect(t.guard.blocked).toBe(false);
+  });
+
+  it("logs another remote failure once and keeps the last list", async () => {
+    const t = setup();
+    t.inbox.remote = [remote("aa11", "STRANGER")];
+    await t.watcher.checkNow();
+    t.inbox.remoteError = new AkError("failed", 1, "offline");
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.logs.filter((line) => line.includes("offline"))).toHaveLength(1);
+    expect(t.approvals.keys()).toHaveLength(1);
+  });
+
+  it("skips a remote request without id or ref and logs its keys once, never a value", async () => {
+    const t = setup();
+    t.inbox.remote = [{ ref: "R", note: "value-not-logged" }, { id: "x" }] as AkRemoteRequest[];
+    await t.watcher.checkNow();
+    await t.watcher.checkNow();
+    expect(t.logs.filter((line) => line.includes("remote request shape"))).toEqual(["ak inbox: unexpected remote request shape, keys: ref, note"]);
+    expect(t.lines).toEqual([]);
+  });
+
+  it("lists remote requests at most once per interval, and not at all without sync support in the cli", async () => {
+    const t = setup();
+    expect(t.remoteRequests).toHaveBeenCalledTimes(1);
+    await t.watcher.checkNow();
+    expect(t.remoteRequests.mock.calls.length).toBeGreaterThan(1);
   });
 });
 

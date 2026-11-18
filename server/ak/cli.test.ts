@@ -16,6 +16,7 @@ describe("ak exit codes become typed errors", () => {
     [5, "backend"],
     [6, "agent-above-process"],
     [9, "cooldown"],
+    [10, "failed"],
     [2, "invalid"],
     [1, "failed"],
   ];
@@ -66,6 +67,32 @@ describe("ak commands", () => {
   it("lists the inbox whether ak returns an array or an object", async () => {
     expect(await createAkCli(recorder({ stdout: JSON.stringify({ data: [{ ref: "A" }] }) }).run).pendingRequests()).toEqual([{ ref: "A" }]);
     expect(await createAkCli(recorder({ stdout: JSON.stringify({ data: { requests: [{ ref: "B" }] } }) }).run).pendingRequests()).toEqual([{ ref: "B" }]);
+  });
+
+  it("lists, approves and denies requests from other devices through approvals, never secrets approve", async () => {
+    const { calls, run } = recorder({ stdout: JSON.stringify({ data: { approvals: [{ id: "3f2a", ref: "A" }] } }) });
+    const cli = createAkCli(run);
+    expect(await cli.remoteRequests()).toEqual([{ id: "3f2a", ref: "A" }]);
+    await cli.approveRemote({ id: "3f2a", ttl: "24h" });
+    await cli.denyRemote({ id: "3f2a" });
+    expect(calls.map((call) => call.args)).toEqual([
+      ["secrets", "approvals", "list", "--json", "--no-interactive"],
+      ["secrets", "approvals", "approve", "3f2a", "--ttl=24h", "--json", "--no-interactive"],
+      ["secrets", "approvals", "deny", "3f2a", "--json", "--no-interactive"],
+    ]);
+  });
+
+  it("refuses a request id that would be read as a flag, without running ak", async () => {
+    const { calls, run } = recorder();
+    const error = await createAkCli(run).denyRemote({ id: "--yes" }).catch((caught) => caught);
+    expect(error).toMatchObject({ kind: "invalid" });
+    expect(calls).toEqual([]);
+  });
+
+  it("reports sync off as its own error kind, from the sync reason in the error envelope", async () => {
+    const stdout = JSON.stringify({ schema_version: 1, error: "secrets approvals list: sync is not enabled on this device", error_code: "validation_failed", exit_code: 10, sync: { reason: "not_enabled" } });
+    const error = await createAkCli(recorder({ exitCode: 10, stdout }).run).remoteRequests().catch((caught) => caught);
+    expect(error).toMatchObject({ kind: "sync-off", exitCode: 10 });
   });
 
   it("gives ak only the environment it needs", () => {

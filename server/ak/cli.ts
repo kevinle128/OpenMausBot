@@ -10,6 +10,7 @@ export type AkErrorKind =
   | "backend"
   | "agent-above-process"
   | "cooldown"
+  | "sync-off"
   | "unavailable"
   | "failed";
 
@@ -59,6 +60,26 @@ export interface AkPendingRequest {
   project?: string;
   purpose?: string;
   env?: string;
+  [field: string]: unknown;
+}
+
+/**
+ * One request from another synced device, from `ak secrets approvals list --json`. The item shape was never seen with a
+ * request in it, so every field is optional and read defensively: `id` names the request, the rest mirrors the local inbox.
+ */
+export interface AkRemoteRequest {
+  id?: string;
+  ref?: string;
+  /** Other names the secret may be listed under. */
+  secret?: string;
+  name?: string;
+  fingerprint?: string;
+  agentLabel?: string;
+  agent?: string;
+  project?: string;
+  purpose?: string;
+  env?: string;
+  device?: unknown;
   [field: string]: unknown;
 }
 
@@ -147,8 +168,21 @@ function errorDetail(result: AkRunResult): string {
   return result.stderr.trim().split("\n")[0] || `ak exited with code ${result.exitCode}`;
 }
 
+/** True when ak's JSON error envelope says sync is not set up on this device: `"sync":{"reason":"not_enabled"}`. */
+function syncIsOff(result: AkRunResult): boolean {
+  for (const text of [result.stdout, result.stderr]) {
+    try {
+      const reason = (JSON.parse(text) as { sync?: { reason?: unknown } }).sync?.reason;
+      if (typeof reason === "string") return reason === "not_enabled";
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
 export function akErrorFor(result: AkRunResult): AkError {
-  const kind = KIND_BY_EXIT[result.exitCode] ?? "failed";
+  const kind = syncIsOff(result) ? "sync-off" : (KIND_BY_EXIT[result.exitCode] ?? "failed");
   return new AkError(kind, result.exitCode, errorDetail(result));
 }
 
@@ -160,7 +194,7 @@ function parseData<T>(result: AkRunResult): T {
   }
 }
 
-const REQUEST_LIST_KEYS = ["requests", "pending", "items"];
+const REQUEST_LIST_KEYS = ["requests", "pending", "items", "approvals"];
 
 /** The inbox list from `approve --json`, whose exact shape is not fixed: a bare array, or an object holding the array. */
 function requestsIn(data: unknown, onUnknownShape?: (keys: string[]) => void): AkPendingRequest[] {
@@ -180,6 +214,11 @@ function requestsIn(data: unknown, onUnknownShape?: (keys: string[]) => void): A
 export interface AkCli {
   list(): Promise<AkSecretSummary[]>;
   pendingRequests(): Promise<AkPendingRequest[]>;
+  /** Requests from the account's other synced devices. Fails with kind `sync-off` when sync is not enabled here. */
+  remoteRequests(): Promise<AkRemoteRequest[]>;
+  /** Answers a request from another device by its id, never with `ak secrets approve`. */
+  approveRemote(options: { id: string; ttl: string }): Promise<void>;
+  denyRemote(options: { id: string }): Promise<void>;
   approve(options: RequestScope & { ref: string; ttl: string }): Promise<void>;
   deny(options: RequestScope & { ref: string }): Promise<void>;
   /** Allows one exec scope by its program and agent. `approve` cannot name the program, so two requests that differ only in it are ambiguous there. */
@@ -204,6 +243,12 @@ function narrow(scope: RequestScope): string[] {
   return flags;
 }
 
+/** The id goes first, before flags; an id that starts with "-" would be read as a flag, so it never reaches ak. */
+function remoteId(id: string): string[] {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(id)) throw new AkError("invalid", null, "The request id is not a valid id");
+  return [id];
+}
+
 /** Secret values reach `ak` only on stdin (`--value=-`), so they are in no argument list, log or error. */
 export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnknownShape?: (keys: string[]) => void } = {}): AkCli {
   const call = async (args: string[], stdin?: string): Promise<AkRunResult> => {
@@ -217,6 +262,15 @@ export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnkn
     },
     async pendingRequests() {
       return requestsIn(parseData<unknown>(await call(["secrets", "approve"])), options.onUnknownShape);
+    },
+    async remoteRequests() {
+      return requestsIn(parseData<unknown>(await call(["secrets", "approvals", "list"])), options.onUnknownShape) as AkRemoteRequest[];
+    },
+    async approveRemote({ id, ttl }) {
+      await call(["secrets", "approvals", "approve", ...remoteId(id), `--ttl=${ttl}`]);
+    },
+    async denyRemote({ id }) {
+      await call(["secrets", "approvals", "deny", ...remoteId(id)]);
     },
     async approve({ ref, ttl, ...scope }) {
       await call(["secrets", "approve", ref, "--state=ttl", `--ttl=${ttl}`, ...narrow(scope)]);
