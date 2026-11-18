@@ -36,6 +36,20 @@ describe("late tool results", () => {
     expect(late.turnFor("Bearer other", "t1", "b1", "tool-z")).toBe("turn-2");
   });
 
+  it("finds an ended turn's waiting tool call for the same bot's live hooks bearer in the same conversation, until it is saved or the window closes", () => {
+    let clock = 0;
+    const late = createLateToolResults(() => clock);
+    late.turnEnded(turn);
+    expect(late.turnForLiveHooks("t1", "b1", "tool-a")).toBe("turn-1");
+    expect(late.turnForLiveHooks("t2", "b1", "tool-a")).toBeNull();
+    expect(late.turnForLiveHooks("t1", "b2", "tool-a")).toBeNull();
+    expect(late.turnForLiveHooks("t1", "b1", "tool-c")).toBeNull();
+    late.saved("t1", "turn-1", "tool-a");
+    expect(late.turnForLiveHooks("t1", "b1", "tool-a")).toBeNull();
+    clock = LATE_TOOL_RESULT_MS;
+    expect(late.turnForLiveHooks("t1", "b1", "tool-b")).toBeNull();
+  });
+
   it("remembers a revoked generation's hooks bearer for a turn bound after its cleanup, a bounded few, until the conversation's bearers go", () => {
     const late = createLateToolResults(() => 0);
     const hooks = { threadId: "t1", botId: "b1", token: "secret" };
