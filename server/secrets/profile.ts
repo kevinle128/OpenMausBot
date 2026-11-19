@@ -46,7 +46,7 @@ export const HINT_MIN_LENGTH = 16;
 /** The public prefix is not counted: at least HINT_MIN_LENGTH characters must follow it, so four of them shown hide the rest. */
 export function valueHint(value: string): string | null {
   const prefix = PUBLIC_PREFIXES.find((one) => value.startsWith(one)) ?? "";
-  const rest = [...value.slice(prefix.length)];
+  const rest = Array.from(value.slice(prefix.length));
   if (rest.length < HINT_MIN_LENGTH) return null;
   return `${prefix}…${rest.slice(-4).join("")}`;
 }
