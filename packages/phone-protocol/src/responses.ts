@@ -53,11 +53,14 @@ export interface PairResponse {
   e2e?: CompanionE2EDescriptor;
 }
 
+/** What a session may reach: `admin` and `client` are the app's; `secrets` is an agent machine's token for the secrets routes only. */
+export type SessionScope = "admin" | "client" | "secrets";
+
 /** A signed-in session as the server describes it, never with its token. */
 export interface PairedSession {
   id: string;
   label: string;
-  scopes: Array<"admin" | "client">;
+  scopes: SessionScope[];
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
@@ -161,7 +164,7 @@ export interface InstancesResponse {
 /** GET /api/auth/session for a caller on this computer with no session. */
 export interface LoopbackSessionResponse {
   kind: "loopback";
-  scopes: ReadonlyArray<"admin" | "client">;
+  scopes: ReadonlyArray<SessionScope>;
   environmentId: string;
   trust?: "service";
 }
@@ -171,7 +174,7 @@ export interface SignedInSessionResponse {
   kind: "session";
   id: string;
   label: string;
-  scopes: ReadonlyArray<"admin" | "client">;
+  scopes: ReadonlyArray<SessionScope>;
   expiresAt: number;
   via: "bearer" | "cookie" | "ticket";
   environmentId: string;

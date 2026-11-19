@@ -10,7 +10,9 @@ type Rec = Record<string, any>;
 
 const DAY = 24 * 3_600_000;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-const scopeOf = (session: Rec) => (Array.isArray(session.scopes) && session.scopes.includes("admin") ? "admin" : "client");
+const scopeOf = (session: Rec) => (!Array.isArray(session.scopes) ? "client" : session.scopes.includes("admin") ? "admin" : session.scopes.includes("secrets") && !session.scopes.includes("client") ? "secrets" : "client");
+const SCOPE_GRANTS = { admin: ["admin", "client"], client: ["client"], secrets: ["secrets"] } as const;
+const SCOPE_WORDS = { admin: "full access", client: "chat and approvals only", secrets: "agent secrets only" } as const;
 
 async function tokens(ctx: VerbContext): Promise<Rec[]> {
   const listed = await (await ctx.client()).json<Rec>("/api/auth/sessions");
@@ -19,16 +21,16 @@ async function tokens(ctx: VerbContext): Promise<Rec[]> {
 
 async function create(ctx: VerbContext): Promise<VerbOutcome> {
   const name = ctx.positionals[0]?.trim();
-  if (!name) throw usageError("name the token", "openmausbot token create NAME --out FILE [--scope client|admin] [--expires 90d]");
+  if (!name) throw usageError("name the token", "openmausbot token create NAME --out FILE [--scope client|admin|secrets] [--expires 90d]");
   const out = flag(ctx.flags, "out")?.trim();
   if (!out) throw usageError("--out FILE is required: where to keep the token");
   if (existsSync(out) && ctx.flags.force !== true) throw usageError(`${out} already exists`, "pass --force to replace it");
-  const scope = oneOf(flag(ctx.flags, "scope"), "--scope", ["client", "admin"] as const, "client");
+  const scope = oneOf(flag(ctx.flags, "scope"), "--scope", ["client", "admin", "secrets"] as const, "client");
   const raw = flag(ctx.flags, "expires");
   const ttlMs = raw ? parseDuration(raw, "--expires", { min: 3_600_000, max: 3_650 * DAY }) : 90 * DAY;
   const client = await ctx.client();
   const minted = await client.json<Rec>("/api/auth/pairing", {
-    method: "POST", body: JSON.stringify({ label: name, scopes: scope === "admin" ? ["admin", "client"] : ["client"], tokenTtlMs: ttlMs }),
+    method: "POST", body: JSON.stringify({ label: name, scopes: SCOPE_GRANTS[scope], tokenTtlMs: ttlMs }),
   });
   const paired = await client.json<Rec>("/api/auth/pair", { method: "POST", body: JSON.stringify({ code: minted.code, label: name }) });
   const session: Rec = paired.session ?? {};
@@ -37,13 +39,19 @@ async function create(ctx: VerbContext): Promise<VerbOutcome> {
     if (typeof session.id === "string") await client.json(`/api/auth/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" }).catch(() => undefined);
     throw new HeadlessError("this OpenMausBot server cannot make access tokens", EXIT.unreachable, "update OpenMausBot on the server, or use openmausbot connect");
   }
+  // A server that does not know a scope drops it and opens the default one: never hand that token out.
+  const granted: unknown = session.scopes;
+  if (!Array.isArray(granted) || granted.length !== SCOPE_GRANTS[scope].length || !SCOPE_GRANTS[scope].every((one) => granted.includes(one))) {
+    if (typeof session.id === "string") await client.json(`/api/auth/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" }).catch(() => undefined);
+    throw new HeadlessError(`this OpenMausBot server did not grant the ${scope} scope, so the token was ended`, EXIT.unreachable, "update OpenMausBot on the server");
+  }
   writeTokenFile(out, paired.token, ctx.flags.force === true);
   return {
     result: { ok: true, tokenFile: out, url: client.baseUrl, token: { id: session.id, name: session.label, scope, expiresAt: session.expiresAt } },
     exitCode: EXIT.done,
     human: [
-      `Token "${session.label}" (${scope === "admin" ? "full access" : "chat and approvals only"}) until ${day(session.expiresAt)}, id ${session.id}.`,
-      `Saved to ${out}. Use it with: openmausbot ${scope === "admin" ? "doctor" : "bots"} --url ${client.baseUrl} --token-file ${out}`,
+      `Token "${session.label}" (${SCOPE_WORDS[scope]}) until ${day(session.expiresAt)}, id ${session.id}.`,
+      scope === "secrets" ? `Saved to ${out}. It reaches only the agent secrets routes (docs/omb-secrets-api.md); send it as a bearer token.` : `Saved to ${out}. Use it with: openmausbot ${scope === "admin" ? "doctor" : "bots"} --url ${client.baseUrl} --token-file ${out}`,
       `Revoke it with: openmausbot token revoke ${session.id}`,
     ],
   };

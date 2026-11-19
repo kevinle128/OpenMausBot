@@ -169,6 +169,7 @@ describe("PaseoConnection.agentContext", () => {
     const pages: Record<string, Array<{ item: { type: string; text?: string; name?: string; detail?: { type: string; command?: string } } }>> = {
       after: [
         { item: { type: "user_message", text: "already approved ak secrets: API_KEY" } },
+        { item: { type: "user_message", text: "already approved omb secrets: API_KEY\n\n𝗯𝘆 𝗢𝗠𝗕" } },
         { item: { type: "user_message", text: "something we sent" } },
         { item: { type: "user_message", text: "Clean the build folder" } },
       ],

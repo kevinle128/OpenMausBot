@@ -18,6 +18,8 @@ let origin: string;
 let registry: SessionRegistry;
 /** A server from before access tokens: it ignores tokenTtlMs. */
 let oldServer = false;
+/** A server that makes tokens but does not know the secrets scope: it drops it and opens the default scopes. */
+let dropsSecretsScope = false;
 const DAY = 24 * 3_600_000;
 
 beforeAll(async () => {
@@ -30,7 +32,8 @@ beforeAll(async () => {
       const request = pairingRequest(body);
       if ("error" in request) return send(400, request);
       const { tokenTtlMs: _ignored, ...plain } = request;
-      return send(200, registry.openPairing(oldServer ? plain : request));
+      const { scopes: _scopes, ...unscoped } = request;
+      return send(200, registry.openPairing(oldServer ? plain : dropsSecretsScope ? unscoped : request));
     }
     if (req.method === "POST" && req.url === "/api/auth/pair") {
       const paired = registry.exchange({ code: body.code, label: body.label ?? "", source: "test" });
@@ -46,6 +49,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   oldServer = false;
+  dropsSecretsScope = false;
   registry = new SessionRegistry({ file: join(mkdtempSync(join(dir, "data-")), "sessions.json") });
 });
 afterAll(async () => {
@@ -74,6 +78,26 @@ describe("token", () => {
     expect(result).toMatchObject({ ok: true, tokenFile: file, token: { name: "Nightly CI", scope: "client" } });
     expect(result.token.expiresAt - Date.now()).toBeGreaterThan(90 * DAY - 60_000);
     expect(registry.authenticate(token)).toMatchObject({ scopes: ["client"], token: true });
+  });
+
+  it("makes a secrets token that holds that scope and no other, and lists it as secrets", async () => {
+    const file = join(dir, "agent-token");
+    const made = await run(["token", "create", "Laptop agents", "--scope", "secrets", "--out", file, "--json"]);
+    expect(made.code).toBe(0);
+    expect(JSON.parse(made.out[0]!)).toMatchObject({ ok: true, token: { name: "Laptop agents", scope: "secrets" } });
+    const token = readFileSync(file, "utf8").trim();
+    expect(registry.authenticate(token)).toMatchObject({ scopes: ["secrets"], token: true });
+    expect(JSON.parse((await run(["token", "list", "--json"])).out[0]!).tokens).toEqual([expect.objectContaining({ name: "Laptop agents", scope: "secrets" })]);
+  });
+
+  it("ends a token a server opened with other scopes than the ones asked for, and hands none out", async () => {
+    dropsSecretsScope = true;
+    const file = join(dir, "dropped-token");
+    const made = await run(["token", "create", "Agents", "--scope", "secrets", "--out", file]);
+    expect(made.code).toBe(5);
+    expect(made.err[0]).toContain("did not grant the secrets scope");
+    expect(registry.list()).toEqual([]);
+    expect(() => readFileSync(file)).toThrow();
   });
 
   it("lists tokens only, and revokes one by id but never a device's session", async () => {

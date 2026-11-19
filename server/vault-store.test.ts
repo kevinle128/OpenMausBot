@@ -407,3 +407,32 @@ describe("the held-secret scrubber", () => {
     expect(redactSecretsInText("My password is fake-hunter2, enjoy.")).toBe("My password is fake-hunter2, enjoy.");
   });
 });
+
+describe("a saved secret's profile", () => {
+  const profile = { description: "Billing API", projects: ["site"], tags: ["billing"] };
+
+  it("is kept across a restart, a rotation, a re-send from the person's other computer and a re-save of the same name", () => {
+    const store = new VaultStore({ dataDir: dir, now: () => 1_000 });
+    const saved = store.saveSecret({ name: "API_KEY", value: "first-value-000000000", source: "settings", bots: [], profile });
+    expect(saved.profile).toEqual(profile);
+    expect(new VaultStore({ dataDir: dir }).listSecrets(TEAM_READER)[0]!.profile).toEqual(profile);
+    store.updateSecret(saved.id, { value: "second-value-00000000" });
+    expect(store.listSecrets(TEAM_READER)[0]!.profile).toEqual(profile);
+    store.receiveSecret({ id: saved.id, name: "API_KEY", value: "third-value-000000000", source: "settings", bots: [] });
+    expect(store.listSecrets(TEAM_READER)[0]!.profile).toEqual(profile);
+    store.saveSecret({ name: "API_KEY", value: "fourth-value-00000000", source: "settings", bots: [] });
+    expect(store.listSecrets(TEAM_READER)[0]!.profile).toEqual(profile);
+    store.updateSecret(saved.id, { profile: { description: "Changed" } });
+    expect(store.listSecrets(TEAM_READER)[0]!.profile).toEqual({ description: "Changed" });
+  });
+
+  it("reads a record with none, ignores a field a newer release wrote, and skips a profile that no longer parses without losing the Vault", () => {
+    const record = (id: string, extra: object) => ({ id, name: id, value: "value-0000000000000", source: "settings", bots: [], createdAt: 1, updatedAt: 1, ...extra });
+    const file = { version: 1, logins: [], secrets: [record("OLD", {}), record("NEWER", { profile: { description: "x", futureField: 1 } }), record("BROKEN", { profile: { tags: "not a list" } })] };
+    const key = "cd".repeat(32);
+    writeFileSync(join(dir, LOGINS_KEY_FILE), `${key}\n`);
+    writeFileSync(join(dir, LOGINS_FILE), encryptBrowserState(JSON.stringify(file), key));
+    const listed = new VaultStore({ dataDir: dir }).listSecrets(TEAM_READER);
+    expect(listed.map((secret) => [secret.name, secret.profile])).toEqual([["BROKEN", undefined], ["NEWER", { description: "x" }], ["OLD", undefined]]);
+  });
+});

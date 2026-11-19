@@ -198,6 +198,9 @@ describe("pairing codes", () => {
     expect(pairingRequest({ label: "CI", scopes: ["client", "root"], ttlMs: 86_400_000 })).toEqual({ label: "CI", scopes: ["client"], ttlMs: 86_400_000 });
     expect(pairingRequest({ tokenTtlMs: SESSION_MAX_AGE_MS })).toEqual({ tokenTtlMs: SESSION_MAX_AGE_MS });
     expect(pairingRequest(null)).toEqual({});
+    expect(pairingRequest({ scopes: ["secrets"], tokenTtlMs: 3_600_000 })).toEqual({ scopes: ["secrets"], tokenTtlMs: 3_600_000 });
+    expect(pairingRequest({ scopes: ["root"] })).toEqual({ error: "scopes must name admin, client or secrets" });
+    expect(pairingRequest({ scopes: [] })).toEqual({ scopes: [] });
     for (const ttlMs of [86_400_001, 59_999, 1.5e6 + 0.5, "24h"]) expect(pairingRequest({ ttlMs }), String(ttlMs)).toMatchObject({ error: expect.stringContaining("24 hours") });
     expect(pairingRequest({ tokenTtlMs: SESSION_MAX_AGE_MS + 1 })).toMatchObject({ error: expect.stringContaining("OMB_SESSION_MAX_DAYS") });
   });
@@ -724,6 +727,7 @@ describe("admin scope only (an OMB Cloud home is personal: server/cloud-owner.ts
     const owner = registry.exchange({ code: registry.openPairing().credential, label: "Mac", source: "a" });
     registry.requireAdmin(userError("serverError.cloud.personal"));
     expect(() => registry.openPairing({ scopes: ["client"] })).toThrow(PERSONAL);
+    expect(() => registry.openPairing({ scopes: ["secrets"] })).toThrow(PERSONAL);
     expect(registry.exchange({ code: openWindow.credential, label: "Guest", source: "b" })).toEqual({ ok: false, status: 403, code: "cloud_personal", error: PERSONAL, errorKey: "serverError.cloud.personal" });
     expect(() => registry.issue({ label: "Friend", scopes: ["client"], email: "friend@example.test" })).toThrow(PERSONAL);
     expect(() => registry.issuePortal({ email: "friend@example.test", grant: "g".repeat(43), scopes: ["client"] })).toThrow(PERSONAL);

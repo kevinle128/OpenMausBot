@@ -504,8 +504,22 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/slack\/team\/messages(?:\/[0-9a-f-]{36}\/stop)?$/ },
 ];
 
+/** What a `secrets` token may reach: an agent machine asking for, and reading the metadata of, the secrets it may use.
+ * Setting, granting, approving and revealing live under /api/secrets/admin/ and stay admin-only. */
+export const SECRETS_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: RegExp }> = [
+  { methods: ["POST"], path: /^\/api\/secrets\/(?:resolve|run-check|request)$/ },
+  { methods: ["GET"], path: /^\/api\/secrets\/(?:list|grants|audit)$/ },
+  { methods: ["GET"], path: /^\/api\/secrets\/(?:describe|get)\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/ },
+];
+
+/** An admin session reaches the `secrets` routes too, so the person can use the same commands; a `secrets` token reaches only them. */
+export function scopeSatisfied(scopes: readonly Scope[], needed: Scope): boolean {
+  return scopes.includes(needed) || (needed === "secrets" && scopes.includes("admin"));
+}
+
 export function requiredScope(method: string, path: string, features: { sharedComputers?: boolean } = {}): Scope {
   const upper = method.toUpperCase();
+  if (SECRETS_ALLOW.some((rule) => rule.path.test(path) && rule.methods.includes(upper))) return "secrets";
   for (const rule of CLIENT_ALLOW) {
     if (rule.feature && features[rule.feature] !== true) continue;
     if (rule.path.test(path) && rule.methods.includes(upper)) return "client";
@@ -675,7 +689,7 @@ export function resolveRequestAuth(req: IncomingMessage, options: ResolveOptions
     const narrowed = options.restricted?.(session, method, path, options.url) ?? null;
     if (narrowed) return deny(403, narrowed);
     const needed = requiredScope(method, path, options.features ?? {});
-    if (!session.scopes.includes(needed)) {
+    if (!scopeSatisfied(session.scopes, needed)) {
       return deny(403, options.scopeRefusal?.(method, path) ?? `forbidden: this session lacks the ${needed} scope`);
     }
     // Redeeming a stream ticket does not renew: an unattended open stream must not keep a session alive.
