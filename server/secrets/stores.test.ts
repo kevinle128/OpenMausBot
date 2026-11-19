@@ -117,7 +117,7 @@ describe("grants", () => {
     }
   });
 
-  it("writes the file readable by its owner only", () => {
+  it.skipIf(process.platform === "win32")("writes the file readable by its owner only", () => {
     store().add(allow());
     expect(statSync(join(dir, GRANTS_FILE)).mode & 0o777).toBe(0o600);
   });
@@ -182,7 +182,8 @@ describe("audit ledger", () => {
     const page = ledger.read();
     expect(page.entries.map((entry) => entry.ref)).toEqual(["B", "A"]);
     expect(page.entries[0]!.short).toBe("a".repeat(12));
-    expect(statSync(join(dir, AUDIT_DIR)).mode & 0o777).toBe(0o700);
+    // Windows has no POSIX file modes.
+    if (process.platform !== "win32") expect(statSync(join(dir, AUDIT_DIR)).mode & 0o777).toBe(0o700);
   });
 
   it("filters by ref, fingerprint, decision and age, and pages with a cursor", () => {
