@@ -451,7 +451,8 @@ describe("classifyPermission: read-only commands", () => {
     }
   });
 
-  it("refuses an APPROVED: argument with a .. step, which the shell may read through a linked folder", async () => {
+  // Windows cannot name a folder link "APPROVED:up": the colon starts a data stream there.
+  it.skipIf(process.platform === "win32")("refuses an APPROVED: argument with a .. step, which the shell may read through a linked folder", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omb-ro-"));
     try {
       mkdirSync(join(dir, "outside", "nested"), { recursive: true });
