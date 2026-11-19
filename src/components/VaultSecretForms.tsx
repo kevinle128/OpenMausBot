@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Loader2, LockKeyhole } from "lucide-react";
 
 import type { LoginBots } from "../../shared/logins";
+import { parseAllowedHosts } from "../../shared/host-name";
 import { VAULT_SECRET_NAME_MAX, type VaultSecret } from "../../shared/vault";
 import { t } from "@/lib/i18n";
 import { addSecret, changeSecret, importEnv, parseEnv } from "@/lib/vault";
@@ -11,6 +12,8 @@ import { LoginBotPicker } from "./LoginForm";
 
 const FIELD = "w-full min-w-0 rounded-lg border border-hairline/60 bg-inset px-3 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent disabled:opacity-60";
 const LABEL = "flex flex-col gap-1 text-[12px] font-medium text-ink-secondary";
+
+const sameHosts = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((host, index) => host === b[index]);
 
 type Bots = ReadonlyArray<{ id: string; name: string }>;
 
@@ -45,15 +48,18 @@ export function SecretForm({ secret, bots, onCancel, onSaved }: { secret?: Vault
   const [name, setName] = useState(secret?.name ?? "");
   const [value, setValue] = useState("");
   const [who, setWho] = useState<LoginBots>(secret?.bots ?? "all");
+  const [hosts, setHosts] = useState((secret?.profile?.allowedHosts ?? []).join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (pending) return;
+    const listed = parseAllowedHosts(hosts.split("\n").filter((line) => line.trim()));
+    if (!listed.ok) { setError(listed.error); return; }
     setPending(true);
     setError(null);
     try {
-      if (secret) await changeSecret(secret.id, { ...(name.trim() !== secret.name ? { name: name.trim() } : {}), value, bots: who });
+      if (secret) await changeSecret(secret.id, { ...(name.trim() !== secret.name ? { name: name.trim() } : {}), value, bots: who, ...(sameHosts(listed.hosts, secret.profile?.allowedHosts ?? []) ? {} : { allowedHosts: listed.hosts }) });
       else await addSecret(name.trim(), value, who);
       setValue("");
       await onSaved();
@@ -78,6 +84,14 @@ export function SecretForm({ secret, bots, onCancel, onSaved }: { secret?: Vault
           onChange={(event) => setValue(event.target.value)} disabled={pending} className={FIELD} />
       </label>
       <LoginBotPicker value={who} onChange={setWho} bots={bots} disabled={pending} />
+      {secret && (
+        <label className={LABEL}>
+          {t("settings.vault.secret.hosts")}
+          <textarea name="secretHosts" rows={3} autoComplete="off" spellCheck={false} value={hosts} onChange={(event) => setHosts(event.target.value)}
+            disabled={pending} placeholder="api.example.com" dir="ltr" className={`${FIELD} font-mono`} />
+          <span className="text-[12px] font-normal leading-snug text-ink-tertiary">{t("settings.vault.secret.hostsHint")}</span>
+        </label>
+      )}
     </Shell>
   );
 }

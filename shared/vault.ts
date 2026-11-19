@@ -20,6 +20,8 @@ export interface SecretProfile {
   /** Epoch milliseconds. */
   expiresAt?: number;
   rotateUrl?: string;
+  /** The hosts `omb secrets fetch` may send the value to, as `normalizeHost` writes them. Empty or absent: no fetch. */
+  allowedHosts?: string[];
 }
 
 /** One saved secret as Settings shows it. There is no value field, and no
@@ -33,7 +35,7 @@ export interface VaultSecret {
   bots: LoginBots;
   /** Given on a card for OpenMausBot's own tools only, so it is never written to a file a bot's commands read. */
   refOnly?: true;
-  /** Set through `omb secrets set`; Settings does not edit it. */
+  /** Set through `omb secrets set`. Settings edits only its allowed hosts. */
   profile?: SecretProfile;
   createdAt: number;
   updatedAt: number;

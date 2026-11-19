@@ -21,11 +21,12 @@ export async function addSecret(name: string, value: string, bots: LoginBots): P
   return (await api<{ secret: VaultSecret }>("/api/vault/secrets", { method: "POST", body: JSON.stringify({ name, value, bots }) })).secret;
 }
 
-/** An empty value keeps the saved one. */
-export async function changeSecret(id: string, change: { name?: string; value?: string; bots?: LoginBots }): Promise<VaultSecret> {
+/** An empty value keeps the saved one. `allowedHosts` replaces the hosts `omb secrets fetch` may reach; an empty list clears them. */
+export async function changeSecret(id: string, change: { name?: string; value?: string; bots?: LoginBots; allowedHosts?: string[] }): Promise<VaultSecret> {
   return (await api<{ secret: VaultSecret }>(`/api/vault/secrets/${encodeURIComponent(id)}`, {
     method: "PATCH",
-    body: JSON.stringify({ ...(change.name ? { name: change.name } : {}), ...(change.value?.trim() ? { value: change.value } : {}), ...(change.bots ? { bots: change.bots } : {}) }),
+    body: JSON.stringify({ ...(change.name ? { name: change.name } : {}), ...(change.value?.trim() ? { value: change.value } : {}), ...(change.bots ? { bots: change.bots } : {}),
+      ...(change.allowedHosts ? { allowedHosts: change.allowedHosts } : {}) }),
   })).secret;
 }
 

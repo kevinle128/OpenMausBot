@@ -12,6 +12,7 @@ import { agentTitle, type LiveAgents } from "../paseo/live-agents.ts";
 import type { BotRecord } from "../store.ts";
 import { TEAM_READER, type VaultStore } from "../vault-store.ts";
 import { AuditLedger, type AuditErrorCode, type AuditPage, type AuditQuery, type AuditRow, type AuditSource } from "./audit.ts";
+import { FETCH_TIMEOUT_MS, UpstreamError, hostKey, injectSecret, isLoopback, needlesFor, scrubBody, scrubText, sendUpstream, type FetchRequest } from "./fetch.ts";
 import { GrantStore, type Grant } from "./grants.ts";
 import { PendingStore, RateLimiter, type PendingRequest, type RequestDetails } from "./pending.ts";
 import { parseProfile, valueHint } from "./profile.ts";
@@ -33,6 +34,9 @@ export interface SecretsDeps {
   botExists(id: string): boolean;
   log(message: string): void;
   now?: () => number;
+  /** The HTTP client `fetch` sends through, and its time limit: replaceable so a test needs no network. */
+  httpFetch?: typeof fetch;
+  fetchTimeoutMs?: number;
 }
 
 /** What the Paseo bridge lends once it runs: the agents the daemon lists, and the way to tell one that its request was approved. */
@@ -115,11 +119,11 @@ export function createSecretsService(deps: SecretsDeps) {
 
   const valueOf = (id: string): string | null => deps.vault.secret(id)?.value ?? null;
 
-  function audit(caller: Caller, scope: Pick<SecretScope, "ref" | "project" | "fingerprint" | "purpose">, asker: Partial<Asker>, decision: AuditRow["decision"], errorCode: AuditErrorCode, context: string, source: AuditSource = caller.source): void {
+  function audit(caller: Caller, scope: Pick<SecretScope, "ref" | "project" | "fingerprint" | "purpose">, asker: Partial<Asker>, decision: AuditRow["decision"], errorCode: AuditErrorCode, context: string, source: AuditSource = caller.source, extra: Pick<AuditRow, "method" | "status"> = {}): void {
     ledger.append({
       decision, source, ref: scope.ref, project: redactSecretsInText(scope.project), purpose: redactSecretsInText(scope.purpose), fingerprint: scope.fingerprint,
       agentLabel: oneLine(asker.agentLabel ?? "", 80), sessionId: oneLine(asker.session ?? "", 80), context: oneLine(context, 200), errorCode, caller: caller.id,
-      ...(asker.destHost ? { destHost: normalizeHost(asker.destHost) ?? oneLine(asker.destHost, 255) } : {}), ...(asker.agentId ? { agentId: oneLine(asker.agentId, 80) } : {}),
+      ...(asker.destHost ? { destHost: normalizeHost(asker.destHost) ?? oneLine(asker.destHost, 255) } : {}), ...(asker.agentId ? { agentId: oneLine(asker.agentId, 80) } : {}), ...extra,
     });
   }
 
@@ -294,7 +298,7 @@ export function createSecretsService(deps: SecretsDeps) {
       audit(caller, scope, asker, "deny", "no_such_secret", asker.context ?? "missing");
       throw new SecretsError(EXIT.missing, "no_such_secret", `${scope.ref}: no such secret in the Vault. Ask the person to add it in OpenMausBot.`);
     }
-    audit(caller, scope, asker, "allow", "", asker.context ?? "resolve");
+    audit(caller, scope, asker, "allow", "", asker.context ?? "release");
     if (grant.once) grants.spend(grant.id);
     try {
       deps.vault.markUsed(known.id);
@@ -369,13 +373,59 @@ export function createSecretsService(deps: SecretsDeps) {
       while (background.size) await Promise.all(background);
     },
 
-    resolve(input: { ref: string; asker: Asker }, caller: Caller): { ref: string; value: string } {
-      checkRef(input.ref);
+    /** Sends one request for an agent with the value written into it. The value never leaves this process: the answer is the destination's, with every form of the value replaced. */
+    async fetch(input: { ref: string; request: FetchRequest; asker: Asker }, caller: Caller): Promise<{ status: number; headers: Record<string, string>; body: string; truncated: boolean }> {
+      const { ref, request } = input;
+      checkRef(ref);
       checkAsker(input.asker);
-      const scope = scopeOf(input.ref, input.asker);
-      const ev = evaluate(scope, input.asker, caller, "release");
+      const host = hostKey(request.url);
+      if (request.url.protocol === "http:" && !isLoopback(request.url)) throw new SecretsError(EXIT.invalid, "invalid_request", "url must start with https://");
+      const context = `fetch ${request.method} ${host}`;
+      // The destination is what the request says, never what the caller claims: a host-restricted grant is judged on it.
+      const asker: Asker = { ...input.asker, destHost: host, context };
+      const scope = scopeOf(ref, asker);
+      const known = lookup(ref);
+      if (known) {
+        const allowed = deps.vault.listSecrets(TEAM_READER).find((secret) => secret.id === known.id)?.profile?.allowedHosts ?? [];
+        if (!allowed.includes(host)) {
+          audit(caller, scope, asker, "deny", "host_not_allowed", context);
+          throw new SecretsError(EXIT.refused, "host_not_allowed", allowed.length
+            ? `${ref}: refused. ${host} is not one of the hosts the person allowed for this secret.`
+            : `${ref}: refused. The person has not allowed any host for this secret. Ask the person to add the host in OpenMausBot, in the Vault settings of the secret.`);
+        }
+      }
+      const ev = evaluate(scope, asker, caller, "release");
       if (ev.kind !== "covered") throw refusal(ev);
-      return { ref: input.ref, value: release(scope, input.asker, caller, ev.grant) };
+      const value = release(scope, asker, caller, ev.grant);
+      const needles = needlesFor(request, value);
+      const mark = `[omb:${ref}]`;
+      /** The result row, written after the call: the row before it already let the call go, so a failure here is logged and nothing more. */
+      const outcome = (text: string, result: { status?: number; failed?: boolean }) => {
+        try {
+          audit(caller, scope, asker, "check", result.failed ? "upstream_failed" : "", `${context}: ${text}`, caller.source, { method: request.method, ...(result.status === undefined ? {} : { status: result.status }) });
+        } catch {
+          deps.log("omb secrets: could not write the result of a fetch to the ledger");
+        }
+      };
+      let sent: Awaited<ReturnType<typeof sendUpstream>>;
+      try {
+        const prepared = injectSecret(request, value);
+        sent = await sendUpstream({
+          fetch: deps.httpFetch ?? fetch, url: prepared.url, method: request.method, headers: prepared.headers,
+          ...(request.body ? { body: request.body } : {}), timeoutMs: deps.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+        });
+      } catch (error) {
+        if (error instanceof UpstreamError) {
+          outcome(error.reason, { failed: true });
+          throw new SecretsError(EXIT.unavailable, "upstream_failed", `${ref}: ${error.message}. The secret was not shown.`);
+        }
+        outcome("not sent", {});
+        throw error;
+      }
+      outcome(`status ${sent.status}`, { status: sent.status });
+      const headers: Record<string, string> = {};
+      for (const [name, text] of Object.entries(sent.headers)) headers[scrubText(name, needles, mark)] = scrubText(text, needles, mark);
+      return { status: sent.status, headers, body: scrubBody(sent.body, needles, mark, sent.truncated).toString("base64"), truncated: sent.truncated };
     },
 
     /** Every scope must be covered before any value is read, so a refused run spends no single-release allow. */

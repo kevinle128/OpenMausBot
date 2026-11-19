@@ -410,6 +410,29 @@ describe("Settings → Vault: keys and secrets", () => {
     expect(fixture.api).toHaveBeenNthCalledWith(4, "/api/vault/secrets/s1", { method: "DELETE" });
   });
 
+  it("shows the hosts a secret may be sent to, sends them only when they change, and refuses a wildcard before any call", async () => {
+    const hosted = { ...SAVED, profile: { description: "Billing", allowedHosts: ["api.example.com"] } };
+    fixture.api.mockResolvedValueOnce(listed([hosted])).mockResolvedValueOnce({ secret: hosted }).mockResolvedValueOnce(listed([hosted]));
+    await render();
+    await click("Change Stripe secret key");
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[name="secretHosts"]')!.value).toBe("api.example.com");
+    await fill('textarea[name="secretHosts"]', "*.example.com");
+    await send("secret-form");
+    expect(fixture.api).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[data-secret-form] [role=alert]")!.textContent).toContain("not a host name");
+    await fill('textarea[name="secretHosts"]', "API.example.com\n\n localhost:8080 ");
+    await send("secret-form");
+    expect(fixture.api).toHaveBeenNthCalledWith(2, "/api/vault/secrets/s1", { method: "PATCH", body: JSON.stringify({ bots: ["pepper"], allowedHosts: ["api.example.com", "localhost:8080"] }) });
+  });
+
+  it("offers no hosts field while a secret is being added", async () => {
+    fixture.api.mockResolvedValueOnce(listed([]));
+    await render();
+    await click("Add");
+    await click("Add a secret");
+    expect(host.querySelector('textarea[name="secretHosts"]')).toBeNull();
+  });
+
   it("says which MCP servers lost their key when a secret is deleted", async () => {
     fixture.api.mockResolvedValueOnce(listed()).mockResolvedValueOnce({ ok: true, keysOff: ["stripe", "notion"] }).mockResolvedValueOnce(listed([LINKED]));
     await render();

@@ -1,6 +1,7 @@
 // No answer ever carries a saved value: a saved secret is only ever replaced. A Team Cloud member sees and deletes only
 // the secrets of their own; an admin, only the team's and their own.
-import { SECRET_VALUE_MAX_BYTES, VAULT_SECRET_NAME_MAX, type LinkedSecret } from "../../shared/vault.ts";
+import { parseAllowedHosts } from "../../shared/host-name.ts";
+import { SECRET_VALUE_MAX_BYTES, VAULT_SECRET_NAME_MAX, type LinkedSecret, type SecretProfile } from "../../shared/vault.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import type { McpKeys } from "../vault/mcp-keys.ts";
 import { TEAM_READER, type VaultReader, type VaultStore } from "../vault-store.ts";
@@ -39,6 +40,19 @@ function parseValue(raw: unknown): Parsed<string | undefined> {
   if (raw === undefined) return { ok: true, value: undefined };
   const value = typeof raw === "string" ? raw.trim() : "";
   return value && Buffer.byteLength(value) <= SECRET_VALUE_MAX_BYTES ? { ok: true, value } : { ok: false, error: VAULT_ERRORS.value };
+}
+
+/** Absent leaves the hosts. A list replaces them, and an empty one clears them. */
+function parseHosts(raw: unknown): Parsed<string[] | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (!Array.isArray(raw) || !raw.every((entry) => typeof entry === "string")) return { ok: false, error: "Send the allowed hosts as a list of host names." };
+  const parsed = parseAllowedHosts(raw);
+  return parsed.ok ? { ok: true, value: parsed.hosts } : { ok: false, error: parsed.error };
+}
+
+function withHosts(profile: SecretProfile | undefined, hosts: string[]): SecretProfile {
+  const { allowedHosts: _replaced, ...rest } = profile ?? {};
+  return hosts.length ? { ...rest, allowedHosts: hosts } : rest;
 }
 
 export function createVaultRoutes(deps: VaultRouteDeps): RouteHandler {
@@ -91,10 +105,15 @@ export function createVaultRoutes(deps: VaultRouteDeps): RouteHandler {
     if (!value.ok) return json(res, 400, { error: value.error });
     const bots = parseBots(body.bots, deps.logins.botExists);
     if (!bots.ok) return json(res, 400, { error: bots.error });
+    const hosts = parseHosts(body.allowedHosts);
+    if (!hosts.ok) return json(res, 400, { error: hosts.error });
+    // The person alone sets where `omb secrets fetch` may send a value; the rest of the profile stays as the CLI wrote it.
+    const profile = hosts.value === undefined ? undefined : withHosts(deps.secrets.listSecrets(reader).find((secret) => secret.id === id)?.profile, hosts.value);
     const secret = deps.secrets.updateSecret(id, {
       ...(name.value === undefined ? {} : { name: name.value }),
       ...(value.value === undefined ? {} : { value: value.value }),
       ...(bots.value === undefined ? {} : { bots: bots.value }),
+      ...(profile === undefined ? {} : { profile }),
     });
     return secret ? json(res, 200, { secret }) : json(res, 404, { error: "no such secret" });
   };
