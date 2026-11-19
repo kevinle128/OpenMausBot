@@ -623,6 +623,10 @@ describe("requests from other devices", () => {
 
   it("stops the pass after one call when ak cannot run, without listing the local inbox", async () => {
     const t = setup();
+    // setup() starts the first pass; let it settle before ak becomes unreachable.
+    await t.watcher.checkNow();
+    t.remoteRequests.mockClear();
+    t.pendingRequests.mockClear();
     t.inbox.remoteError = new AkError("unavailable", null, "The laptop (h) is unreachable over SSH: timed out");
     await t.watcher.checkNow();
     expect(t.remoteRequests).toHaveBeenCalledTimes(1);
