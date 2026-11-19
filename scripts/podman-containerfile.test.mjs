@@ -12,4 +12,13 @@ describe("Podman image build", () => {
     expect(buildCopies(server)).toContain("/src/skills ./skills");
     expect(buildCopies(read("../deploy/podman/Containerfile"))).toContain("/src/skills ./skills");
   });
+
+  it("copies the pnpm patches before the frozen install, as the Dockerfile does", () => {
+    for (const file of ["../Dockerfile", "../deploy/podman/Containerfile"]) {
+      const text = read(file);
+      const copy = text.indexOf("COPY patches ./patches");
+      expect(copy, file).toBeGreaterThan(-1);
+      expect(copy, file).toBeLessThan(text.indexOf("pnpm install --frozen-lockfile"));
+    }
+  });
 });
