@@ -90,6 +90,12 @@ team, the history is not written.
    Wait for *Connected*, then under **Bot access** let only the Dispatcher use
    it.
 3. Keep `OMB_PASEO_BRIDGE=1` set for OpenMausBot.
+4. When the Paseo agents and their `ak` store run on another device, set
+   `OMB_AK_SSH` (for example `dale@100.98.220.71`) and, if the key is not
+   `~/.ssh/omb_laptop_ak`, `OMB_AK_SSH_KEY`. Every `ak` command then runs there over
+   SSH (the key must be forced to a gate that allows only `ak secrets`), the inbox
+   is read on the 2-second check cycle instead of a file watch, and a laptop that
+   cannot be reached is logged once as `unavailable`.
 
 ## How it works
 

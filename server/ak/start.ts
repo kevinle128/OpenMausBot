@@ -4,9 +4,10 @@ import type { Notification } from "../notify.ts";
 import { ensurePaseoBot, PASEO_BOT_ID } from "../paseo/gatekeeper.ts";
 import type { Store } from "../store.ts";
 import type { VaultStore } from "../vault-store.ts";
-import { createAkCli, type AkCli } from "./cli.ts";
+import { createAkCli, defaultAkRunner, type AkCli } from "./cli.ts";
 import { createAkGuard } from "./guard.ts";
 import { startInboxWatcher, type InboxWatcherDeps } from "./inbox-watcher.ts";
+import { akRunnerFromEnv, remoteAkHost } from "./ssh-runner.ts";
 import { startVaultSync } from "./vault-sync.ts";
 
 export interface AkBridgeWiring {
@@ -32,7 +33,7 @@ export interface AkBridgeWiring {
 /** Starts the Vault-to-ak sync and the inbox watcher. A missing or refusing `ak` is logged and never throws. */
 export function startAkBridge(wiring: AkBridgeWiring, log: (message: string) => void): () => void {
   const guard = createAkGuard(log);
-  const cli = wiring.cli ?? createAkCli(undefined, { onUnknownShape: (keys) => log(`ak inbox: unexpected response shape, keys: ${keys.join(", ") || "(none)"}`) });
+  const cli = wiring.cli ?? createAkCli(akRunnerFromEnv(process.env, () => defaultAkRunner()), { onUnknownShape: (keys) => log(`ak inbox: unexpected response shape, keys: ${keys.join(", ") || "(none)"}`) });
   // Made now, not on the first card: the Vault's bot picker can only offer the Paseo bot once it exists.
   ensurePaseoBot(wiring.store);
   const sync = startVaultSync({ vault: wiring.vault, cli, guard, dataDir: wiring.dataDir, botId: PASEO_BOT_ID, log });
@@ -46,6 +47,8 @@ export function startAkBridge(wiring: AkBridgeWiring, log: (message: string) => 
     notify: wiring.notify,
     screenLocked: wiring.screenLocked,
     log,
+    // With ak on another device, this device has no ak files to watch or programs to hash.
+    ...(remoteAkHost() !== null ? { remote: true } : {}),
     ...(wiring.notifyAgent ? { notifyAgent: wiring.notifyAgent } : {}),
     ...(wiring.origins ? { origins: wiring.origins } : {}),
     ...(wiring.history ? { history: wiring.history } : {}),

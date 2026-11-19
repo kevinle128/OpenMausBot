@@ -51,6 +51,8 @@ export interface InboxWatcherDeps {
   realPath?(path: string): Promise<string>;
   /** The folder holding ak's `pending.json`. */
   secretsDir?: string;
+  /** `ak` runs on another device: its files are not here, so nothing is watched and a program is neither hashed nor resolved here. The check cycle finds new requests. */
+  remote?: boolean;
   debounceMs?: number;
   pollMs?: number;
   /** The least time between two listings of the requests from other devices; a sync that is off or failing is retried 12 and 6 times slower. */
@@ -220,8 +222,9 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     deps.notify(buildNotification("approval", bot, bot.threadId, oneLine(label, 200)));
   }
 
-  const hashOf = deps.hashFile ?? sha256OfFile;
-  const resolve = deps.realPath ?? ((path: string) => realpath(path));
+  const notHere = () => Promise.reject(new Error("the program is on another device"));
+  const hashOf = deps.hashFile ?? (deps.remote ? notHere : sha256OfFile);
+  const resolve = deps.realPath ?? (deps.remote ? notHere : (path: string) => realpath(path));
 
   /** Two paths name one program when they are equal or lead to the same file, such as a Homebrew link into the Cellar. */
   async function sameProgram(a: string, b: string): Promise<boolean> {
@@ -330,7 +333,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       // The grant pins whatever the file is now, so the request must carry the hash it asked with and the file must still have it.
       if (!program.hash) throw new AkError("failed", null, "The request has no program hash, so it was not allowed");
       if ((await hashOf(program.path).catch(() => "")) !== program.hash) {
-        throw new AkError("failed", null, "The program changed since it asked, so it was not allowed");
+        throw new AkError("failed", null, deps.remote ? "The program is on another device and cannot be checked here, so it was not allowed" : "The program changed since it asked, so it was not allowed");
       }
       const found = { path: program.path, hash: program.hash };
       const label = text(request.agentLabel);
@@ -560,7 +563,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   // The folder is watched, not the file: ak replaces the file by renaming, which ends a watch on the file itself.
   function ensureWatch(): void {
-    if (watcher || stopped || guard.blocked) return;
+    if (watcher || stopped || guard.blocked || deps.remote) return;
     try {
       watcher = watch(dir, (_event, name) => {
         if (name === null || String(name) === PENDING_FILE) trigger();
