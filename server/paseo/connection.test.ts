@@ -184,4 +184,49 @@ describe("PaseoConnection.agentContext", () => {
     expect(await connection.agentContext("a1")).toEqual({ recent: [] });
     await connection.stop();
   });
+
+  describe("inspectPath", () => {
+    const withInspect = () => new FakeClient() as FakeClient & { inspectPath?: PaseoClientPort["inspectPath"] };
+    it("returns what the daemon answers for the path of the agent's directory", async () => {
+      const client = withInspect();
+      const calls: Array<[string, string]> = [];
+      client.inspectPath = async (cwd, path) => {
+        calls.push([cwd, path]);
+        return { exists: true, kind: "symlink", size: 9, error: null };
+      };
+      const { connection } = await connected(client);
+      expect(await connection.inspectPath("/work", "link.txt")).toEqual({ exists: true, kind: "symlink", size: 9, error: null });
+      expect(calls).toEqual([["/work", "link.txt"]]);
+      await connection.stop();
+    });
+
+    it("rejects when the daemon is not connected", async () => {
+      const connection = new PaseoConnection({ createClient: () => new FakeClient() });
+      await expect(connection.inspectPath("/work", "a")).rejects.toThrow("not connected");
+    });
+
+    it("rejects when the client does not know the request", async () => {
+      const { connection } = await connected(new FakeClient());
+      await expect(connection.inspectPath("/work", "a")).rejects.toThrow("cannot inspect a path");
+      await connection.stop();
+    });
+
+    it("rejects when the daemon does not answer in time, even if the client keeps waiting", async () => {
+      const client = withInspect();
+      client.inspectPath = () => new Promise(() => {});
+      const { connection } = await connected(client, { inspectTimeoutMs: 20 });
+      await expect(connection.inspectPath("/work", "a")).rejects.toThrow("did not answer");
+      await connection.stop();
+    });
+
+    it("passes the failure of a daemon that does not know the request", async () => {
+      const client = withInspect();
+      client.inspectPath = async () => {
+        throw new Error("Message validation failed");
+      };
+      const { connection } = await connected(client);
+      await expect(connection.inspectPath("/work", "a")).rejects.toThrow("Message validation failed");
+      await connection.stop();
+    });
+  });
 });

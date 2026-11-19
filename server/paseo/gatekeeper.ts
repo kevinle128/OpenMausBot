@@ -32,7 +32,7 @@ export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotReco
 type DeciderPort = Pick<Decider, "ask">;
 
 export interface PaseoGatekeeperDeps {
-  connection: Pick<PaseoConnection, "on" | "off" | "respondToPermission">;
+  connection: Pick<PaseoConnection, "on" | "off" | "respondToPermission" | "inspectPath">;
   store: Pick<Store, "bot" | "createBot" | "messagesFor" | "patchMessage" | "appendMessage">;
   approvals: ExternalApprovals;
   decider: DeciderPort;
@@ -164,8 +164,10 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       const target = permissionTarget(request);
       if (target?.kind === "command") deps.origins?.note(target.command, { agentId, agent: describe(event).label, cwd: agent.cwd });
       // The privacy hook asks before an agent reads a file; that one question is answered here, every other one is not.
-      const hookRead = hookReadQuestion(request, { cwd: agent.cwd });
-      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : classifyPermission(request, { cwd: agent.cwd, ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) });
+      // The agent's files are on the agent's machine, so every file check asks the daemon there.
+      const rules = { cwd: agent.cwd, inspectPath: (cwd: string, path: string) => connection.inspectPath(cwd, path), ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) };
+      const hookRead = await hookReadQuestion(request, rules);
+      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : await classifyPermission(request, rules);
       let allowed = decision.verdict === "allow";
       let rule = decision.rule;
       let verdict: GuardOutcome | null = null;

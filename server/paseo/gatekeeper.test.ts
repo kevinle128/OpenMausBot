@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,8 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { createExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
-import { PaseoConnection, type PaseoConnectionEvents, type PaseoPermissionRequested } from "./connection.ts";
+import { inspectOnThisDisk } from "../testing/fake-daemon-fs.ts";
+import { PaseoConnection, type PaseoConnectionEvents, type PaseoPathInspection, type PaseoPermissionRequested } from "./connection.ts";
 import { createRequestOrigins, type AutoApproval } from "./auto-approval.ts";
 import { ANSWER_IN_PASEO, PASEO_BOT_ID, startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 import { isMacScreenLocked } from "./screen-lock.ts";
@@ -34,11 +35,12 @@ const scored = (scores: Scores = {}): Ask => (async () => ({
   },
 })) as unknown as Ask;
 
-function fixture(options: { jev?: Ask; locked?: boolean; openFails?: boolean; context?: PaseoGatekeeperDeps["agentContext"] } = {}) {
+function fixture(options: { inspectPath?: (cwd: string, path: string) => Promise<PaseoPathInspection>; jev?: Ask; locked?: boolean; openFails?: boolean; context?: PaseoGatekeeperDeps["agentContext"] } = {}) {
   const history: AutoApproval[] = [];
   const origins = createRequestOrigins();
-  const connection = new EventEmitter<PaseoConnectionEvents>() as EventEmitter<PaseoConnectionEvents> & { respondToPermission: ReturnType<typeof vi.fn> };
+  const connection = new EventEmitter<PaseoConnectionEvents>() as EventEmitter<PaseoConnectionEvents> & { respondToPermission: ReturnType<typeof vi.fn>; inspectPath: ReturnType<typeof vi.fn> };
   connection.respondToPermission = vi.fn(async () => {});
+  connection.inspectPath = vi.fn(options.inspectPath ?? inspectOnThisDisk);
   const lines: Message[] = [];
   const bots = new Map<string, { id: string; name: string; threadId: string; notifications: boolean }>();
   const store = {
@@ -289,6 +291,7 @@ describe("Paseo gatekeeper: the privacy hook's read question", () => {
   const ask = (f: ReturnType<typeof fixture>, id: string, questions: unknown) =>
     f.connection.emit("permissionRequested", f.request(id, undefined, { kind: "question", name: "AskUserQuestion", input: { questions } }));
   writeFileSync(join(workDir, "server.pem"), "key\n");
+  symlinkSync(join(workDir, "server.pem"), join(workDir, "linked.pem"));
 
   it("answers Yes, approve once for a regular file of any name, and records it", async () => {
     const f = fixture();
@@ -319,6 +322,39 @@ describe("Paseo gatekeeper: the privacy hook's read question", () => {
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
     expect(f.card()).toBeDefined();
     expect(f.history).toEqual([]);
+  });
+
+  const unreachable = (message: string) => async (): Promise<PaseoPathInspection> => {
+    throw new Error(message);
+  };
+
+  it.each([
+    ["a link to a file", undefined],
+    ["a daemon that does not answer in time", unreachable("The Paseo daemon did not answer a path inspection")],
+    ["a daemon that does not know the request", unreachable("The Paseo client cannot inspect a path")],
+    ["a daemon that refuses the path", async () => ({ exists: false, kind: null, size: null, error: "Access outside of workspace is not allowed" })],
+  ])("does not answer a read question when it gets %s: it becomes a card", async (_name, inspectPath) => {
+    const f = fixture(inspectPath ? { inspectPath } : {});
+    ask(f, "r1", hookQuestion(join(workDir, inspectPath ? "server.pem" : "linked.pem")));
+    await flush();
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+    expect(f.history).toEqual([]);
+  });
+
+  it("opens a card for an env file read when the daemon cannot say what is there", async () => {
+    const f = fixture({ inspectPath: unreachable("The Paseo daemon did not answer a path inspection") });
+    f.connection.emit("permissionRequested", f.request("r1", { type: "read", filePath: join(workDir, ".env") }, { name: "Read" }));
+    await flush();
+    expect(f.connection.respondToPermission).not.toHaveBeenCalled();
+    expect(f.card()).toBeDefined();
+  });
+
+  it("asks the daemon for the agent's directory and the path, not this machine's disk", async () => {
+    const f = fixture();
+    ask(f, "r1", hookQuestion(join(workDir, "server.pem")));
+    await flush();
+    expect(f.connection.inspectPath).toHaveBeenCalledWith(workDir, join(workDir, "server.pem"));
   });
 });
 
