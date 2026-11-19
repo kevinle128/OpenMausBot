@@ -107,6 +107,10 @@ describe("ak commands", () => {
     const [blank] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [item] } }) }).run).remoteRequests();
     expect(blank).toMatchObject({ id: "bMTgjCYBg7wFZ5W-S8hQlg", device: "Pf89RqzJHzGDTaPNBvemIA" });
     expect(blank?.agentLabel).toBeUndefined();
+    expect(blank?.agent).toBeUndefined();
+    const [spaced] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [{ request_id: "x2", ref: "API_KEY", agent: "claude", fingerprint: " ", agentLabel: "" }] } }) }).run).remoteRequests();
+    expect(spaced).toMatchObject({ agent: "claude", agentLabel: "claude" });
+    expect(spaced?.fingerprint).toBeUndefined();
     const fingerprint = "sha256:" + "b".repeat(64);
     const [printed] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [{ request_id: "x1", ref: "API_KEY", agent: fingerprint }] } }) }).run).remoteRequests();
     expect(printed?.agentLabel).toBeUndefined();

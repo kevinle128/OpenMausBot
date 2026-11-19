@@ -223,8 +223,10 @@ export function remoteRequest(item: unknown): AkRemoteRequest {
   const agent = text(fields.agent);
   const label = agent !== undefined && !agent.startsWith("sha256:") ? agent : undefined;
   const device = text(fields.requester_label) ?? text(fields.requester);
+  // A blank agent, fingerprint or label is dropped, so the watcher falls through to "an agent" instead of an empty name.
+  const named = Object.fromEntries(Object.entries(fields).filter(([key, value]) => !["agent", "fingerprint", "agentLabel"].includes(key) || !missing(value)));
   return {
-    ...fields,
+    ...named,
     ...(id !== undefined && missing(fields.id) ? { id } : {}),
     ...(label !== undefined && missing(fields.agentLabel) ? { agentLabel: label } : {}),
     ...(device !== undefined && missing(fields.device) ? { device } : {}),
