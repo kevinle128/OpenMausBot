@@ -3762,6 +3762,8 @@
   "settings.vault.secret.name": "Nome",
   "settings.vault.secret.namePlaceholder": "Chave secreta do Stripe",
   "settings.vault.secret.nameHint": "Os bots pedem pelo segredo usando este nome.",
+  "settings.vault.secret.hosts": "Hosts para onde ele pode ser enviado",
+  "settings.vault.secret.hostsHint": "Um host por linha, como api.example.com. Um agente pode pedir ao {app} que envie este segredo em uma requisição somente para estes hosts. Vazio: nenhum host.",
   "settings.vault.secret.value": "Segredo",
   "settings.vault.secret.valueKeep": "Novo segredo (deixe vazio para manter o salvo)",
   "settings.vault.secret.save": "Salvar segredo",
