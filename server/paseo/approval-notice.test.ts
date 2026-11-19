@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
-import { approvalNoticeText, commandNamesRef, createApprovalNotifier } from "./approval-notice.ts";
+import { BY_OMB_LINE, approvalNoticeText, commandNamesRef, createApprovalNotifier } from "./approval-notice.ts";
 import { createRequestOrigins } from "./auto-approval.ts";
+import { APPROVAL_NOTICE_PREFIX } from "./connection.ts";
 
 function fixture(commands: Record<string, string[]> = {}) {
   const connection = Object.assign(new EventEmitter(), {
@@ -20,6 +21,13 @@ describe("approval notice text", () => {
   it("is exactly the fixed words and the ref, even for an exec approval", () => {
     expect(approvalNoticeText({ ref: "API_KEY" })).toBe("already approved ak secrets: API_KEY");
     expect(approvalNoticeText({ ref: "API_KEY", program: "/usr/bin/deploy" })).toBe("already approved ak secrets: API_KEY");
+  });
+
+  it("ends with the by-OMB line only when OpenMausBot approved by itself, and still starts with the recognised prefix", () => {
+    const text = approvalNoticeText({ ref: "API_KEY", program: "/usr/bin/deploy", by: "omb" });
+    expect(text).toBe("already approved ak secrets: API_KEY\n\n\u{1D5EF}\u{1D606} \u{1D5E2}\u{1D5E0}\u{1D5D5}");
+    expect(BY_OMB_LINE).toBe("𝗯𝘆 𝗢𝗠𝗕");
+    expect(text.startsWith(APPROVAL_NOTICE_PREFIX)).toBe(true);
   });
 });
 

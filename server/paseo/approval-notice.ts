@@ -7,7 +7,12 @@ export interface ApprovedSecret {
   ref: string;
   /** The program path of an exec approval; it tells two approvals of one ref apart and is never sent. */
   program?: string;
+  /** Set only when OpenMausBot approved by itself; the notice then says so. */
+  by?: "omb";
 }
+
+/** Paseo shows user messages as plain text, so Markdown bold would print its asterisks; this is Unicode sans-serif bold for "by OMB". */
+export const BY_OMB_LINE = "\u{1D5EF}\u{1D606} \u{1D5E2}\u{1D5E0}\u{1D5D5}";
 
 type Port = Pick<PaseoConnection, "on" | "off" | "sendMessage" | "recentShellCommands">;
 type AgentView = { id: string; status: string; updatedAt?: string | number | Date; title?: string | null; cwd?: string };
@@ -26,7 +31,8 @@ export interface NoticeOutcome {
 
 /** The fixed text told to the agent: only the ref, which passed the ref-name check. Never text an agent wrote. */
 export function approvalNoticeText(approved: ApprovedSecret): string {
-  return `${APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
+  const text = `${APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
+  return approved.by === "omb" ? `${text}\n\n${BY_OMB_LINE}` : text;
 }
 
 /** True when `command` runs `ak secrets` and names the ref as a whole word. */

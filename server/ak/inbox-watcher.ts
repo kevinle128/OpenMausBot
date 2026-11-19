@@ -44,7 +44,7 @@ export interface InboxWatcherDeps {
   /** Receives each request allowed without the person, for the Inbox, as an already read line. */
   history?: AutoApprovalHistory;
   /** Tells the Paseo agent that waited for this approval to go on. */
-  notifyAgent?(approved: { ref: string; program?: string }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
+  notifyAgent?(approved: { ref: string; program?: string; by?: "omb" }): Promise<{ result: "sent" | "queued" | "none"; agent?: { agentId: string; title: string; cwd: string } }>;
   /** The `sha256:<hex>` of a program's file; replaced by tests. */
   hashFile?(path: string): Promise<string>;
   /** The file a path leads to once symbolic links are followed; replaced by tests. */
@@ -392,10 +392,10 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
 
   /** One line for the Inbox: the secret's ref and purpose, the 24 hours, and the Paseo agent that asked when it is known. */
   /** The agent that waited is told; a failure is logged and never undoes the approval. */
-  async function tellAgent(scope: Scope, request: AkPendingRequest): Promise<Told> {
+  async function tellAgent(scope: Scope, request: AkPendingRequest, by?: "omb"): Promise<Told> {
     if (!deps.notifyAgent) return { result: "none" };
     try {
-      return await deps.notifyAgent({ ref: scope.ref, ...(isExec(request) ? { program: execLabel(request) } : {}) });
+      return await deps.notifyAgent({ ref: scope.ref, ...(isExec(request) ? { program: execLabel(request) } : {}), ...(by ? { by } : {}) });
     } catch (error) {
       log(`ak inbox: could not tell the agent about "${scope.ref}" (${error instanceof Error ? error.message : String(error)})`);
       return { result: "none" };
@@ -435,7 +435,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
       // An exec request is answered for its own program and variable, exactly as the card's Allow does.
       await allow(request, scope, { ...scope, ...(isExec(request) ? {} : { env: "" }) });
       log(`ak inbox: allowed "${scope.ref}" for ${AK_APPROVAL_TTL}`);
-      record(scope, request, await tellAgent(scope, request));
+      record(scope, request, await tellAgent(scope, request, "omb"));
       return true;
     } catch (error) {
       if (guard.report(error)) return true;
