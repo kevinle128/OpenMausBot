@@ -62,6 +62,13 @@ const optFlag = (value: unknown, name: string): boolean | undefined => {
   if (typeof value !== "boolean") throw new SecretsError(EXIT.invalid, "invalid_request", `${name} must be true or false`);
   return value;
 };
+/** A person's admin call names only the fields it knows: a mistyped or borrowed name is refused, not ignored. */
+const onlyKeys = (value: Json, allowed: readonly string[], where = "request"): void => {
+  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unknown !== undefined) throw new SecretsError(EXIT.invalid, "invalid_request", `unknown ${where} field: ${unknown.slice(0, 64)}`);
+};
+const GRANT_FIELDS = ["ref", "fingerprint", "project", "purpose", "state", "ttl", "persist", "once", "allowHosts", "exec", "agentLabel"] as const;
+const REVOKE_FIELDS = ["fingerprint", "all", "ref", "project", "purpose", "exec"] as const;
 
 function askerOf(body: Json): Asker {
   const purpose = body.purpose === undefined ? "" : body.purpose;
@@ -195,6 +202,8 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
         case "delete": return send("delete", service.admin.remove(text(b.ref, "ref", 128)));
         case "reveal": return send("get", service.admin.reveal(text(b.ref, "ref", 128)));
         case "grant": {
+          onlyKeys(b, GRANT_FIELDS);
+          if (isObject(b.exec)) onlyKeys(b.exec, ["path", "hash", "env"], "exec");
           const exec = b.exec === undefined ? undefined : isObject(b.exec) ? { ...programOf(b.exec), env: text(b.exec.env, "exec.env", 128) } : undefined;
           if (b.exec !== undefined && !exec) throw new SecretsError(EXIT.invalid, "invalid_request", "exec must be { path, hash, env }");
           if (b.allowHosts !== undefined && (!Array.isArray(b.allowHosts) || !b.allowHosts.length || !b.allowHosts.every((host) => typeof host === "string"))) {
@@ -212,6 +221,8 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
           return send("grant", grantView(grant));
         }
         case "revoke": {
+          onlyKeys(b, REVOKE_FIELDS);
+          if (isObject(b.exec)) onlyKeys(b.exec, ["path", "env"], "exec");
           if (b.exec !== undefined && !(isObject(b.exec) && typeof b.exec.path === "string" && typeof b.exec.env === "string")) {
             throw new SecretsError(EXIT.invalid, "invalid_request", "exec must be { path, env }");
           }
@@ -223,6 +234,7 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
           }));
         }
         case "approve": {
+          onlyKeys(b, ["state", ...APPROVE_FILTERS]);
           const filter: Partial<Record<typeof APPROVE_FILTERS[number], string>> = {};
           for (const name of APPROVE_FILTERS) {
             const value = optText(b[name], name);
