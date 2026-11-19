@@ -39,6 +39,8 @@ const EXCLUDED = new Set([
   "openmausbot-server.lease", "box-create-requests.lock", "messages.db-wal", "messages.db-shm",
   "runtime.db-wal", "runtime.db-shm",
   "decider-log",
+  // The `omb secrets` audit ledger: this computer's own record of what its Vault released.
+  "secret-audit",
   "cloud-owner.json",
   "sync",
   // "Also use my Claude Code skills": a link to the person's own ~/.claude/skills, made again on each turn.

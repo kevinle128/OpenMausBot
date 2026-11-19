@@ -16,7 +16,7 @@ import { GrantStore, type Grant } from "./grants.ts";
 import { PendingStore, RateLimiter, type PendingRequest, type RequestDetails } from "./pending.ts";
 import { parseProfile, valueHint } from "./profile.ts";
 import {
-  DAY_MS, DEFAULT_ALLOW_MS, ENV_VAR_PATTERN, EXIT, FINGERPRINT_PATTERN, PROGRAM_HASH_PATTERN, REF_PATTERN, SecretsError, cleanText, normalizeHost, parseTtl, steersLoader,
+  DAY_MS, DEFAULT_ALLOW_MS, ENV_VAR_PATTERN, EXIT, FINGERPRINT_PATTERN, PROGRAM_HASH_PATTERN, REF_PATTERN, SecretsError, cleanText, hasControl, normalizeHost, parseTtl, steersLoader,
   type ErrorCode, type ExecScope, type ExitCode, type SecretScope,
 } from "./types.ts";
 
@@ -117,7 +117,7 @@ export function createSecretsService(deps: SecretsDeps) {
 
   function audit(caller: Caller, scope: Pick<SecretScope, "ref" | "project" | "fingerprint" | "purpose">, asker: Partial<Asker>, decision: AuditRow["decision"], errorCode: AuditErrorCode, context: string, source: AuditSource = caller.source): void {
     ledger.append({
-      decision, source, ref: scope.ref, project: scope.project, purpose: scope.purpose, fingerprint: scope.fingerprint,
+      decision, source, ref: scope.ref, project: redactSecretsInText(scope.project), purpose: redactSecretsInText(scope.purpose), fingerprint: scope.fingerprint,
       agentLabel: oneLine(asker.agentLabel ?? "", 80), sessionId: oneLine(asker.session ?? "", 80), context: oneLine(context, 200), errorCode, caller: caller.id,
       ...(asker.destHost ? { destHost: normalizeHost(asker.destHost) ?? oneLine(asker.destHost, 255) } : {}), ...(asker.agentId ? { agentId: oneLine(asker.agentId, 80) } : {}),
     });
@@ -154,10 +154,12 @@ export function createSecretsService(deps: SecretsDeps) {
     });
   }
 
+  /** Only the live agent the request named is told: without one, the notifier would guess from `ak secrets` commands. */
   async function tell(request: PendingRequest, by?: "omb"): Promise<NoticeOutcome | null> {
     if (!paseo) return null;
+    if (!request.agentId) return { result: "none" };
     return paseo.notifier.approved({
-      ref: request.ref, vault: "omb", ...(request.exec ? { program: request.exec.path } : {}), ...(request.agentId ? { agentId: request.agentId } : {}), ...(by ? { by } : {}),
+      ref: request.ref, vault: "omb", agentId: request.agentId, ...(request.exec ? { program: request.exec.path } : {}), ...(by ? { by } : {}),
     });
   }
 
@@ -217,7 +219,7 @@ export function createSecretsService(deps: SecretsDeps) {
   }
 
   /** Decides one scope. A scope no grant covers files a request, and either grants it at once (a secret kept to the Paseo bot) or opens a card. */
-  function evaluate(scope: SecretScope, asker: Asker, caller: Caller, mode: "release" | "request"): Eval {
+  function evaluate(scope: SecretScope, asker: Asker, caller: Caller, mode: "release" | "request", admit: () => ReturnType<RateLimiter["admit"]> = () => limiter.admit(scope.fingerprint)): Eval {
     const found = grants.match(scope);
     if (found.kind === "block") {
       audit(caller, scope, asker, "deny", "blocked", asker.context ?? "blocked");
@@ -234,7 +236,7 @@ export function createSecretsService(deps: SecretsDeps) {
       }
       return { kind: "covered", grant: found.grant };
     }
-    const admitted = limiter.admit(scope.fingerprint);
+    const admitted = admit();
     if (!admitted.ok) {
       audit(caller, scope, asker, "deny", "rate_limited", asker.context ?? "rate limited");
       return { kind: "limited", message: `${scope.ref}: too many requests from this agent. Do not ask again for about ${Math.ceil(admitted.retryAfterMs / 60_000)} minutes.` };
@@ -269,6 +271,7 @@ export function createSecretsService(deps: SecretsDeps) {
     if (!FINGERPRINT_PATTERN.test(asker.fingerprint)) throw new SecretsError(EXIT.invalid, "invalid_request", "fingerprint must be sha256: and 64 hex digits");
     if (!asker.project || asker.project.length > 512) throw new SecretsError(EXIT.invalid, "invalid_request", "project is required and at most 512 characters");
     if (asker.purpose.length > 200) throw new SecretsError(EXIT.invalid, "invalid_request", "purpose is at most 200 characters");
+    if (hasControl(asker.project) || hasControl(asker.purpose)) throw new SecretsError(EXIT.invalid, "invalid_request", "project and purpose cannot hold control or direction characters");
   }
 
   function checkRef(ref: string): void {
@@ -276,7 +279,7 @@ export function createSecretsService(deps: SecretsDeps) {
   }
 
   function checkExec(program: { path: string; hash: string }, env: string): ExecScope {
-    if (!/^(?:\/|[A-Za-z]:[\\/])/.test(program.path) || program.path.length > 1_024 || /[\p{Cc}]/u.test(program.path)) throw new SecretsError(EXIT.invalid, "invalid_request", "the program must be an absolute path");
+    if (!/^(?:\/|[A-Za-z]:[\\/])/.test(program.path) || program.path.length > 1_024 || hasControl(program.path)) throw new SecretsError(EXIT.invalid, "invalid_request", "the program must be an absolute path");
     if (!PROGRAM_HASH_PATTERN.test(program.hash)) throw new SecretsError(EXIT.invalid, "invalid_request", "the program hash must be sha256: and 64 hex digits");
     if (!ENV_VAR_PATTERN.test(env) || steersLoader(env)) throw new SecretsError(EXIT.invalid, "invalid_request", "that variable cannot receive a secret");
     return { path: program.path, env, hash: program.hash };
@@ -395,8 +398,11 @@ export function createSecretsService(deps: SecretsDeps) {
       }
       const covered: Array<{ scope: SecretScope; grant: Grant }> = [];
       const waiting: Array<Exclude<Eval, { kind: "covered" }>> = [];
+      // One call counts once against the rate limit, however many of its variables are uncovered.
+      let admitted: ReturnType<RateLimiter["admit"]> | undefined;
+      const admit = () => (admitted ??= limiter.admit(input.asker.fingerprint));
       for (const scope of scopes) {
-        const ev = evaluate(scope, input.asker, caller, "release");
+        const ev = evaluate(scope, input.asker, caller, "release", admit);
         if (ev.kind === "covered") covered.push({ scope, grant: ev.grant });
         else waiting.push(ev);
       }

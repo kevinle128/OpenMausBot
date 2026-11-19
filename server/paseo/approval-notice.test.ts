@@ -49,6 +49,23 @@ describe("approval notice text for a secret in the OpenMausBot Vault", () => {
     expect(f.connection.sendMessage).toHaveBeenCalledWith("a1", "already approved omb secrets: API_KEY");
   });
 
+  it("tells an agent of an omb approval even after an ak approval of the same ref", async () => {
+    const f = fixture();
+    f.update("a1", "idle");
+    expect((await f.notifier.approved({ ref: "API_KEY", agentId: "a1" })).result).toBe("sent");
+    expect((await f.notifier.approved({ ref: "API_KEY", vault: "omb", agentId: "a1" })).result).toBe("sent");
+    expect(f.connection.sendMessage).toHaveBeenNthCalledWith(1, "a1", "already approved ak secrets: API_KEY");
+    expect(f.connection.sendMessage).toHaveBeenNthCalledWith(2, "a1", "already approved omb secrets: API_KEY");
+  });
+
+  it("forgets the listed agents when the daemon connection drops", async () => {
+    const f = fixture();
+    f.update("a1", "idle");
+    f.connection.emit("disconnected", "closed");
+    expect((await f.notifier.approved({ ref: "API_KEY", vault: "omb", agentId: "a1" })).result).toBe("none");
+    expect(f.connection.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("holds the notice for a busy named agent until it is idle", async () => {
     const f = fixture();
     f.update("a1", "running");

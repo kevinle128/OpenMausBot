@@ -115,7 +115,7 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
       if (!agent) return { result: "none" };
       const { agentId } = agent;
       const text = approvalNoticeText(approved);
-      const key = `${agentId}|${approved.ref}|${approved.program ?? ""}`;
+      const key = `${approved.vault ?? "ak"}|${agentId}|${approved.ref}|${approved.program ?? ""}`;
       if (sentKeys.has(key) || queued.has(key)) return { result: "none", agent };
       sentKeys.set(key, now() + ORIGIN_TTL_MS);
       if (agents.get(agentId)?.status === "idle") {

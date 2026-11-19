@@ -2,10 +2,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { AUDIT_DIR, AuditLedger, type NewAuditRow } from "./audit.ts";
 import { GRANTS_FILE, GrantStore } from "./grants.ts";
 import { COOLDOWN_MS, PendingStore, RATE_LIMIT, RateLimiter, REQUESTS_FILE } from "./pending.ts";
+import { readStateFile } from "./json-file.ts";
+import { valueHint } from "./profile.ts";
 import { DAY_MS, SecretsError, normalizeHost, parseTtl, type SecretScope } from "./types.ts";
 
 const FP = `sha256:${"a".repeat(64)}`;
@@ -215,6 +218,21 @@ describe("text helpers", () => {
     expect(parseTtl("2w")).toBe(14 * DAY_MS);
     expect(parseTtl("90m")).toBe(90 * 60_000);
     for (const bad of ["", "24", "h", "-1h", "1s", "99999d", 5, undefined]) expect(parseTtl(bad)).toBeNull();
+  });
+
+  it("hints a value only when at least 16 characters follow its public prefix", () => {
+    expect(valueHint("0123456789abcdef")).toBe("…cdef");
+    expect(valueHint("0123456789abcde")).toBeNull();
+    expect(valueHint(`github_pat_${"x".repeat(15)}`)).toBeNull();
+    expect(valueHint(`sk_live_${"x".repeat(15)}`)).toBeNull();
+    expect(valueHint(`github_pat_${"x".repeat(12)}WXYZ`)).toBe("github_pat_…WXYZ");
+    expect(valueHint(`${"x".repeat(14)}a😀b`)).toBe("…xa😀b");
+  });
+
+  it("treats only a missing state file as empty", () => {
+    expect(readStateFile(join(dir, "absent.json"), z.object({ n: z.number() }), { n: 0 })).toEqual({ n: 0 });
+    mkdirSync(join(dir, "a-folder.json"));
+    expect(() => readStateFile(join(dir, "a-folder.json"), z.object({ n: z.number() }), { n: 0 })).toThrow(SecretsError);
   });
 
   it("normalizes hosts the way an allow list names them", () => {

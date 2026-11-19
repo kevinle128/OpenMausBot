@@ -104,7 +104,7 @@ Body: the asker fields, `ref`, and optionally `exec: { path, hash }` with `env`.
   "hint": "sk-…6789", "needsRotation": false, "profile": { "description": "Billing API", "projects": ["site"] } }
 ```
 
-`hint` is a known public prefix plus the last four characters for a value of 16 characters or more. For a shorter value it is `null` and the row adds `"hintReason": "short value"`. `needsRotation` is true when the value is older than 90 days. `profile` is `{}` when none was set; its fields are `description`, `projects[]`, `provider`, `kind`, `tags[]`, `whenToUse`, `whenNotToUse`, `sensitivity`, `expiresAt` (epoch milliseconds) and `rotateUrl`.
+`hint` is a known public prefix plus the last four characters for a value with 16 characters or more after that prefix. For a shorter value it is `null` and the row adds `"hintReason": "short value"`. `needsRotation` is true when the value is older than 90 days. `profile` is `{}` when none was set; its fields are `description`, `projects[]`, `provider`, `kind`, `tags[]`, `whenToUse`, `whenNotToUse`, `sensitivity`, `expiresAt` (epoch milliseconds) and `rotateUrl`.
 
 ### `GET /api/secrets/describe/<ref>`
 
@@ -163,7 +163,7 @@ For `(ref, project, fingerprint, purpose)` and, for an exec scope, `(program pat
 
 1. A live **block** covers the scope: exit 6. An ordinary block (no `exec`) also covers every exec scope of the same ref, project, fingerprint and purpose. A block beats an allow.
 2. A live **allow** covers it: the call goes on (host check for an ordinary allow with `allowHosts`). Ordinary and exec grants never answer for each other.
-3. Nothing covers it: the request counts against the cool-down (12 a minute per fingerprint, then 5 minutes: exit 9). A request that no grant covered is filed, and a repeat of one scope is one request with a higher `count`. Calls that a grant covers are not counted.
+3. Nothing covers it: the request counts against the cool-down (12 a minute per fingerprint, then 5 minutes: exit 9). A request that no grant covered is filed, and a repeat of one scope is one request with a higher `count`. Calls that a grant covers are not counted, and one `run-check` call counts once however many of its variables are uncovered.
 4. A ref **in the Vault, kept to the Paseo bot or to every bot** is allowed for 24 hours by OpenMausBot itself. The Inbox gets an "OpenMausBot tự duyệt" line, and the agent named by a live `agentId` is told `already approved omb secrets: <REF>` followed by a blank line and `𝗯𝘆 𝗢𝗠𝗕`. The call that filed the request still answers exit 8 ("run the same call again"); the retry gets the value. The grant is keyed to the fingerprint, so any agent of that binary may use it.
 5. **Any other ref**, or a ref that is not in the Vault, opens a card in the Paseo conversation with the agent's title, its workspace, the ref, the purpose and, for an exec scope, the program and the variable. The cards of a request are opened again on each uncovered call, so a restart loses none. "Allow 24h" writes a grant, an Inbox line "Bạn đã duyệt" and the plain notice `already approved omb secrets: <REF>` to the named agent; "Deny" writes "Bạn đã từ chối" and nothing else.
 

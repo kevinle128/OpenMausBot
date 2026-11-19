@@ -19,14 +19,20 @@ export function createLiveAgents(connection: Port) {
   const onRemoved = (agentId: string) => {
     agents.delete(agentId);
   };
+  // The daemon sends no removal for an agent that ended while it was away: what it lists after reconnecting starts afresh.
+  const onDisconnected = () => {
+    agents.clear();
+  };
   connection.on("agentUpdate", onUpdate as never);
   connection.on("agentRemoved", onRemoved);
+  connection.on("disconnected", onDisconnected as never);
   return {
     get: (id: string): LiveAgent | undefined => agents.get(id),
     all: (): LiveAgent[] => [...agents.values()],
     stop(): void {
       connection.off("agentUpdate", onUpdate as never);
       connection.off("agentRemoved", onRemoved);
+      connection.off("disconnected", onDisconnected as never);
       agents.clear();
     },
   };

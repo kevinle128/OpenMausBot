@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { z } from "zod";
 
@@ -7,9 +7,16 @@ import { SecretsError } from "./types.ts";
 
 /** A grants or requests file that exists but cannot be read is never treated as empty: that would drop every block. */
 export function readStateFile<S extends z.ZodType>(file: string, schema: S, empty: z.infer<S>): z.infer<S> {
-  if (!existsSync(file)) return empty;
+  // Only a file that is not there is empty; any other failure to read it (permissions, I/O) fails closed.
+  let raw: string;
   try {
-    return schema.parse(JSON.parse(readFileSync(file, "utf8")));
+    raw = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
+    throw new SecretsError(5, "store_unavailable", "the secrets state file could not be read");
+  }
+  try {
+    return schema.parse(JSON.parse(raw));
   } catch {
     throw new SecretsError(5, "store_unavailable", "the secrets state file could not be read");
   }

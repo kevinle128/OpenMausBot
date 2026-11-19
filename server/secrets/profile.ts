@@ -43,8 +43,10 @@ export function parseProfile(raw: unknown, value?: string): ProfileResult {
 const PUBLIC_PREFIXES = ["github_pat_", "sk-ant-", "sk-proj-", "sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-", "xoxb-", "xoxp-", "xapp-", "AKIA", "AIza", "npm_", "sk-"];
 export const HINT_MIN_LENGTH = 16;
 
+/** The public prefix is not counted: at least HINT_MIN_LENGTH characters must follow it, so four of them shown hide the rest. */
 export function valueHint(value: string): string | null {
-  if (value.length < HINT_MIN_LENGTH) return null;
   const prefix = PUBLIC_PREFIXES.find((one) => value.startsWith(one)) ?? "";
-  return `${prefix}…${value.slice(-4)}`;
+  const rest = [...value.slice(prefix.length)];
+  if (rest.length < HINT_MIN_LENGTH) return null;
+  return `${prefix}…${rest.slice(-4).join("")}`;
 }

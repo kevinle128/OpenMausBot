@@ -252,6 +252,16 @@ describe("grant states on the wire", () => {
     expect(run([{ var: "TOKEN", ref: "API_KEY", program }, { var: "TOKEN", ref: "API_KEY", program }])).toBe(2);
     expect(f.service.admin.pending()).toEqual([]);
   });
+
+  it("refuses control and direction characters that could disguise the card", () => {
+    const f = fixture();
+    f.save("API_KEY", []);
+    expect(refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker({ purpose: "deploy \u202eevil" }) }, agent)).exit).toBe(2);
+    expect(refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker({ project: "site\u2066x" }) }, agent)).exit).toBe(2);
+    const spoofed = { path: "/usr/bin/\u202ecurl", hash: HASH };
+    expect(refusal(() => f.service.runCheck({ requests: [{ var: "TOKEN", ref: "API_KEY", program: spoofed }], asker: asker() }, agent)).exit).toBe(2);
+    expect(f.cards).toEqual([]);
+  });
 });
 
 describe("requests are coalesced and rate limited", () => {
@@ -269,6 +279,15 @@ describe("requests are coalesced and rate limited", () => {
     expect(refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker({ fingerprint: `sha256:${"b".repeat(64)}` }) }, agent)).exit).toBe(8);
     clock += 2;
     expect(refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker() }, agent)).exit).toBe(8);
+  });
+
+  it("counts one run-check call once, however many of its variables are uncovered", () => {
+    const f = fixture();
+    const scopes = Array.from({ length: 16 }, (_, i) => (f.save(`KEY_${i}`, []), { var: `VAR_${i}`, ref: `KEY_${i}`, program }));
+    expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent))).toMatchObject({ exit: 8, code: "approval_pending" });
+    expect(f.service.admin.pending()).toHaveLength(16);
+    for (let i = 1; i < RATE_LIMIT; i += 1) expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent)).exit).toBe(8);
+    expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent)).exit).toBe(9);
   });
 
   it("does not count calls a grant covers", () => {
@@ -409,13 +428,15 @@ describe("answers from the person", () => {
     expect(f.service.admin.pending().map((request) => request.purpose)).toEqual(["two"]);
   });
 
-  it("keeps the hosts of a restricted scope when the person approves it again", () => {
+  it("keeps the hosts of a restricted scope when the person grants it again without naming them", () => {
     const f = fixture();
     f.save("API_KEY", []);
     f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "allow", ttl: "1h", allowHosts: ["api.example.com"] });
-    clock += 2 * 3_600_000;
-    f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "allow", ttl: "1h", allowHosts: ["api.example.com"] });
-    expect(f.service.admin.grants({})).toHaveLength(1);
+    clock += 30 * 60_000;
+    f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "allow", ttl: "1h" });
+    expect(f.service.admin.grants({})).toMatchObject([{ allowHosts: ["api.example.com"] }]);
+    expect(refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker({ destHost: "evil.example.com" }) }, agent)).code).toBe("host_not_allowed");
+    expect(f.service.resolve({ ref: "API_KEY", asker: asker({ destHost: "api.example.com" }) }, agent).value).toBe(SECRET);
     f.service.request({ ref: "API_KEY", asker: asker() }, agent);
     expect(f.service.admin.pending()).toHaveLength(0);
     expect(f.service.admin.revoke({ fingerprint: FP, ref: "API_KEY", purpose: "deploy" })).toEqual({ revoked: 1 });
@@ -448,7 +469,23 @@ describe("with the real notifier", () => {
     expect(f.cards[0]!.subtitle).toBe("API_KEY · agent claude · deploy\nWorkspace: /claimed");
     f.answer(0, "allow");
     await f.service.idle();
-    expect(f.told[0]).not.toHaveProperty("agentId");
+    expect(f.told).toEqual([]);
+    expect(f.history.at(-1)!.what).toContain("không rõ agent, chưa báo");
+  });
+
+  it("never guesses an agent from its ak commands when the request named no live agent", async () => {
+    const f = fixture();
+    const connection = Object.assign(new EventEmitter(), { sendMessage: vi.fn(async () => {}), recentShellCommands: vi.fn(async () => ["ak secrets get API_KEY"]) });
+    const agents = createLiveAgents(connection as never);
+    const notifier = createApprovalNotifier({ connection: connection as never, origins: { find: () => null }, agents, log: () => {}, now: () => clock });
+    f.service.attach({ agents, notifier });
+    connection.emit("agentUpdate", { id: "a2", status: "idle", title: "Other", cwd: "/x", updatedAt: new Date(clock).toISOString() });
+    f.save("API_KEY", [PASEO_BOT_ID]);
+    refusal(() => f.service.resolve({ ref: "API_KEY", asker: asker() }, agent));
+    await f.service.idle();
+    expect(connection.sendMessage).not.toHaveBeenCalled();
+    notifier.stop();
+    agents.stop();
   });
 });
 

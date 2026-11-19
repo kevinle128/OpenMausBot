@@ -1,7 +1,7 @@
 import type { ExternalApprovals } from "../external-approvals.ts";
 import type { Notification } from "../notify.ts";
 import { formatAutoApproval, type AutoApprovalLine } from "../paseo/auto-approval.ts";
-import { ensurePaseoBot } from "../paseo/gatekeeper.ts";
+import { PASEO_BOT_ID, ensurePaseoBot } from "../paseo/gatekeeper.ts";
 import { readScreenLocked } from "../paseo/screen-lock.ts";
 import { createSecretsRoutes } from "../routes/secrets.ts";
 import type { Store } from "../store.ts";
@@ -11,7 +11,7 @@ import { createSecretsService } from "./service.ts";
 export interface SecretsHost {
   vault: Pick<VaultStore, "listSecrets" | "secret" | "saveSecret" | "updateSecret" | "removeSecret" | "markUsed">;
   dataDir: string;
-  approvals: Pick<ExternalApprovals, "open" | "close">;
+  approvals: Pick<ExternalApprovals, "open" | "close" | "dismissStale">;
   store: Pick<Store, "bot" | "createBot">;
   notify(notification: Notification | null): void;
   /** Writes one line of what was allowed without asking into the Inbox as an already read line. */
@@ -23,6 +23,9 @@ export interface SecretsHost {
 
 /** The `omb secrets` service, and the route handler the server registers for it. */
 export function createSecrets(host: SecretsHost) {
+  // A card an earlier run left open can never be answered; without the Paseo bridge nothing else closes it.
+  const existing = host.store.bot(PASEO_BOT_ID);
+  if (existing) host.approvals.dismissStale(existing.threadId);
   const service = createSecretsService({
     vault: host.vault,
     dataDir: host.dataDir,

@@ -49,6 +49,9 @@ export function parseTtl(raw: unknown): number | null {
 
 const CONTROL = /[\p{Cc}\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/u;
 
+/** True when the text holds a control, zero-width or direction character, which could disguise what a card shows. */
+export const hasControl = (value: string): boolean => CONTROL.test(value);
+
 /** Free text from a caller, kept to one short line of printable characters. */
 export function cleanText(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;

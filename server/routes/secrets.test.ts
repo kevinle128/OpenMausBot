@@ -239,10 +239,32 @@ describe("the person's routes", () => {
   it("answers a bad grant with exit 2", async () => {
     const admin = mint(["admin", "client"]);
     const grant = (extra: Record<string, unknown>) => call(admin, "POST", "/api/secrets/admin/grant", { ref: "API_KEY", fingerprint: FP, state: "allow", ...extra });
-    for (const bad of [{ state: "maybe" }, { ttl: "soon" }, { ttl: "1h", persist: true }, { state: "block", persist: true }, { allowHosts: ["a b"] }, { allowHosts: ["a.com"], exec: { path: "/bin/x", hash: HASH, env: "T" } }, { exec: "x" }]) {
+    for (const bad of [{ state: "maybe" }, { ttl: "soon" }, { ttl: "1h", persist: true }, { state: "block", persist: true }, { allowHosts: ["a b"] }, { allowHosts: ["a.com"], exec: { path: "/bin/x", hash: HASH, env: "T" } }, { exec: "x" },
+      { allowHosts: "api.example.com" }, { allowHosts: [123] }, { allowHosts: [] }, { ttl: 3600 }, { purpose: 5 }, { project: ["site"] }, { persist: "yes" }, { agentLabel: 1 }]) {
       expect((await grant(bad)).body, JSON.stringify(bad)).toMatchObject({ exit_code: 2 });
     }
+    expect((await call(admin, "GET", "/api/secrets/admin/grants")).body.data).toEqual([]);
     expect((await grant({ ttl: "1h", allowHosts: ["API.example.com."] })).body.data).toMatchObject({ allowHosts: ["api.example.com"] });
+  });
+
+  it("answers a mistyped revoke or approve with exit 2 and changes nothing", async () => {
+    const admin = mint(["admin", "client"]);
+    await call(admin, "POST", "/api/secrets/admin/grant", { ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "block" });
+    for (const bad of [{ exec: { path: "/usr/bin/curl", var: "TOKEN" } }, { exec: "x" }, { purpose: 1 }, { all: "yes" }]) {
+      expect((await call(admin, "POST", "/api/secrets/admin/revoke", { fingerprint: FP, ref: "API_KEY", purpose: "deploy", ...bad })).body, JSON.stringify(bad)).toMatchObject({ exit_code: 2 });
+    }
+    expect((await call(admin, "GET", "/api/secrets/admin/grants")).body.data).toHaveLength(1);
+    await call(mint(["secrets"]), "POST", "/api/secrets/request", ask({ ref: "CARD_KEY" }));
+    expect((await call(admin, "POST", "/api/secrets/admin/approve", { id: 123, state: "persist" })).body).toMatchObject({ exit_code: 2 });
+    expect((await call(admin, "GET", "/api/secrets/admin/approve")).body.data.requests).toHaveLength(1);
+  });
+
+  it("keeps the grants of the admin audit to the ref asked for", async () => {
+    const admin = mint(["admin", "client"]);
+    await call(admin, "POST", "/api/secrets/admin/grant", { ref: "API_KEY", fingerprint: FP, state: "allow" });
+    await call(admin, "POST", "/api/secrets/admin/grant", { ref: "CARD_KEY", fingerprint: FP, state: "allow" });
+    const audit = await call(admin, "GET", "/api/secrets/admin/audit?ref=CARD_KEY");
+    expect(audit.body.data.grants.map((grant: { ref: string }) => grant.ref)).toEqual(["CARD_KEY"]);
   });
 });
 
