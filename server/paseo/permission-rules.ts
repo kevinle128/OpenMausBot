@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import type { PaseoPathInspection, PaseoPermissionRequest } from "./connection.ts";
 import { gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { READ_ONLY_RULE, readOnlyCommand } from "./read-only-commands.ts";
@@ -122,8 +120,10 @@ async function inspect(context: PermissionContext, filePath: string): Promise<Pa
   }
 }
 
-/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. */
+/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. A `..` step cannot
+ * be told: the check folds it away by name, while the shell first follows a link named by the step before it. */
 async function literalExists(context: PermissionContext, filePath: string): Promise<boolean> {
+  if (filePath.split(/[\\/]/).includes("..")) return true;
   const found = await inspect(context, filePath);
   return found === null || found.exists;
 }
@@ -301,7 +301,11 @@ async function classifyCommand(command: string, context: PermissionContext): Pro
     cwd: context.cwd,
     gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
     // The shell opens the name in the directory a leading `cd` moved to; an unknown directory cannot be checked.
-    approvedExists: (dir, argument) => (dir ? literalExists(context, resolve(dir, argument)) : true),
+    // The name is joined as text, so no `..` in it is folded away before the check.
+    approvedExists: (dir, argument) => {
+      if (!dir) return true;
+      return literalExists(context, dir === context.cwd ? argument : `${dir.replace(/\/+$/, "")}/${argument}`);
+    },
     hazard: () => {
       if (context.hazard) context.hazard.hit = true;
     },

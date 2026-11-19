@@ -450,6 +450,21 @@ describe("classifyPermission: read-only commands", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("refuses an APPROVED: argument with a .. step, which the shell may read through a linked folder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-ro-"));
+    try {
+      mkdirSync(join(dir, "outside", "nested"), { recursive: true });
+      writeFileSync(join(dir, "outside", "secret"), "s");
+      mkdirSync(join(dir, "sub"));
+      symlinkSync(join(dir, "outside", "nested"), join(dir, "sub", "APPROVED:up"));
+      const real: PermissionContext = { cwd: dir, inspectPath: inspectOnThisDisk, gitConfigSafe: () => true };
+      expect(await classifyPermission(shell("cd sub && cat APPROVED:up/../secret"), real)).toMatchObject({ verdict: "ask", hazard: true });
+      expect(await classifyPermission(shell("cat APPROVED:up/../secret"), real)).toMatchObject({ verdict: "ask", hazard: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("classifyPermission: read-only command bypasses", () => {
