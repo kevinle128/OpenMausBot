@@ -60,6 +60,8 @@ export interface PaseoClientPort {
   };
   onAgentAttentionRequired(handler: (notification: AgentAttentionRequiredNotification) => void): () => void;
   respondToPermission(agentId: string, requestId: string, response: PaseoPermissionResponse): Promise<void>;
+  /** Absent from a client that predates the daemon request `fs.path.inspect.request`. */
+  inspectPath?(cwd: string, path: string, options?: { timeout?: number }): Promise<PaseoPathInspection>;
   /** Tests that do not need them leave these out. */
   sendAgentMessage?(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
   fetchAgentTimeline?(agentId: string, options?: { direction?: "tail" | "after"; limit?: number; projection?: "projected" }): Promise<{
@@ -68,6 +70,14 @@ export interface PaseoClientPort {
 }
 
 export type PaseoPermissionResponse = PaseoAgentPermissionResponse;
+
+/** What the daemon reports about a path on its machine, from `lstat` on the path itself: a link is a `symlink`, never its target. */
+export interface PaseoPathInspection {
+  exists: boolean;
+  kind: "file" | "directory" | "symlink" | "other" | null;
+  size: number | null;
+  error: string | null;
+}
 
 export interface PaseoConnectionOptions {
   url?: string;
@@ -79,7 +89,11 @@ export interface PaseoConnectionOptions {
   log?: (message: string) => void;
   /** Replaced by tests. */
   now?: () => number;
+  /** How long a path inspection waits for the daemon. */
+  inspectTimeoutMs?: number;
 }
+
+export const INSPECT_PATH_TIMEOUT_MS = 2_000;
 
 /** How long a request we answered stays muted if the daemon still lists it: a later agent update can carry it again
  * before the daemon has dropped it, and reporting it would open a second card for an answered request. */
@@ -164,6 +178,26 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
     if (this.sentByUs.size > 500) this.sentByUs.clear();
     this.sentByUs.add(text);
     await client.sendAgentMessage(agentId, text);
+  }
+
+  /** What the daemon, on the machine the agent works on, says is at `path` (relative to `cwd`). Rejects when the daemon is not
+   * connected, does not know the request, does not answer in time or fails: the caller then takes nothing for granted. */
+  async inspectPath(cwd: string, path: string): Promise<PaseoPathInspection> {
+    const client = this.client;
+    if (!client || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    if (!client.inspectPath) throw new Error("The Paseo client cannot inspect a path");
+    const timeout = this.options.inspectTimeoutMs ?? INSPECT_PATH_TIMEOUT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        client.inspectPath(cwd, path, { timeout }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("The Paseo daemon did not answer a path inspection")), timeout);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** The shell commands among the agent's last tool calls. */

@@ -8,8 +8,9 @@ export interface ReadOnlyHooks {
   cwd: string | undefined;
   /** True when no git setting visible from this directory makes a read run another program. */
   gitConfigSafe(dir: string | undefined): boolean;
-  /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix. */
-  approvedExists(argument: string): boolean;
+  /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix, in `dir` (the directory a
+   * leading `cd` moved to), or when that cannot be told. `dir` is undefined when the directory is unknown. */
+  approvedExists(dir: string | undefined, argument: string): boolean | Promise<boolean>;
   /** Called when the line is refused for a hidden hazard (unsafe git setting or hook, CDPATH, a real file named `APPROVED:…`) and not for what it says. */
   hazard(): void;
 }
@@ -94,12 +95,14 @@ const PROGRAMS: ReadonlyMap<string, Check> = new Map(Object.entries({
  * so that no file can turn into an option when the shell expands it. */
 const wordIsPlain = (word: ShellWord): boolean => !word.brace && (!word.glob || !/^[-*?[]/.test(word.text));
 
-function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: string | undefined): boolean {
+async function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: string | undefined): Promise<boolean> {
   if (!tokens.every(wordIsPlain)) return false;
   const texts = tokens.map((token) => token.text);
-  if (texts.some((arg) => arg.startsWith(APPROVED) && hooks.approvedExists(arg))) {
-    hooks.hazard();
-    return false;
+  for (const arg of texts) {
+    if (arg.startsWith(APPROVED) && (await hooks.approvedExists(dir, arg))) {
+      hooks.hazard();
+      return false;
+    }
   }
   const [tool, ...args] = texts as [string, ...string[]];
   const check = PROGRAMS.get(tool);
@@ -114,9 +117,12 @@ function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: string |
   return true;
 }
 
-function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks, dir: string | undefined): boolean {
+async function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks, dir: string | undefined): Promise<boolean> {
   const steps = segment.split("|").map((part) => shellWords(part));
-  return steps.every((tokens) => Boolean(tokens?.length) && stepIsReadOnly(tokens!, hooks, dir));
+  for (const tokens of steps) {
+    if (!tokens?.length || !(await stepIsReadOnly(tokens, hooks, dir))) return false;
+  }
+  return true;
 }
 
 /**
@@ -124,7 +130,7 @@ function pipelineIsReadOnly(segment: string, hooks: ReadOnlyHooks, dir: string |
  * Semicolons, newlines, redirects, substitutions, `||` and background jobs are refused, and so is any option that writes a
  * file or runs another program.
  */
-export function readOnlyCommand(command: string, hooks: ReadOnlyHooks): boolean {
+export async function readOnlyCommand(command: string, hooks: ReadOnlyHooks): Promise<boolean> {
   // Only a space and a tab are white space here; a line feed, a vertical tab, a no-break space and the like are refused.
   if (/[;]|[^\S \t]/.test(command)) return false;
   const segments = command.split("&&");
@@ -143,5 +149,8 @@ export function readOnlyCommand(command: string, hooks: ReadOnlyHooks): boolean 
     // A `~` or a relative path with no known start leaves the directory unknown, which git steps refuse.
     dir = target.startsWith("~") || (!target.startsWith("/") && !hooks.cwd) ? undefined : resolve(hooks.cwd ?? "/", target);
   }
-  return segments.slice(first).every((segment) => pipelineIsReadOnly(segment, hooks, dir));
+  for (const segment of segments.slice(first)) {
+    if (!(await pipelineIsReadOnly(segment, hooks, dir))) return false;
+  }
+  return true;
 }

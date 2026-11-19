@@ -1,7 +1,4 @@
-import { lstatSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
-
-import type { PaseoPermissionRequest } from "./connection.ts";
+import type { PaseoPathInspection, PaseoPermissionRequest } from "./connection.ts";
 import { gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { READ_ONLY_RULE, readOnlyCommand } from "./read-only-commands.ts";
 import { words } from "./shell-words.ts";
@@ -20,20 +17,27 @@ export interface PermissionDecision {
 /** What a request wants to do, as far as the rules can read it. */
 export type PermissionTarget = { kind: "command"; command: string } | { kind: "file"; filePath: string };
 
-/** What the rules need from the machine: whether a path is a plain file whose real name is still an env file. */
+/** What the rules ask of the machine the agent works on: what a path is, without following a link. It rejects or answers
+ * with an `error` when it cannot tell. */
+export type PathInspector = (cwd: string, filePath: string) => Promise<PaseoPathInspection>;
+
+/** What the rules need from the machine. Every file check goes through `inspectPath`; the agent's files are never read from
+ * the disk of the machine OpenMausBot runs on. */
 export interface PermissionContext {
-  /** The agent's working directory, for a path that is not absolute. */
+  /** The agent's working directory, for a path that is not absolute. Without it no file check can be made. */
   cwd?: string;
-  /** Replaced by tests that do not want a real file system. */
-  envFile?: (cwd: string | undefined, filePath: string) => boolean;
+  /** What is at a path on the agent's machine. Without it, or when it fails, no file is taken for a plain file. */
+  inspectPath?: PathInspector;
+  /** Replaced by tests. Whether a path is a plain file whose name is an env file name. */
+  envFile?: (cwd: string | undefined, filePath: string) => boolean | Promise<boolean>;
   /** Replaced by tests. Whether a path is an existing regular file, whatever its name. */
+  regularFile?: (cwd: string | undefined, filePath: string) => boolean | Promise<boolean>;
   /** Set by `classifyPermission` while it works; not for callers. */
   hazard?: { hit: boolean };
   /** Replaced by tests. Whether no git setting in this directory makes a read run another program. */
   gitConfigSafe?: (dir: string | undefined) => boolean;
   /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
   ownsRef?: (ref: string) => boolean;
-  regularFile?: (cwd: string | undefined, filePath: string) => boolean;
 }
 
 /** The hook of AgentKit puts this before a path it let the person approve once. */
@@ -105,39 +109,38 @@ export function isEnvFilePath(filePath: string): boolean {
   return base === ".env" || /^\.env\..+/.test(base);
 }
 
-/** The real path of a plain file after every link is followed. A pipe, a directory and a missing file give null. */
-function realRegularFile(cwd: string | undefined, filePath: string): string | null {
-  if (!isAbsolute(filePath) && !cwd) return null;
+/** What is at the path, or null when that cannot be told: no inspector, no working directory, a refusal, an error or a timeout. */
+async function inspect(context: PermissionContext, filePath: string): Promise<PaseoPathInspection | null> {
+  if (!context.inspectPath || !context.cwd) return null;
   try {
-    const real = realpathSync(resolve(cwd ?? "/", filePath));
-    return statSync(real).isFile() ? real : null;
+    const answer = await context.inspectPath(context.cwd, filePath);
+    return answer.error ? null : answer;
   } catch {
     return null;
   }
 }
 
-/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. */
-function literalExists(cwd: string | undefined, filePath: string): boolean {
-  if (!isAbsolute(filePath) && !cwd) return true;
-  try {
-    lstatSync(resolve(cwd ?? "/", filePath));
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ENOENT";
-  }
+/** True when anything (a file, a link, a pipe) is named exactly like this path, or when that cannot be told. A `..` step cannot
+ * be told: the check folds it away by name, while the shell first follows a link named by the step before it. */
+async function literalExists(context: PermissionContext, filePath: string): Promise<boolean> {
+  if (filePath.split(/[\\/]/).includes("..")) return true;
+  const found = await inspect(context, filePath);
+  return found === null || found.exists;
 }
 
-/** True for an existing regular file, whatever its name. */
-export function isRegularFile(cwd: string | undefined, filePath: string): boolean {
-  return realRegularFile(cwd, filePath) !== null;
+/** True for an existing regular file, whatever its name. A link is not one: the answer describes the link itself. */
+async function isPlainFile(context: PermissionContext, filePath: string): Promise<boolean> {
+  const found = await inspect(context, filePath);
+  return found !== null && found.exists && found.kind === "file";
 }
 
-/** True for a plain file whose real path, after every link is followed, is still named like an env file. A link to
- * a file with another name, a pipe, a directory and a missing file are all refused. Any place on disk is fine. */
-export function isRealEnvFile(cwd: string | undefined, filePath: string): boolean {
-  const real = realRegularFile(cwd, filePath);
-  return real !== null && isEnvFilePath(real);
-}
+export const isRegularFile = (context: PermissionContext, filePath: string): boolean | Promise<boolean> =>
+  context.regularFile ? context.regularFile(context.cwd, filePath) : isPlainFile(context, filePath);
+
+/** True for a plain file named like an env file. The name is checked by the caller; a link is refused, so the real name is
+ * the name given. */
+const isEnvFile = (context: PermissionContext, filePath: string): boolean | Promise<boolean> =>
+  context.envFile ? context.envFile(context.cwd, filePath) : isPlainFile(context, filePath);
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -167,7 +170,7 @@ export function permissionTarget(request: Pick<PaseoPermissionRequest, "detail" 
 
 type Step = { kind: "allow"; rule: string } | { kind: "filter" } | { kind: "ask"; rule: string };
 
-function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionContext): boolean {
+async function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionContext): Promise<boolean> {
   const safe = SAFE_FLAGS[tool]!;
   const operands: string[] = [];
   for (const arg of args) {
@@ -178,20 +181,21 @@ function readsOnlyEnvFiles(tool: string, args: string[], context: PermissionCont
     }
   }
   const files = tool === "grep" || tool === "rg" ? operands.slice(1) : operands;
-  const envFile = context.envFile ?? isRealEnvFile;
-  const regularFile = context.regularFile ?? isRegularFile;
+  if (files.length === 0) return false;
   // A path the person approved once with the hook of AgentKit may be any regular file; every other path must be an env file.
-  return files.length > 0 && files.every((file) => {
+  for (const file of files) {
     // The shell opens the literal argument, so a file or link really named like that must not slip through the prefix.
     if (file.startsWith(APPROVED_PREFIX)) {
-      if (literalExists(context.cwd, file)) {
+      if (await literalExists(context, file)) {
         if (context.hazard) context.hazard.hit = true;
         return false;
       }
-      return regularFile(context.cwd, file.slice(APPROVED_PREFIX.length));
+      if (!(await isRegularFile(context, file.slice(APPROVED_PREFIX.length)))) return false;
+    } else if (!isEnvFilePath(file) || !(await isEnvFile(context, file))) {
+      return false;
     }
-    return isEnvFilePath(file) && envFile(context.cwd, file);
-  });
+  }
+  return true;
 }
 
 /** True when every flag is a common one or a narrowing flag of the subcommand, and the plain words fit. */
@@ -266,7 +270,7 @@ function akRunIsOwned(args: string[], context: PermissionContext): boolean {
 }
 
 /** One command with no pipe or separator. */
-function classifyStep(tokens: string[], context: PermissionContext): Step {
+async function classifyStep(tokens: string[], context: PermissionContext): Promise<Step> {
   const [tool, ...args] = tokens as [string, ...string[]];
   if (tool === "ak" && args[0] === "secrets") {
     const sub = args[1] ?? "";
@@ -276,7 +280,7 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
     if (sub === "run") return akRunIsOwned(args.slice(2), context) ? { kind: "allow", rule: RUN_RULE } : { kind: "ask", rule: "ak-secrets-run" };
     return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
   }
-  if (ENV_FILE_READERS.has(tool) && readsOnlyEnvFiles(tool, args, context)) {
+  if (ENV_FILE_READERS.has(tool) && (await readsOnlyEnvFiles(tool, args, context))) {
     return { kind: "allow", rule: args.some((arg) => arg.startsWith(APPROVED_PREFIX)) ? "approved-file-read-command" : "env-file-read-command" };
   }
   if (isPipeFilter(tool, args)) return { kind: "filter" };
@@ -289,14 +293,19 @@ function classifyStep(tokens: string[], context: PermissionContext): Step {
  * every step is an env-file read, a read-only `ak` step or a pipe filter after a pipe. Anything else is `ask`: the gatekeeper
  * then lets Jev Guard judge it, except an `ask` with `hazard` set, which only the person may allow.
  */
-function classifyCommand(command: string, context: PermissionContext): PermissionDecision {
-  const strict = classifyStrictCommand(command, context);
+async function classifyCommand(command: string, context: PermissionContext): Promise<PermissionDecision> {
+  const strict = await classifyStrictCommand(command, context);
   if (strict.verdict !== "ask") return strict;
   // A line with an `ak` step keeps the path above: it is never read-only here.
-  const readOnly = readOnlyCommand(command, {
+  const readOnly = await readOnlyCommand(command, {
     cwd: context.cwd,
     gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
-    approvedExists: (argument) => literalExists(context.cwd, argument),
+    // The shell opens the name in the directory a leading `cd` moved to; an unknown directory cannot be checked.
+    // The name is joined as text, so no `..` in it is folded away before the check.
+    approvedExists: (dir, argument) => {
+      if (!dir) return true;
+      return literalExists(context, dir === context.cwd ? argument : `${dir.replace(/\/+$/, "")}/${argument}`);
+    },
     hazard: () => {
       if (context.hazard) context.hazard.hit = true;
     },
@@ -304,7 +313,7 @@ function classifyCommand(command: string, context: PermissionContext): Permissio
   return readOnly ? { verdict: "allow", rule: READ_ONLY_RULE } : strict;
 }
 
-function classifyStrictCommand(command: string, context: PermissionContext): PermissionDecision {
+async function classifyStrictCommand(command: string, context: PermissionContext): Promise<PermissionDecision> {
   if (SHELL_SYNTAX.test(command)) return { verdict: "ask", rule: "shell-syntax" };
   const parts = command.split(SEPARATORS);
   const steps: Array<{ tokens: string[] | null; afterPipe: boolean }> = [];
@@ -313,11 +322,11 @@ function classifyStrictCommand(command: string, context: PermissionContext): Per
   }
   if (steps.some((step) => !step.tokens?.length)) return { verdict: "ask", rule: "unparseable-command" };
   if (steps.length === 1) {
-    const step = classifyStep(steps[0]!.tokens!, context);
+    const step = await classifyStep(steps[0]!.tokens!, context);
     return step.kind === "allow" ? { verdict: "allow", rule: step.rule } : { verdict: "ask", rule: step.kind === "ask" ? step.rule : "other-command" };
   }
   for (const { tokens, afterPipe } of steps) {
-    const step = classifyStep(tokens!, context);
+    const step = await classifyStep(tokens!, context);
     // A run starts a program with a value in its environment: it is never one step of a longer line.
     if ((step.kind === "allow" && step.rule !== RUN_RULE) || (step.kind === "filter" && afterPipe)) continue;
     return { verdict: "ask", rule: "compound-command" };
@@ -339,20 +348,21 @@ export function akSecretsRequestRef(command: string): string | null {
   return null;
 }
 
-export function classifyPermission(
+export async function classifyPermission(
   request: Pick<PaseoPermissionRequest, "kind" | "detail" | "input" | "name">,
   context: PermissionContext = {},
-): PermissionDecision {
+): Promise<PermissionDecision> {
   if (request.kind !== "tool") return { verdict: "ask", rule: "not-a-tool-request" };
   const target = permissionTarget(request);
   if (!target) return { verdict: "ask", rule: "unreadable-request" };
   if (target.kind === "file") {
-    const envFile = context.envFile ?? isRealEnvFile;
-    return isEnvFilePath(target.filePath) && envFile(context.cwd, target.filePath)
+    if (!isEnvFilePath(target.filePath)) return { verdict: "ask", rule: "other-file" };
+    // An env file name that is not a plain file there (a link, a pipe, a daemon that cannot tell) is for the person alone.
+    return (await isEnvFile(context, target.filePath))
       ? { verdict: "allow", rule: "env-file-read" }
-      : { verdict: "ask", rule: "other-file" };
+      : { verdict: "ask", rule: "other-file", hazard: true };
   }
   const hazard = { hit: false };
-  const decision = classifyCommand(target.command, { ...context, hazard });
+  const decision = await classifyCommand(target.command, { ...context, hazard });
   return decision.verdict === "ask" && hazard.hit ? { ...decision, hazard: true } : decision;
 }

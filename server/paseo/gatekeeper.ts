@@ -7,7 +7,7 @@ import type { PaseoConnection, PaseoPermissionRequested } from "./connection.ts"
 import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "./auto-approval.ts";
 import { approvingOption, createJevGuard, scoresLine, type AgentContext, type GuardOutcome } from "./jev-guard.ts";
 import { classifyPermission, permissionTarget } from "./permission-rules.ts";
-import { APPROVE_ONCE, hookReadQuestion, questionAnswer, readQuestions, type PaseoQuestion } from "./question-rules.ts";
+import { APPROVE_ONCE, hookReadQuestion, hookReadShape, questionAnswer, readQuestions, type PaseoQuestion } from "./question-rules.ts";
 
 export const PASEO_BOT_ID = "paseo-gatekeeper";
 const PASEO_BOT_NAME = "Paseo";
@@ -32,7 +32,7 @@ export function ensurePaseoBot(store: Pick<Store, "bot" | "createBot">): BotReco
 type DeciderPort = Pick<Decider, "ask">;
 
 export interface PaseoGatekeeperDeps {
-  connection: Pick<PaseoConnection, "on" | "off" | "respondToPermission">;
+  connection: Pick<PaseoConnection, "on" | "off" | "respondToPermission" | "inspectPath">;
   store: Pick<Store, "bot" | "createBot" | "messagesFor" | "patchMessage" | "appendMessage">;
   approvals: ExternalApprovals;
   decider: DeciderPort;
@@ -164,8 +164,14 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
       const target = permissionTarget(request);
       if (target?.kind === "command") deps.origins?.note(target.command, { agentId, agent: describe(event).label, cwd: agent.cwd });
       // The privacy hook asks before an agent reads a file; that one question is answered here, every other one is not.
-      const hookRead = hookReadQuestion(request, { cwd: agent.cwd });
-      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" } : classifyPermission(request, { cwd: agent.cwd, ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) });
+      // The agent's files are on the agent's machine, so every file check asks the daemon there.
+      const rules = { cwd: agent.cwd, inspectPath: (cwd: string, path: string) => connection.inspectPath(cwd, path), ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) };
+      const hookRead = await hookReadQuestion(request, rules);
+      // A hook read question whose file is not a plain file there (a link, a missing path, a daemon that cannot tell) is for the
+      // person alone: Jev Guard would pick "Yes, approve once" without seeing what is at the path.
+      const decision = hookRead ? { verdict: "allow" as const, rule: "hook-read-question" }
+        : hookReadShape(request) ? { verdict: "ask" as const, rule: "hook-read-unchecked", hazard: true as const }
+        : await classifyPermission(request, rules);
       let allowed = decision.verdict === "allow";
       let rule = decision.rule;
       let verdict: GuardOutcome | null = null;

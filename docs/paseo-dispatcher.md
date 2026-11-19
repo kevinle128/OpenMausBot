@@ -8,7 +8,17 @@ every other Paseo agent; the Dispatcher never answers them.
 
 The gatekeeper also handles the questions an agent asks. It answers "Yes,
 approve once" itself only for the privacy hook's question to read a file (one
-question, the read wording, a path that is a regular file). Every other question
+question, the read wording, a path that is a regular file). Every file check
+(that one, an env file read, an `APPROVED:` read) asks the Paseo daemon on the
+agent's machine through `fs.path.inspect.request`, which runs `lstat` inside the
+agent's working directory, so it also holds when OpenMausBot runs on another
+machine than the agent. Only an answer of `exists` with kind `file` counts: a
+link, a directory, a missing path, a path outside the working directory, an
+error, a timeout (2 seconds) and a daemon that does not know the request all
+fail the check: the question and a Read of an env file become a card. The daemon
+needs a Paseo build with that request, and the `@getpaseo/client` that
+OpenMausBot bundles needs the matching `inspectPath` method.
+Every other question
 becomes a card with one button for each answer, or with an **Answer in Paseo**
 button when it has several questions or lets the person pick more than one.
 It also allows `ak secrets run` (a single command with known flags whose `--env

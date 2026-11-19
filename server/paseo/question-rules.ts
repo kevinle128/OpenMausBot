@@ -49,10 +49,16 @@ export function questionAnswer(request: Pick<PaseoPermissionRequest, "input">, q
 /** The file a privacy hook question asks to read, when the question may be answered "Yes, approve once" without the
  * person: one question, the read wording of the hook, that option offered, and a path that is a regular file. A write
  * question, any other question, and a path that is missing or not a plain file are not. */
-export function hookReadQuestion(
+export async function hookReadQuestion(
   request: Pick<PaseoPermissionRequest, "kind" | "name" | "input">,
   context: PermissionContext = {},
-): { filePath: string; question: string } | null {
+): Promise<{ filePath: string; question: string } | null> {
+  const asked = hookReadShape(request);
+  return asked && (await isRegularFile(context, asked.filePath)) ? asked : null;
+}
+
+/** The file a privacy hook read question names, whatever is at that path. Null for any other question. */
+export function hookReadShape(request: Pick<PaseoPermissionRequest, "kind" | "name" | "input">): { filePath: string; question: string } | null {
   if (request.kind !== "question" || !ASK_USER_QUESTION.test(request.name)) return null;
   const questions = readQuestions(request);
   const only = questions?.length === 1 ? questions[0]! : null;
@@ -61,6 +67,5 @@ export function hookReadQuestion(
   if (!match) return null;
   const [, name, filePath] = match as unknown as [string, string, string];
   if (filePath.split(/[\\/]/).pop() !== name) return null;
-  const regularFile = context.regularFile ?? isRegularFile;
-  return regularFile(context.cwd, filePath) ? { filePath, question: only.question } : null;
+  return { filePath, question: only.question };
 }
