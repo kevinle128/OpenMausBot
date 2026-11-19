@@ -1,0 +1,68 @@
+diff --git a/dist/messages.js b/dist/messages.js
+index b38474a7234c4c283ef3e39e9ad3fba923a43cd7..0a66393603f719eac63fa90fb9551d329c27211a 100644
+--- a/dist/messages.js
++++ b/dist/messages.js
+@@ -2631,6 +2631,12 @@ export const FileEntryDuplicateRequestSchema = z.object({
+     path: z.string(),
+     requestId: z.string(),
+ });
++export const FsPathInspectRequestSchema = z.object({
++    type: z.literal("fs.path.inspect.request"),
++    cwd: z.string(),
++    path: z.string(),
++    requestId: z.string(),
++});
+ export const FileEntryDeleteRequestSchema = z.object({
+     type: z.literal("fs.entry.delete.request"),
+     cwd: z.string(),
+@@ -3135,6 +3141,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+     FileEntryRenameRequestSchema,
+     FileEntryDuplicateRequestSchema,
+     FileEntryDeleteRequestSchema,
++    FsPathInspectRequestSchema,
+     ProjectIconRequestSchema,
+     ProjectIconGetRequestSchema,
+     FileDownloadTokenRequestSchema,
+@@ -5745,6 +5752,18 @@ export const FileEntryDuplicateResponseSchema = z.object({
+         requestId: z.string(),
+     }),
+ });
++export const FsPathInspectResponseSchema = z.object({
++    type: z.literal("fs.path.inspect.response"),
++    payload: z.object({
++        cwd: z.string(),
++        path: z.string(),
++        exists: z.boolean(),
++        kind: z.enum(["file", "directory", "symlink", "other"]).nullable(),
++        size: z.number().nullable(),
++        error: z.string().nullable(),
++        requestId: z.string(),
++    }),
++});
+ export const FileEntryDeleteResponseSchema = z.object({
+     type: z.literal("fs.entry.delete.response"),
+     payload: z.object({
+diff --git a/dist/validation/ws-outbound.js b/dist/validation/ws-outbound.js
+index 1e467c1f65dc01ab4b0dad27f6826d570c48a50f..2cd40554a2e1a1e6fc7c2bf4f41ccd8b1c979176 100644
+--- a/dist/validation/ws-outbound.js
++++ b/dist/validation/ws-outbound.js
+@@ -1,4 +1,5 @@
+ import { ZodRealError } from "zod";
++import { FsPathInspectResponseSchema } from "../messages.js";
+ import { SessionOutboundMessageValidators, WSOutboundEnvelope, } from "../generated/validation/ws-outbound.aot.js";
+ // zod-aot emits runtime JavaScript from the envelope and message schemas but not its TypeScript surface.
+ // Protocol regression tests cover the patched compiler cases behind this boundary.
+@@ -20,6 +21,13 @@ function underMessage(issue) {
+     }
+ }
+ export function validateWSOutboundMessage(input) {
++    // The generated validators predate this message, so it is checked here.
++    if (input?.type === "session" && input.message?.type === "fs.path.inspect.response") {
++        const inspected = FsPathInspectResponseSchema.safeParse(input.message);
++        return inspected.success
++            ? { success: true, data: { ...input, message: inspected.data } }
++            : { success: false, error: new ZodRealError(inspected.error.issues.map(underMessage)) };
++    }
+     const envelope = envelopeValidator.safeParse(input);
+     if (!envelope.success || envelope.data.type !== "session") {
+         return envelope;

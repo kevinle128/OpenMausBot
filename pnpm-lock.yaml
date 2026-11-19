@@ -8,6 +8,14 @@ overrides:
   dompurify: 3.4.17
   fast-uri: 3.1.9
 
+patchedDependencies:
+  '@getpaseo/client@0.16.0-beta.2':
+    hash: f56f6f88500053d668617bbb6324a3dc7ddf133047ed7bcc735e2c2a6cbcaf09
+    path: patches/@getpaseo__client@0.16.0-beta.2.patch
+  '@getpaseo/protocol@0.16.0-beta.2':
+    hash: 685cf8301c5a80ed00619ffb3b9576c1a2b2b72cb4b80f42181f3882f06fe013
+    path: patches/@getpaseo__protocol@0.16.0-beta.2.patch
+
 importers:
 
   .:
@@ -44,7 +52,7 @@ importers:
         version: 5.3.0
       '@getpaseo/client':
         specifier: 0.16.0-beta.2
-        version: 0.16.0-beta.2
+        version: 0.16.0-beta.2(patch_hash=f56f6f88500053d668617bbb6324a3dc7ddf133047ed7bcc735e2c2a6cbcaf09)
       '@hpke/core':
         specifier: 1.9.0
         version: 1.9.0
@@ -6565,9 +6573,9 @@ snapshots:
 
   '@fumari/image-size@0.1.0': {}
 
-  '@getpaseo/client@0.16.0-beta.2':
+  '@getpaseo/client@0.16.0-beta.2(patch_hash=f56f6f88500053d668617bbb6324a3dc7ddf133047ed7bcc735e2c2a6cbcaf09)':
     dependencies:
-      '@getpaseo/protocol': 0.16.0-beta.2
+      '@getpaseo/protocol': 0.16.0-beta.2(patch_hash=685cf8301c5a80ed00619ffb3b9576c1a2b2b72cb4b80f42181f3882f06fe013)
       '@getpaseo/relay': 0.16.0-beta.2
       ws: 8.22.0
       zod: 4.6.7
@@ -6575,7 +6583,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@getpaseo/protocol@0.16.0-beta.2':
+  '@getpaseo/protocol@0.16.0-beta.2(patch_hash=685cf8301c5a80ed00619ffb3b9576c1a2b2b72cb4b80f42181f3882f06fe013)':
     dependencies:
       semver: 7.8.5
       zod: 4.6.7

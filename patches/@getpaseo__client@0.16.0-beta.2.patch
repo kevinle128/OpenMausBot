@@ -1,0 +1,41 @@
+diff --git a/dist/daemon-client.d.ts b/dist/daemon-client.d.ts
+index 964653363fee60146316c59525f54dba7118334c..430dc41395d61b81ee4ff5e8959bde2fbb2fc176 100644
+--- a/dist/daemon-client.d.ts
++++ b/dist/daemon-client.d.ts
+@@ -1307,6 +1307,18 @@ export declare class DaemonClient {
+         cwd: string;
+         path: string;
+     }): Promise<CorrelatedResponsePayload<"fs.entry.delete.response">>;
++    inspectPath(cwd: string, path: string, options?: {
++        requestId?: string;
++        timeout?: number;
++    }): Promise<{
++        cwd: string;
++        path: string;
++        exists: boolean;
++        kind: "file" | "directory" | "symlink" | "other" | null;
++        size: number | null;
++        error: string | null;
++        requestId: string;
++    }>;
+     checkoutDiscardChanges(cwd: string, input: {
+         paths: string[];
+     }): Promise<CorrelatedResponsePayload<"checkout.discard_changes.response">>;
+diff --git a/dist/daemon-client.js b/dist/daemon-client.js
+index 128d79376a9e35daffa2a38113fe57b34812bd4d..392401e02527f4b3ce69631ba3e1d6db55154232 100644
+--- a/dist/daemon-client.js
++++ b/dist/daemon-client.js
+@@ -3850,6 +3850,13 @@ export class DaemonClient {
+             message: { type: "fs.entry.delete.request", ...input },
+         });
+     }
++    async inspectPath(cwd, path, options = {}) {
++        return this.sendNamespacedCorrelatedSessionRequest({
++            requestId: options.requestId,
++            message: { type: "fs.path.inspect.request", cwd, path },
++            timeout: options.timeout,
++        });
++    }
+     async checkoutDiscardChanges(cwd, input) {
+         return this.sendNamespacedCorrelatedSessionRequest({
+             message: { type: "checkout.discard_changes.request", cwd, paths: input.paths },
