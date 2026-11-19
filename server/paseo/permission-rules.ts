@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type { PaseoPathInspection, PaseoPermissionRequest } from "./connection.ts";
 import { gitConfigRunsNoProgram } from "./git-config-check.ts";
 import { READ_ONLY_RULE, readOnlyCommand } from "./read-only-commands.ts";
@@ -298,7 +300,8 @@ async function classifyCommand(command: string, context: PermissionContext): Pro
   const readOnly = await readOnlyCommand(command, {
     cwd: context.cwd,
     gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
-    approvedExists: (argument) => literalExists(context, argument),
+    // The shell opens the name in the directory a leading `cd` moved to; an unknown directory cannot be checked.
+    approvedExists: (dir, argument) => (dir ? literalExists(context, resolve(dir, argument)) : true),
     hazard: () => {
       if (context.hazard) context.hazard.hit = true;
     },
@@ -349,9 +352,11 @@ export async function classifyPermission(
   const target = permissionTarget(request);
   if (!target) return { verdict: "ask", rule: "unreadable-request" };
   if (target.kind === "file") {
-    return isEnvFilePath(target.filePath) && (await isEnvFile(context, target.filePath))
+    if (!isEnvFilePath(target.filePath)) return { verdict: "ask", rule: "other-file" };
+    // An env file name that is not a plain file there (a link, a pipe, a daemon that cannot tell) is for the person alone.
+    return (await isEnvFile(context, target.filePath))
       ? { verdict: "allow", rule: "env-file-read" }
-      : { verdict: "ask", rule: "other-file" };
+      : { verdict: "ask", rule: "other-file", hazard: true };
   }
   const hazard = { hit: false };
   const decision = await classifyCommand(target.command, { ...context, hazard });

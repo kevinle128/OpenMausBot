@@ -8,8 +8,9 @@ export interface ReadOnlyHooks {
   cwd: string | undefined;
   /** True when no git setting visible from this directory makes a read run another program. */
   gitConfigSafe(dir: string | undefined): boolean;
-  /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix. */
-  approvedExists(argument: string): boolean | Promise<boolean>;
+  /** True when a file or link is really named like this argument, which has the `APPROVED:` prefix, in `dir` (the directory a
+   * leading `cd` moved to), or when that cannot be told. `dir` is undefined when the directory is unknown. */
+  approvedExists(dir: string | undefined, argument: string): boolean | Promise<boolean>;
   /** Called when the line is refused for a hidden hazard (unsafe git setting or hook, CDPATH, a real file named `APPROVED:…`) and not for what it says. */
   hazard(): void;
 }
@@ -98,7 +99,7 @@ async function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: st
   if (!tokens.every(wordIsPlain)) return false;
   const texts = tokens.map((token) => token.text);
   for (const arg of texts) {
-    if (arg.startsWith(APPROVED) && (await hooks.approvedExists(arg))) {
+    if (arg.startsWith(APPROVED) && (await hooks.approvedExists(dir, arg))) {
       hooks.hazard();
       return false;
     }

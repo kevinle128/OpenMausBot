@@ -710,11 +710,19 @@ describe("classifyPermission: hazard flag", () => {
     const dir = mkdtempSync(join(tmpdir(), "omb-hazard-"));
     try {
       writeFileSync(join(dir, "APPROVED:x"), "y");
-      const unsafe: PermissionContext = { cwd: dir, gitConfigSafe: () => false };
+      const unsafe: PermissionContext = { cwd: dir, inspectPath: inspectOnThisDisk, gitConfigSafe: () => false };
       expect((await classifyPermission(shell("git status"), unsafe))).toEqual({ verdict: "ask", rule: "other-command", hazard: true });
       expect((await classifyPermission(shell("cat APPROVED:x"), unsafe))).toMatchObject({ verdict: "ask", hazard: true });
       expect((await classifyPermission(shell("rm -rf build"), unsafe))).toEqual({ verdict: "ask", rule: "other-command" });
       expect((await classifyPermission(shell("git status"), { cwd: dir, gitConfigSafe: () => true }))).toEqual({ verdict: "allow", rule: "read-only-command" });
+      const safe: PermissionContext = { cwd: dir, inspectPath: inspectOnThisDisk, gitConfigSafe: () => true };
+      expect((await classifyPermission(shell("cat APPROVED:missing"), safe))).not.toHaveProperty("hazard");
+      // A leading cd moves where the shell opens the literal name.
+      mkdirSync(join(dir, "sub"));
+      writeFileSync(join(dir, "sub", "APPROVED:y"), "y");
+      expect((await classifyPermission(shell("cat APPROVED:y"), safe))).not.toHaveProperty("hazard");
+      expect((await classifyPermission(shell("cd sub && cat APPROVED:y"), safe))).toMatchObject({ verdict: "ask", hazard: true });
+      expect((await classifyPermission(shell("cd ~ && cat APPROVED:y"), safe))).toMatchObject({ verdict: "ask", hazard: true });
       const before = process.env.CDPATH;
       process.env.CDPATH = "/elsewhere";
       try {

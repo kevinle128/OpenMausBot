@@ -78,7 +78,7 @@ describe("file checks on the agent's machine", () => {
     const ctx = () => context(outcome);
 
     it("does not allow an env file read", async () => {
-      expect(await classifyPermission(read(".env"), ctx())).toEqual({ verdict: "ask", rule: "other-file" });
+      expect(await classifyPermission(read(".env"), ctx())).toEqual({ verdict: "ask", rule: "other-file", hazard: true });
       expect((await classifyPermission(shell("cat .env"), ctx())).rule).not.toBe(RULES.envCommand);
     });
 
@@ -94,7 +94,7 @@ describe("file checks on the agent's machine", () => {
   describe("when the file checks cannot be made at all", () => {
     it("allows nothing without an inspector", async () => {
       const bare: PermissionContext = { cwd: CWD };
-      expect(await classifyPermission(read(".env"), bare)).toEqual({ verdict: "ask", rule: "other-file" });
+      expect(await classifyPermission(read(".env"), bare)).toEqual({ verdict: "ask", rule: "other-file", hazard: true });
       expect((await classifyPermission(shell("cat .env"), bare)).rule).not.toBe(RULES.envCommand);
       expect((await classifyPermission(shell("cat APPROVED:a.pem"), bare)).rule).not.toBe(RULES.approved);
       expect(await hookReadQuestion(hookQuestion("/agent/work/a.pem"), bare)).toBeNull();
@@ -103,7 +103,7 @@ describe("file checks on the agent's machine", () => {
     it("allows nothing without the agent's directory, and does not ask the daemon", async () => {
       const inspectPath = vi.fn(async () => answer("file"));
       const noCwd: PermissionContext = { inspectPath };
-      expect(await classifyPermission(read("/agent/work/.env"), noCwd)).toEqual({ verdict: "ask", rule: "other-file" });
+      expect(await classifyPermission(read("/agent/work/.env"), noCwd)).toEqual({ verdict: "ask", rule: "other-file", hazard: true });
       expect(await hookReadQuestion(hookQuestion("/agent/work/a.pem"), noCwd)).toBeNull();
       expect(inspectPath).not.toHaveBeenCalled();
     });

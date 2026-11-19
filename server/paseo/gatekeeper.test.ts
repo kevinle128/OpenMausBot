@@ -334,18 +334,21 @@ describe("Paseo gatekeeper: the privacy hook's read question", () => {
     ["a daemon that does not know the request", unreachable("The Paseo client cannot inspect a path")],
     ["a daemon that refuses the path", async () => ({ exists: false, kind: null, size: null, error: "Access outside of workspace is not allowed" })],
   ])("does not answer a read question when it gets %s: it becomes a card", async (_name, inspectPath) => {
-    const f = fixture(inspectPath ? { inspectPath } : {});
+    // Jev would pick "Yes, approve once"; it is not asked about a path the daemon could not show to be a plain file.
+    const f = fixture({ jev: scored(), ...(inspectPath ? { inspectPath } : {}) });
     ask(f, "r1", hookQuestion(join(workDir, inspectPath ? "server.pem" : "linked.pem")));
     await flush();
+    expect(f.jev).not.toHaveBeenCalled();
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
     expect(f.card()).toBeDefined();
     expect(f.history).toEqual([]);
   });
 
   it("opens a card for an env file read when the daemon cannot say what is there", async () => {
-    const f = fixture({ inspectPath: unreachable("The Paseo daemon did not answer a path inspection") });
+    const f = fixture({ jev: scored(), inspectPath: unreachable("The Paseo daemon did not answer a path inspection") });
     f.connection.emit("permissionRequested", f.request("r1", { type: "read", filePath: join(workDir, ".env") }, { name: "Read" }));
     await flush();
+    expect(f.jev).not.toHaveBeenCalled();
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
     expect(f.card()).toBeDefined();
   });

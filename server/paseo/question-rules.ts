@@ -53,6 +53,12 @@ export async function hookReadQuestion(
   request: Pick<PaseoPermissionRequest, "kind" | "name" | "input">,
   context: PermissionContext = {},
 ): Promise<{ filePath: string; question: string } | null> {
+  const asked = hookReadShape(request);
+  return asked && (await isRegularFile(context, asked.filePath)) ? asked : null;
+}
+
+/** The file a privacy hook read question names, whatever is at that path. Null for any other question. */
+export function hookReadShape(request: Pick<PaseoPermissionRequest, "kind" | "name" | "input">): { filePath: string; question: string } | null {
   if (request.kind !== "question" || !ASK_USER_QUESTION.test(request.name)) return null;
   const questions = readQuestions(request);
   const only = questions?.length === 1 ? questions[0]! : null;
@@ -61,5 +67,5 @@ export async function hookReadQuestion(
   if (!match) return null;
   const [, name, filePath] = match as unknown as [string, string, string];
   if (filePath.split(/[\\/]/).pop() !== name) return null;
-  return (await isRegularFile(context, filePath)) ? { filePath, question: only.question } : null;
+  return { filePath, question: only.question };
 }
