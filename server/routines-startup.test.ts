@@ -120,8 +120,6 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
       PATH: dirname(process.execPath), FAKE_CLAUDE_MODE: "happy",
       OMB_DESKTOP_LAUNCH_ID: "previous-desktop-launch",
     });
-    // The newest due minute is fixed by the restart; a later minute boundary must not move it into the "earlier minutes" count.
-    const restartMinute = Math.floor(Date.now() / 60_000) * 60_000;
     const log = openSync(logPath, "a", 0o600);
     restarted = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
       cwd: fileURLToPath(new URL("..", import.meta.url)), env, stdio: ["ignore", log, log],
@@ -167,7 +165,7 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
     const resumedThread = (await api("GET", `/api/threads/${interruptedBot.threadId}/messages?limit=100`)).messages as Array<{ tool?: { name?: string }; from?: { botId?: string } }>;
     expect(resumedThread.some((message) => message.tool?.name === "Waiting routine's peer replied" && message.from?.botId === orphanPeer.id)).toBe(true);
     expect(resumedThread.some((message) => message.tool?.name?.startsWith("Resumed with Waiting routine's peer results"))).toBe(true);
-    expect(runs.filter(run => run.routineId === cron.id && run.scheduledFor < restartMinute)).toHaveLength(1);
+    expect(runs.filter(run => run.routineId === cron.id && run.scheduledFor < ranFor)).toHaveLength(1);
     const restoredCron = (await api("GET", "/api/routines")).routines.find((routine: { id: string }) => routine.id === cron.id);
     expect(restoredCron.schedule).toEqual(cron.schedule);
     expect(restoredCron.nextRunAt).toBeGreaterThan(Date.now());
