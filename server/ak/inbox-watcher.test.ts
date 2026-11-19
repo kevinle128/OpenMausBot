@@ -686,14 +686,15 @@ describe("requests from other devices", () => {
     expect(t.logs.filter((line) => line.includes("refused to run"))).toHaveLength(1);
   });
 
-  it("ignores a remote request whose id ak would refuse: no card, no answer, one log line", async () => {
+  it("answers a remote request whose id starts with \"-\", and ignores one whose id is not base64url with one log line", async () => {
     const t = setup({ owned: ["API_KEY"] });
-    t.inbox.remote = [remote("--yes", "API_KEY"), remote("a/b", "STRANGER")];
+    t.inbox.remote = [remote("-x3f2a", "API_KEY"), remote("a/b", "STRANGER")];
     await t.watcher.checkNow();
     await t.watcher.checkNow();
-    expect(t.approveRemote).not.toHaveBeenCalled();
-    expect(t.lines).toEqual([]);
-    expect(t.logs.filter((line) => line.includes("id is not a valid id"))).toHaveLength(2);
+    expect(t.approveRemote).toHaveBeenCalledTimes(1);
+    expect(t.approveRemote).toHaveBeenCalledWith(expect.objectContaining({ id: "-x3f2a" }));
+    expect(t.lines.filter((line) => line.card)).toEqual([]);
+    expect(t.logs.filter((line) => line.includes("id is not a valid id"))).toHaveLength(1);
   });
 
   it("names another device when the device name is empty, and reads the ref past an empty one", async () => {

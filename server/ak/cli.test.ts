@@ -77,14 +77,58 @@ describe("ak commands", () => {
     await cli.denyRemote({ id: "3f2a" });
     expect(calls.map((call) => call.args)).toEqual([
       ["secrets", "approvals", "list", "--json", "--no-interactive"],
-      ["secrets", "approvals", "approve", "3f2a", "--ttl=24h", "--json", "--no-interactive"],
-      ["secrets", "approvals", "deny", "3f2a", "--json", "--no-interactive"],
+      ["secrets", "approvals", "approve", "--ttl=24h", "--json", "--no-interactive", "--", "3f2a"],
+      ["secrets", "approvals", "deny", "--json", "--no-interactive", "--", "3f2a"],
     ]);
   });
 
-  it("refuses a request id that would be read as a flag, without running ak", async () => {
+  it("reads the real approvals list item: request_id, agent label and requester device", async () => {
+    const item = {
+      request_id: "bMTgjCYBg7wFZ5W-S8hQlg",
+      ref: "API_KEY",
+      project: "default",
+      agent: "claude",
+      fingerprint: "sha256:" + "a".repeat(64),
+      purpose: "deploy",
+      max_ttl_s: 86400,
+      requester: "Pf89RqzJHzGDTaPNBvemIA",
+      requester_label: null,
+      requester_kind: "human",
+      created_at: "2026-01-01T00:00:00Z",
+      expires_at: "2026-01-01T01:00:00Z",
+    };
+    const [first] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [item, { ...item, requester_label: "MacBook" }] } }) }).run).remoteRequests();
+    expect(first).toMatchObject({ id: "bMTgjCYBg7wFZ5W-S8hQlg", ref: "API_KEY", agentLabel: "claude", device: "Pf89RqzJHzGDTaPNBvemIA", fingerprint: item.fingerprint, purpose: "deploy", project: "default" });
+    expect((await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [{ ...item, requester_label: "MacBook" }] } }) }).run).remoteRequests())[0]?.device).toBe("MacBook");
+  });
+
+  it("takes blank, null and fingerprint values in a remote item as missing", async () => {
+    const item = { request_id: "bMTgjCYBg7wFZ5W-S8hQlg", ref: "API_KEY", agent: "  ", requester: "Pf89RqzJHzGDTaPNBvemIA", requester_label: "  ", id: null, device: "" };
+    const [blank] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [item] } }) }).run).remoteRequests();
+    expect(blank).toMatchObject({ id: "bMTgjCYBg7wFZ5W-S8hQlg", device: "Pf89RqzJHzGDTaPNBvemIA" });
+    expect(blank?.agentLabel).toBeUndefined();
+    expect(blank?.agent).toBeUndefined();
+    const [spaced] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [{ request_id: "x2", ref: "API_KEY", agent: "claude", fingerprint: " ", agentLabel: "" }] } }) }).run).remoteRequests();
+    expect(spaced).toMatchObject({ agent: "claude", agentLabel: "claude" });
+    expect(spaced?.fingerprint).toBeUndefined();
+    const fingerprint = "sha256:" + "b".repeat(64);
+    const [printed] = await createAkCli(recorder({ stdout: JSON.stringify({ data: { approvals: [{ request_id: "x1", ref: "API_KEY", agent: fingerprint }] } }) }).run).remoteRequests();
+    expect(printed?.agentLabel).toBeUndefined();
+  });
+
+  it("passes a request id that starts with \"-\" after \"--\", so ak reads it as the id and never as a flag", async () => {
     const { calls, run } = recorder();
-    const error = await createAkCli(run).denyRemote({ id: "--yes" }).catch((caught) => caught);
+    await createAkCli(run).approveRemote({ id: "-x3f2a", ttl: "24h" });
+    await createAkCli(run).denyRemote({ id: "--yes" });
+    expect(calls.map((call) => call.args)).toEqual([
+      ["secrets", "approvals", "approve", "--ttl=24h", "--json", "--no-interactive", "--", "-x3f2a"],
+      ["secrets", "approvals", "deny", "--json", "--no-interactive", "--", "--yes"],
+    ]);
+  });
+
+  it("refuses a request id that is not base64url, without running ak", async () => {
+    const { calls, run } = recorder();
+    const error = await createAkCli(run).denyRemote({ id: "a/b" }).catch((caught) => caught);
     expect(error).toMatchObject({ kind: "invalid" });
     expect(calls).toEqual([]);
   });

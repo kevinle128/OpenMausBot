@@ -64,8 +64,8 @@ export interface AkPendingRequest {
 }
 
 /**
- * One request from another synced device, from `ak secrets approvals list --json`. The item shape was never seen with a
- * request in it, so every field is optional and read defensively: `id` names the request, the rest mirrors the local inbox.
+ * One request from another synced device, as the watcher reads it. `ak secrets approvals list --json` names the request
+ * `request_id`, the agent label `agent` and the asking device `requester`; `remoteRequest` maps those to the fields below.
  */
 export interface AkRemoteRequest {
   id?: string;
@@ -211,6 +211,28 @@ function requestsIn(data: unknown, onUnknownShape?: (keys: string[]) => void): A
   return [];
 }
 
+/** Maps one item of `ak secrets approvals list --json` to the watcher's fields; an item already in those fields passes through. */
+export function remoteRequest(item: unknown): AkRemoteRequest {
+  if (item === null || typeof item !== "object") return item as AkRemoteRequest;
+  const fields = item as Record<string, unknown>;
+  // A string of only spaces names nothing, so a card never shows an empty agent or device.
+  const text = (value: unknown): string | undefined => (typeof value === "string" && value.trim() !== "" ? value : undefined);
+  const missing = (value: unknown): boolean => text(value) === undefined;
+  const id = text(fields.request_id);
+  // `agent` is a label such as "claude"; a fingerprint there is not a label, and the card shortens the fingerprint itself.
+  const agent = text(fields.agent);
+  const label = agent !== undefined && !agent.startsWith("sha256:") ? agent : undefined;
+  const device = text(fields.requester_label) ?? text(fields.requester);
+  // A blank agent, fingerprint or label is dropped, so the watcher falls through to "an agent" instead of an empty name.
+  const named = Object.fromEntries(Object.entries(fields).filter(([key, value]) => !["agent", "fingerprint", "agentLabel"].includes(key) || !missing(value)));
+  return {
+    ...named,
+    ...(id !== undefined && missing(fields.id) ? { id } : {}),
+    ...(label !== undefined && missing(fields.agentLabel) ? { agentLabel: label } : {}),
+    ...(device !== undefined && missing(fields.device) ? { device } : {}),
+  };
+}
+
 export interface AkCli {
   list(): Promise<AkSecretSummary[]>;
   pendingRequests(): Promise<AkPendingRequest[]>;
@@ -243,19 +265,21 @@ function narrow(scope: RequestScope): string[] {
   return flags;
 }
 
-/** True for an id ak may be given for a request from another device; an id that starts with "-" would be read as a flag. */
-export const isAkRemoteId = (id: string): boolean => /^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(id);
+/** True for an id ak may be given for a request from another device. Ids are base64url, so one may start with "-". */
+export const isAkRemoteId = (id: string): boolean => /^[A-Za-z0-9_-][A-Za-z0-9_.:-]*$/.test(id);
 
-/** The id goes first, before flags, so an id that is not a valid id never reaches ak. */
+/** The id goes last, after "--", so ak reads an id that starts with "-" as the id and never as a flag. */
 function remoteId(id: string): string[] {
   if (!isAkRemoteId(id)) throw new AkError("invalid", null, "The request id is not a valid id");
-  return [id];
+  return ["--", id];
 }
 
 /** Secret values reach `ak` only on stdin (`--value=-`), so they are in no argument list, log or error. */
 export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnknownShape?: (keys: string[]) => void } = {}): AkCli {
   const call = async (args: string[], stdin?: string): Promise<AkRunResult> => {
-    const result = await run([...args, ...COMMON], stdin);
+    // Flags go before an end-of-flags "--", so the id after it stays the last argument.
+    const end = args.indexOf("--");
+    const result = await run(end < 0 ? [...args, ...COMMON] : [...args.slice(0, end), ...COMMON, ...args.slice(end)], stdin);
     if (result.exitCode !== 0) throw akErrorFor(result);
     return result;
   };
@@ -267,10 +291,10 @@ export function createAkCli(run: AkRunner = defaultAkRunner(), options: { onUnkn
       return requestsIn(parseData<unknown>(await call(["secrets", "approve"])), options.onUnknownShape);
     },
     async remoteRequests() {
-      return requestsIn(parseData<unknown>(await call(["secrets", "approvals", "list"])), options.onUnknownShape) as AkRemoteRequest[];
+      return requestsIn(parseData<unknown>(await call(["secrets", "approvals", "list"])), options.onUnknownShape).map(remoteRequest);
     },
     async approveRemote({ id, ttl }) {
-      await call(["secrets", "approvals", "approve", ...remoteId(id), `--ttl=${ttl}`]);
+      await call(["secrets", "approvals", "approve", `--ttl=${ttl}`, ...remoteId(id)]);
     },
     async denyRemote({ id }) {
       await call(["secrets", "approvals", "deny", ...remoteId(id)]);
