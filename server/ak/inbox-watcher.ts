@@ -455,7 +455,7 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
     }
   }
 
-  /** Lists the requests from other devices at most every `remotePollMs`. Throws only when ak refuses to run under an agent; a sync that is off or a failure that lasts is logged once. */
+  /** Lists the requests from other devices at most every `remotePollMs`. Throws when ak refuses to run under an agent or cannot run at all; a sync that is off or a failure that lasts is logged once. */
   async function refreshRemote(): Promise<void> {
     if (!cli.remoteRequests || Date.now() < remoteNextAt) return;
     try {
@@ -467,6 +467,8 @@ export function startInboxWatcher(deps: InboxWatcherDeps): { checkNow(): Promise
         remoteList = [];
         throw error;
       }
+      // ak itself could not run (such as an unreachable SSH host): the local listing would fail the same way, so the pass stops here.
+      if (error instanceof AkError && error.kind === "unavailable") throw error;
       const off = error instanceof AkError && error.kind === "sync-off";
       // Without sync there are no remote requests, so their cards close; after another failure the last list stays.
       if (off) remoteList = [];

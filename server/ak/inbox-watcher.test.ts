@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ afterEach(() => {
   dirs = [];
 });
 
-function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string }; remotePollMs?: number; noRemote?: boolean } = {}) {
+function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string }; remotePollMs?: number; noRemote?: boolean; remote?: boolean } = {}) {
   const told: Array<{ ref: string; program?: string; by?: "omb" }> = [];
   const history: AutoApproval[] = [];
   const lines: Message[] = [];
@@ -61,8 +62,9 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
   const watcher = startInboxWatcher({
     cli: { pendingRequests, approve, deny, grantExec, revokeExec, grants, ...(options.noRemote ? {} : { remoteRequests, approveRemote, denyRemote }) },
     remotePollMs: options.remotePollMs ?? 0,
-    hashFile: async () => PROGRAM_HASH,
-    realPath: async (path) => (path === "/opt/homebrew/bin/deploy" ? "/usr/bin/deploy" : path),
+    ...(options.remote
+      ? { remote: true }
+      : { hashFile: async () => PROGRAM_HASH, realPath: async (path: string) => (path === "/opt/homebrew/bin/deploy" ? "/usr/bin/deploy" : path) }),
     guard,
     approvals,
     owns: (ref) => owned.has(ref),
@@ -509,6 +511,29 @@ describe("ak inbox watcher", () => {
     const afterWatch = t.pendingRequests.mock.calls.length;
     await vi.waitFor(() => expect(t.pendingRequests.mock.calls.length).toBeGreaterThan(afterWatch + 1), { timeout: 3_000 });
   });
+
+  it("does not watch the inbox folder when ak runs on another device", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ak-inbox-"));
+    dirs.push(dir);
+    const t = setup({ secretsDir: dir, debounceMs: 10, pollMs: 60_000, remote: true });
+    await t.watcher.checkNow();
+    const before = t.pendingRequests.mock.calls.length;
+    writeFileSync(join(dir, "pending.json"), "{}");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(t.pendingRequests.mock.calls.length).toBe(before);
+  });
+
+  it("fails closed on an ambiguous exec request when ak runs on another device, even if a local file matches", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ak-prog-"));
+    dirs.push(dir);
+    const program = join(dir, "deploy");
+    writeFileSync(program, "#!/bin/sh\n");
+    const hash = `sha256:${createHash("sha256").update("#!/bin/sh\n").digest("hex")}`;
+    const t = setup({ owned: ["OTHER"], remote: true });
+    await answerAmbiguous(t, [exec("DEPLOY_TOKEN", program, hash)]);
+    expect(t.grantExec).not.toHaveBeenCalled();
+    expect(t.lines[0]?.card).toMatchObject({ answered: "unavailable", dismissed: true });
+  });
 });
 
 describe("requests from other devices", () => {
@@ -594,6 +619,15 @@ describe("requests from other devices", () => {
     expect(t.approve).toHaveBeenCalledTimes(1);
     expect(t.approvals.keys()).toEqual([]);
     expect(t.guard.blocked).toBe(false);
+  });
+
+  it("stops the pass after one call when ak cannot run, without listing the local inbox", async () => {
+    const t = setup();
+    t.inbox.remoteError = new AkError("unavailable", null, "The laptop (h) is unreachable over SSH: timed out");
+    await t.watcher.checkNow();
+    expect(t.remoteRequests).toHaveBeenCalledTimes(1);
+    expect(t.pendingRequests).not.toHaveBeenCalled();
+    expect(t.logs).toEqual(["ak inbox: could not read the inbox (unavailable: The laptop (h) is unreachable over SSH: timed out)"]);
   });
 
   it("logs another remote failure once and keeps the last list", async () => {
