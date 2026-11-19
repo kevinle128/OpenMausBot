@@ -59,7 +59,8 @@ A `connect` session renews itself while it is used, up to 180 days; an access
 token never renews and ends on its date. `--expires` is at most the server's
 session limit (180 days unless `OMB_SESSION_MAX_DAYS` says otherwise), and
 `--scope client`, the default, can chat and answer approvals but not change
-settings. Tokens are listed and revoked like any session (`openmausbot
+settings; `--scope secrets` opens a token that reaches only the agent secrets
+routes ([omb-secrets-api.md](omb-secrets-api.md)). Tokens are listed and revoked like any session (`openmausbot
 sessions`, and Settings), and the token itself is written only to `--out`.
 
 ## Output and exit codes

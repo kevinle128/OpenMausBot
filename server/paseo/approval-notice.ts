@@ -1,4 +1,5 @@
-import { APPROVAL_NOTICE_PREFIX, type PaseoConnection } from "./connection.ts";
+import { APPROVAL_NOTICE_PREFIX, OMB_APPROVAL_NOTICE_PREFIX, type PaseoConnection } from "./connection.ts";
+import { agentTitle, createLiveAgents, type LiveAgent, type LiveAgents } from "./live-agents.ts";
 import { ORIGIN_TTL_MS, type RequestOrigins } from "./auto-approval.ts";
 
 export type NoticeResult = "sent" | "queued" | "none";
@@ -9,13 +10,16 @@ export interface ApprovedSecret {
   program?: string;
   /** Set only when OpenMausBot approved by itself; the notice then says so. */
   by?: "omb";
+  /** `omb`: the secret is in OpenMausBot's Vault, and the notice says `omb secrets`. Absent: `ak secrets`. */
+  vault?: "omb";
+  /** The Paseo agent to tell, when the caller named it. Used as given, only if it is listed now; no other agent is guessed. */
+  agentId?: string;
 }
 
 /** Paseo shows user messages as plain text, so Markdown bold would print its asterisks; this is Unicode sans-serif bold for "by OMB". */
 export const BY_OMB_LINE = "\u{1D5EF}\u{1D606} \u{1D5E2}\u{1D5E0}\u{1D5D5}";
 
 type Port = Pick<PaseoConnection, "on" | "off" | "sendMessage" | "recentShellCommands">;
-type AgentView = { id: string; status: string; updatedAt?: string | number | Date; title?: string | null; cwd?: string };
 
 /** The agent that was told, for the history line. */
 export interface NoticedAgent {
@@ -31,7 +35,7 @@ export interface NoticeOutcome {
 
 /** The fixed text told to the agent: only the ref, which passed the ref-name check. Never text an agent wrote. */
 export function approvalNoticeText(approved: ApprovedSecret): string {
-  const text = `${APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
+  const text = `${approved.vault === "omb" ? OMB_APPROVAL_NOTICE_PREFIX : APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
   return approved.by === "omb" ? `${text}\n\n${BY_OMB_LINE}` : text;
 }
 
@@ -46,18 +50,18 @@ export function commandNamesRef(command: string, ref: string): boolean {
  * `ak secrets` for the ref (or the only recently active one whose last commands name it); with none or several, nobody is told.
  * A running agent is never interrupted: its message waits until it is idle, for at most ten minutes.
  */
-export function createApprovalNotifier(deps: { connection: Port; origins: Pick<RequestOrigins, "find">; log(message: string): void; now?: () => number }) {
+export function createApprovalNotifier(deps: { connection: Port; origins: Pick<RequestOrigins, "find">; agents?: LiveAgents; log(message: string): void; now?: () => number }) {
   const now = deps.now ?? Date.now;
-  const agents = new Map<string, AgentView>();
+  // Created before the listener below, so an agent is listed by the time its idle update is handled.
+  const agents = deps.agents ?? createLiveAgents(deps.connection);
+  const ownAgents = deps.agents === undefined;
   const queued = new Map<string, { agentId: string; text: string; until: number }>();
   const sentKeys = new Map<string, number>();
 
-  const onUpdate = (agent: AgentView) => {
-    agents.set(agent.id, agent);
+  const onUpdate = (agent: LiveAgent) => {
     if (agent.status === "idle") void flush(agent.id);
   };
   const onRemoved = (agentId: string) => {
-    agents.delete(agentId);
     for (const [key, one] of queued) if (one.agentId === agentId) queued.delete(key);
   };
   deps.connection.on("agentUpdate", onUpdate as never);
@@ -86,7 +90,7 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
     const known = deps.origins.find(ref);
     if (known) return { agentId: known.agentId, title: known.agent, cwd: known.cwd };
     const since = now() - ORIGIN_TTL_MS;
-    const recent = [...agents.values()].filter((agent) => {
+    const recent = agents.all().filter((agent) => {
       const at = agent.updatedAt === undefined ? now() : new Date(agent.updatedAt).getTime();
       return Number.isFinite(at) && at >= since;
     });
@@ -100,13 +104,14 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
     }
     if (matches.length !== 1) return null;
     const agent = agents.get(matches[0]!)!;
-    return { agentId: agent.id, title: agent.title?.trim() || agent.id.slice(0, 8), cwd: agent.cwd ?? "" };
+    return { agentId: agent.id, title: agentTitle(agent), cwd: agent.cwd ?? "" };
   }
 
   return {
     async approved(approved: ApprovedSecret): Promise<NoticeOutcome> {
       expire();
-      const agent = await findAgent(approved.ref);
+      const named = approved.agentId ? agents.get(approved.agentId) : undefined;
+      const agent = approved.agentId ? (named ? { agentId: named.id, title: agentTitle(named), cwd: named.cwd ?? "" } : null) : await findAgent(approved.ref);
       if (!agent) return { result: "none" };
       const { agentId } = agent;
       const text = approvalNoticeText(approved);
@@ -123,6 +128,7 @@ export function createApprovalNotifier(deps: { connection: Port; origins: Pick<R
     stop(): void {
       deps.connection.off("agentUpdate", onUpdate as never);
       deps.connection.off("agentRemoved", onRemoved);
+      if (ownAgents) agents.stop();
       queued.clear();
     },
   };

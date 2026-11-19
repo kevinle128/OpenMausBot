@@ -1,0 +1,25 @@
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import type { z } from "zod";
+
+import { writeFileAtomic } from "../atomic.ts";
+import { SecretsError } from "./types.ts";
+
+/** A grants or requests file that exists but cannot be read is never treated as empty: that would drop every block. */
+export function readStateFile<S extends z.ZodType>(file: string, schema: S, empty: z.infer<S>): z.infer<S> {
+  if (!existsSync(file)) return empty;
+  try {
+    return schema.parse(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    throw new SecretsError(5, "store_unavailable", "the secrets state file could not be read");
+  }
+}
+
+export function writeStateFile(file: string, data: unknown): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileAtomic(file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  } catch {
+    throw new SecretsError(5, "store_unavailable", "the secrets state file could not be written");
+  }
+}

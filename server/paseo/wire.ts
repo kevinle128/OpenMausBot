@@ -15,6 +15,8 @@ export type PaseoHost = Pick<PaseoBridgeWiring, "approvals" | "decider" | "notif
   /** Writes one line of what was allowed without asking into the Inbox as an already read line. */
   autoApproved(line: AutoApprovalLine): void;
   enqueueWebhook(input: Parameters<RoutineManager["enqueueWebhook"]>[0]): unknown;
+  /** Lends the bridge's live agents and notifier to the `omb secrets` routes. */
+  secrets?: PaseoBridgeWiring["secrets"];
 };
 
 /** The one call the server makes for Paseo: permissions, secret requests and Dispatcher wake-ups. Null when the bridge is off. */
@@ -30,6 +32,7 @@ export function startPaseo(host: PaseoHost, env: NodeJS.ProcessEnv = process.env
       host.autoApproved({ botId: bot.id, threadId: bot.threadId, key: entry.key, text: (count) => formatAutoApproval(entry, count) });
     },
     ak: { vault: host.vault, dataDir: host.dataDir },
+    ...(host.secrets ? { secrets: host.secrets } : {}),
     dispatcher: {
       store: host.store,
       wake: ({ botId, threadId, deliveryId, message }) => {
