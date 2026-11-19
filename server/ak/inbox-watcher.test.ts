@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; debounceMs?: number; secretsDir?: string; origin?: { agentId: string; agent: string; cwd: string }; notify?: "sent" | "queued" | "none"; notifiedAgent?: { agentId: string; title: string; cwd: string }; remotePollMs?: number; noRemote?: boolean } = {}) {
-  const told: Array<{ ref: string; program?: string }> = [];
+  const told: Array<{ ref: string; program?: string; by?: "omb" }> = [];
   const history: AutoApproval[] = [];
   const lines: Message[] = [];
   const store = {
@@ -71,7 +71,7 @@ function setup(options: { owned?: string[]; locked?: boolean; pollMs?: number; d
     screenLocked: async () => options.locked === true,
     log: (line) => logs.push(line),
     history: (entry) => history.push(entry),
-    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string }) => { told.push(approved); return { result: options.notify!, ...(options.notifiedAgent ? { agent: options.notifiedAgent } : {}) }; } } : {}),
+    ...(options.notify ? { notifyAgent: async (approved: { ref: string; program?: string; by?: "omb" }) => { told.push(approved); return { result: options.notify!, ...(options.notifiedAgent ? { agent: options.notifiedAgent } : {}) }; } } : {}),
     origins: { find: (ref) => (options.origin && ref === "API_KEY" ? options.origin : null) },
     secretsDir: options.secretsDir ?? "/nonexistent-ak-dir",
     pollMs: options.pollMs ?? 3_600_000,
@@ -124,7 +124,7 @@ describe("ak inbox watcher", () => {
     const t = setup({ owned: ["API_KEY"], notify: "sent" });
     t.inbox.requests = [ordinary("API_KEY")];
     await t.watcher.checkNow();
-    expect(t.told).toEqual([{ ref: "API_KEY" }]);
+    expect(t.told).toEqual([{ ref: "API_KEY", by: "omb" }]);
     expect(t.history[0]!.what).toContain("đã báo agent");
   });
 
@@ -142,6 +142,7 @@ describe("ak inbox watcher", () => {
     t.approvals.answer(t.card()!.requestId!, "allow");
     await flush();
     expect(t.told).toEqual([{ ref: "DEPLOY_TOKEN", program: "/usr/bin/deploy" }]);
+    expect(t.told[0]).not.toHaveProperty("by");
   });
 
   it("says the agent is not known when nobody was told", async () => {
@@ -523,7 +524,7 @@ describe("requests from other devices", () => {
     expect(t.approveRemote).toHaveBeenCalledWith({ id: "3f2a", ttl: "24h" });
     expect(t.approve).not.toHaveBeenCalled();
     expect(t.lines).toEqual([]);
-    expect(t.told).toEqual([{ ref: "API_KEY" }]);
+    expect(t.told).toEqual([{ ref: "API_KEY", by: "omb" }]);
     expect(t.history).toMatchObject([{ rule: "ak-vault-secret", what: "cấp quyền đọc bí mật API_KEY, mục đích: deploy, 24h · đã báo agent" }]);
   });
 

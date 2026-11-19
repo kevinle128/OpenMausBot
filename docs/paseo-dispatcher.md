@@ -58,7 +58,8 @@ the rule `jev-guard` and the scores. The questions and thresholds are adapted fr
 [jev-guard](https://github.com/leepokai/jev-guard) (MIT, commit `cda06c4`).
 When an `ak` secret request is approved, by OpenMausBot or by the person on the
 card, the Paseo agent that asked is sent one message, `already approved ak
-secrets: <REF>`, so it can run the command again. The agent is the one seen
+secrets: <REF>`, so it can run the command again. When OpenMausBot approved by
+itself, the message ends with a blank line and `𝗯𝘆 𝗢𝗠𝗕`. The agent is the one seen
 running `ak secrets` for that ref in the last 10 minutes; with none or several,
 nobody is told. A running agent is not interrupted: the message waits until it is
 idle, for up to 10 minutes. The Inbox line says whether the agent was told.
