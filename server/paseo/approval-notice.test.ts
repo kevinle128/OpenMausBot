@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { BY_OMB_LINE, approvalNoticeText, commandNamesRef, createApprovalNotifier } from "./approval-notice.ts";
 import { createRequestOrigins } from "./auto-approval.ts";
-import { APPROVAL_NOTICE_PREFIX, OMB_APPROVAL_NOTICE_PREFIX } from "./connection.ts";
+import { APPROVAL_NOTICE_PREFIX, SECRETS_APPROVAL_NOTICE_PREFIX } from "./connection.ts";
 
 function fixture(commands: Record<string, string[]> = {}) {
   const connection = Object.assign(new EventEmitter(), {
@@ -36,7 +36,7 @@ describe("approval notice text for a secret in the OpenMausBot Vault", () => {
     expect(approvalNoticeText({ ref: "API_KEY", vault: "omb" })).toBe("already approved omb secrets: API_KEY");
     const text = approvalNoticeText({ ref: "API_KEY", vault: "omb", by: "omb", agentId: "a1", program: "/usr/bin/deploy" });
     expect(text).toBe(`already approved omb secrets: API_KEY\n\n${BY_OMB_LINE}`);
-    expect(text.startsWith(OMB_APPROVAL_NOTICE_PREFIX)).toBe(true);
+    expect(text.startsWith(SECRETS_APPROVAL_NOTICE_PREFIX)).toBe(true);
   });
 
   it("tells exactly the agent that was named, once it is listed, and never guesses another", async () => {
