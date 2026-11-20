@@ -1,4 +1,4 @@
-import { APPROVAL_NOTICE_PREFIX, OMB_APPROVAL_NOTICE_PREFIX, type PaseoConnection } from "./connection.ts";
+import { APPROVAL_NOTICE_PREFIX, SECRETS_APPROVAL_NOTICE_PREFIX, type PaseoConnection } from "./connection.ts";
 import { agentTitle, createLiveAgents, type LiveAgent, type LiveAgents } from "./live-agents.ts";
 import { ORIGIN_TTL_MS, type RequestOrigins } from "./auto-approval.ts";
 
@@ -35,7 +35,7 @@ export interface NoticeOutcome {
 
 /** The fixed text told to the agent: only the ref, which passed the ref-name check. Never text an agent wrote. */
 export function approvalNoticeText(approved: ApprovedSecret): string {
-  const text = `${approved.vault === "omb" ? OMB_APPROVAL_NOTICE_PREFIX : APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
+  const text = `${approved.vault === "omb" ? SECRETS_APPROVAL_NOTICE_PREFIX : APPROVAL_NOTICE_PREFIX} ${approved.ref}`;
   return approved.by === "omb" ? `${text}\n\n${BY_OMB_LINE}` : text;
 }
 
