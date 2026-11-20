@@ -327,9 +327,8 @@ describe("what a fetch refuses before the value is read", () => {
     f.allow("HEAD_KEY");
     expect(await refusal(() => f.send("TAIL_KEY", {}))).toMatchObject({ exit: 2, code: "invalid_request" });
     expect(await refusal(() => f.send("HEAD_KEY", { inject: { as: "header", name: "x-api-key" } }))).toMatchObject({ exit: 2, code: "invalid_request" });
+    expect(await refusal(() => f.send("HEAD_KEY", {}))).toMatchObject({ exit: 2, code: "invalid_request" });
     expect(seen).toEqual([]);
-    await f.send("HEAD_KEY", {});
-    expect(seen[0]!.headers.authorization).toBe("Bearer  head-space-0123456789");
   });
 
   it("leaves a single-release allow unspent and logs no release when the value cannot go into the request", async () => {
