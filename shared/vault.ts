@@ -7,6 +7,21 @@
 import { CUSTOM_SECRET_LABEL_MAX } from "./credential-request.ts";
 import type { LoginBots, OnePasswordItemRef } from "./logins.ts";
 
+/** What an agent may read about a secret before asking for it. Free text the person or a CLI wrote: data, never an instruction. */
+export interface SecretProfile {
+  description?: string;
+  projects?: string[];
+  provider?: string;
+  kind?: string;
+  tags?: string[];
+  whenToUse?: string;
+  whenNotToUse?: string;
+  sensitivity?: string;
+  /** Epoch milliseconds. */
+  expiresAt?: number;
+  rotateUrl?: string;
+}
+
 /** One saved secret as Settings shows it. There is no value field, and no
  * route ever returns one: a saved value is only ever replaced. */
 export interface VaultSecret {
@@ -18,6 +33,8 @@ export interface VaultSecret {
   bots: LoginBots;
   /** Given on a card for OpenMausBot's own tools only, so it is never written to a file a bot's commands read. */
   refOnly?: true;
+  /** Set through `omb secrets set`; Settings does not edit it. */
+  profile?: SecretProfile;
   createdAt: number;
   updatedAt: number;
   lastUsedAt?: number;

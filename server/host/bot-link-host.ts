@@ -8,6 +8,7 @@ import { createBotLink } from "../bot-link/link.ts";
 import type { Coordinator, HandoffView } from "../coordinator.ts";
 import { redactSecretsInText } from "../redact.ts";
 import type { RequestAuth } from "../request-auth.ts";
+import type { Scope } from "../sessions.ts";
 import { createBotLinkRoutes, linkSessionUser } from "../routes/bot-link.ts";
 import { isLinkedId } from "../bot-link/protocol.ts";
 import type { Level } from "../runtime/types.ts";
@@ -34,7 +35,7 @@ export interface BotLinkHostDeps {
   refusal(bot: BotRecord): string | null;
   language(threadId: string): string | undefined;
   personName(threadId: string): string | undefined;
-  sessions: { issue(input: { label: string; scopes: Array<"admin" | "client">; email?: string; userId?: string }): { token: string; session: { id: string } }; revoke(id: string): boolean };
+  sessions: { issue(input: { label: string; scopes: Scope[]; email?: string; userId?: string }): { token: string; session: { id: string } }; revoke(id: string): boolean };
   local(auth: RequestAuth): boolean;
   owner(auth: RequestAuth): boolean;
   power(): { sleeping(): boolean; sleepSignal(): AbortSignal } | null | undefined;

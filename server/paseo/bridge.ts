@@ -4,12 +4,16 @@ import { createRequestOrigins } from "./auto-approval.ts";
 import { PaseoConnection } from "./connection.ts";
 import { startDispatcherWake, type DispatcherWakeDeps } from "./dispatcher-wake.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
+import { createLiveAgents } from "./live-agents.ts";
+import type { SecretsService } from "../secrets/service.ts";
 
 export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins" | "ownsRef" | "agentContext"> & {
   /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
   ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
   /** With this, a Paseo agent a Dispatcher bot created wakes that bot's thread when it finishes or fails. */
   dispatcher?: Pick<DispatcherWakeDeps, "store" | "wake">;
+  /** With this, the agents the daemon lists name a secret request on its card, and an approved request is told to its agent. */
+  secrets?: Pick<SecretsService, "attach">;
 };
 
 export interface PaseoBridge {
@@ -33,11 +37,14 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
   connection.on("error", (error) => console.error("paseo bridge: listener failed", error));
   const stops: Array<() => void> = [];
   if (wiring) {
-    const { ak, dispatcher, ...gatekeeper } = wiring;
+    const { ak, dispatcher, secrets, ...gatekeeper } = wiring;
     const origins = createRequestOrigins();
     // The Vault sync starts after the gatekeeper; until it has, no ref is owned.
-    const notifier = createApprovalNotifier({ connection, origins, log });
+    const agents = createLiveAgents(connection);
+    stops.push(() => agents.stop());
+    const notifier = createApprovalNotifier({ connection, origins, agents, log });
     stops.push(() => notifier.stop());
+    if (secrets) stops.push(secrets.attach({ agents, notifier }));
     let owns: (ref: string) => boolean = () => false;
     stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins, ownsRef: (ref) => owns(ref), agentContext: (agentId) => connection.agentContext(agentId) }));
     if (dispatcher) stops.push(startDispatcherWake({ ...dispatcher, connection, log }));

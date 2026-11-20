@@ -46,6 +46,7 @@ describe("workspace backup data boundary", () => {
     "workspace-credentials.json", "browser-engine-key", "caddy/data/certificates/private.key",
     "external-runtimes.json", "external-runtimes.json.123.tmp",
     "command-allowlist.json", "command-allowlist.json.123.05a7b3e0-1234.tmp",
+    "secret-grants.json", "secret-grants.json.123.05a7b3e0-1234.tmp", "secret-requests.json", "secret-requests.json.123.05a7b3e0-1234.tmp",
     "chrome-profile/Default/Cookies", ".agent-browser/auth/site.json",
     "vm-home/.browser-profiles/chrome/Cookies", "vm-homes/abc123/.browser-profiles/chromium/Local State",
     "config.json.123.tmp", "config.json.123.05a7b3e0-1234.tmp", "sessions.json.456.tmp",

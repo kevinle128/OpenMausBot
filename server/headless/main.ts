@@ -85,10 +85,11 @@ openmausbot doctor --host [--data-dir DIR] [--port 8799] [--domain HOST]
   Then use it: --url URL --token-file FILE (or OPENMAUSBOT_URL and OPENMAUSBOT_TOKEN).`,
   mcp: "openmausbot mcp\n  Serve the OpenMausBot MCP tools on stdin and stdout, for an agent (docs/mcp-server.md).",
   token: "openmausbot token create NAME --out FILE … | token list | token revoke ID   (see help token create)",
-  "token create": `openmausbot token create NAME --out FILE [--scope client|admin] [--expires 90d] [--force]
+  "token create": `openmausbot token create NAME --out FILE [--scope client|admin|secrets] [--expires 90d] [--force]
   An access token for CI and scripts, saved to FILE (only you can read it) and never printed.
   It ends on its date (--expires, at most the server's session limit: 180 days unless OMB_SESSION_MAX_DAYS)
-  and never renews. --scope client (the default) can chat and answer approvals; admin can change settings.
+  and never renews. --scope client (the default) can chat and answer approvals; admin can change settings;
+  secrets reaches only the agent secrets routes (docs/omb-secrets-api.md), for an agent machine.
   Then: --url URL --token-file FILE. It is listed with openmausbot sessions too.`,
   "token list": "openmausbot token list\n  The access tokens, their scope, when each ends and when it was last used (never the token).",
   "token revoke": "openmausbot token revoke ID\n  End an access token at once (openmausbot token list shows the ids).",

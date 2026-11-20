@@ -38,6 +38,8 @@ export function excludedWorkspaceAuthPath(path: string): boolean {
   if (inSecretFolder(path)) return true;
   if (/^command-allowlist\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   if (/^mcp-oauth\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
+  // `omb secrets` grants and waiting requests belong to the Vault of this computer, which a restore keeps in place.
+  if (/^secret-(?:grants|requests)\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // Saved website logins and their key never leave the computer they were saved on, nor does the key sealing webhook secrets.
   if (/^(?:logins\.json\.enc|member-secrets\.json\.enc|logins-key|webhook-key)(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // A Cloud home's connected-apps installation: its connected accounts belong to it, so a copy would share them.

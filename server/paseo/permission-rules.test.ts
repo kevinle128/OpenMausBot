@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inspectOnThisDisk } from "../testing/fake-daemon-fs.ts";
 import { forgetGitConfigAnswers, gitConfigRunsNoProgram } from "./git-config-check.ts";
@@ -319,7 +319,8 @@ describe("classifyPermission: env files on disk", () => {
 
   it("allows a plain file, by a relative or an absolute path", async () => {
     expect(await envRule("cat .env")).toBe(true);
-    expect(await envRule(`cat ${slashed(join(dir, ".env"))}`, onDisk("/"))).toBe(true);
+    // The root of the temp folder's own drive: on Windows "/" is the root of the current drive, which may not hold it.
+    expect(await envRule(`cat ${slashed(join(dir, ".env"))}`, onDisk(parse(dir).root))).toBe(true);
     expect((await classifyPermission(read(".env"), onDisk(dir))).verdict).toBe("allow");
   });
 

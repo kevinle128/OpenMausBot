@@ -9,9 +9,10 @@ import { z } from "zod";
 
 import { HELD_SECRET_MASK } from "../shared/redact.ts";
 import { LOGIN_FIELD_MAX, LOGIN_HOSTS_MAX, loginMatchesHost, loginPlace, loginSite, loginUsableBy, type BitwardenCredentials, type LoginBots, type LoginPlace, type LoginSummary } from "../shared/logins.ts";
-import { SECRET_VALUE_MAX_BYTES, VAULT_SECRET_NAME_MAX, vaultNameKey, type VaultSecret } from "../shared/vault.ts";
+import { SECRET_VALUE_MAX_BYTES, VAULT_SECRET_NAME_MAX, vaultNameKey, type SecretProfile, type VaultSecret } from "../shared/vault.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { decryptBrowserState, encryptBrowserState } from "./browser-sites.ts";
+import { diskProfileSchema } from "./secrets/profile.ts";
 import type { TotpKey } from "./totp.ts";
 
 export const LOGINS_FILE = "logins.json.enc";
@@ -54,6 +55,7 @@ const diskSecretSchema = z.object({
   source: z.enum(["card", "settings"]),
   bots: botsSchema,
   refOnly: z.literal(true).optional(),
+  profile: diskProfileSchema,
   createdAt: z.number(),
   updatedAt: z.number(),
   lastUsedAt: z.number().optional(),
@@ -112,12 +114,14 @@ export interface NewSecret {
   bots: LoginBots;
   refOnly?: boolean;
   person?: string;
+  profile?: SecretProfile;
 }
 
 export interface SecretPatch {
   name?: string;
   value?: string;
   bots?: LoginBots;
+  profile?: SecretProfile;
 }
 
 export interface NewLogin extends LoginPlace {
@@ -377,14 +381,14 @@ export class VaultStore {
     const same = secrets.find((secret) => vaultNameKey(secret.name) === vaultNameKey(input.name) && sameBots(secret.bots, input.bots) && secret.person === input.person);
     if (same) {
       const { refOnly: _refOnly, ...rest } = same;
-      const updated: StoredSecret = { ...rest, value: input.value, updatedAt: at, ...(input.refOnly ? { refOnly: true } : {}) };
+      const updated: StoredSecret = { ...rest, value: input.value, updatedAt: at, ...(input.refOnly ? { refOnly: true } : {}), ...(input.profile ? { profile: input.profile } : {}) };
       this.write({ ...data, secrets: secrets.map((secret) => secret.id === same.id ? updated : secret) });
       this.secretChanged(same.id);
       return summarizeSecret(updated);
     }
     const secret: StoredSecret = {
       id: randomUUID(), name: input.name, value: input.value, source: input.source, bots: input.bots, ...(input.refOnly ? { refOnly: true } : {}), createdAt: at, updatedAt: at,
-      ...(input.person ? { person: input.person } : {}),
+      ...(input.person ? { person: input.person } : {}), ...(input.profile ? { profile: input.profile } : {}),
     };
     this.write({ ...data, secrets: [...secrets, secret] });
     return summarizeSecret(secret);
@@ -401,6 +405,7 @@ export class VaultStore {
     const received: StoredSecret = {
       id: input.id, name: input.name, value: input.value, source: input.source, bots: input.bots, ...(input.refOnly ? { refOnly: true } : {}),
       createdAt: current?.createdAt ?? at, updatedAt: at, ...(current?.lastUsedAt === undefined ? {} : { lastUsedAt: current.lastUsedAt }),
+      ...(current?.profile ? { profile: current.profile } : {}),
     };
     this.write({ ...data, secrets: current ? secrets.map((secret) => secret.id === input.id ? received : secret) : [...secrets, received] });
     this.secretChanged(input.id);
@@ -416,6 +421,7 @@ export class VaultStore {
       ...(patch.name === undefined ? {} : { name: patch.name }),
       ...(patch.value === undefined ? {} : { value: patch.value }),
       ...(patch.bots === undefined ? {} : { bots: patch.bots }),
+      ...(patch.profile === undefined ? {} : { profile: patch.profile }),
       updatedAt: this.now(),
     };
     this.write({ ...data, secrets: data.secrets.map((secret) => secret.id === id ? next : secret) });

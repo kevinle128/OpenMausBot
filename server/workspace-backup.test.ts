@@ -71,6 +71,9 @@ function fixture(root: string): DatabaseSync {
   writeFileSync(join(root, "tools", "downloaded"), "reinstallable");
   mkdirSync(join(root, "decider-log"));
   writeFileSync(join(root, "decider-log", "2026-09.ndjson"), '{"seam":"roomRouting"}\n');
+  mkdirSync(join(root, "secret-audit"));
+  writeFileSync(join(root, "secret-audit", "2026-11.ndjson"), '{"decision":"allow"}\n');
+  json(join(root, "secret-grants.json"), { version: 1, grants: [] });
   mkdirSync(join(root, "evidence", "thread", "turn-0001"), { recursive: true });
   writeFileSync(join(root, "evidence", "thread", "turn-0001", "step-000001.jpg"), "a page screenshot");
   const db = new DatabaseSync(join(root, "messages.db"));
@@ -220,6 +223,8 @@ describe("encrypted full workspace backups", () => {
       expect(readFileSync(join(result.safetyCopyPath!, "data", "messages.db-wal"), "utf8")).toBe("old database WAL must not enter the new DB");
       expect(existsSync(join(target, "tools"))).toBe(false);
       expect(existsSync(join(target, "decider-log"))).toBe(false);
+      expect(existsSync(join(target, "secret-audit"))).toBe(false);
+      expect(existsSync(join(target, "secret-grants.json"))).toBe(false);
       expect(existsSync(join(target, "evidence"))).toBe(false);
       expect(readJson(join(result.safetyCopyPath!, "data", "bots.json"))).toEqual([{ id: "old" }]);
       const restoredDb = new DatabaseSync(join(target, "messages.db"), { readOnly: true });
