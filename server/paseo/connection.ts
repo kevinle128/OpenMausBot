@@ -102,7 +102,7 @@ export const RESPONDED_TTL_MS = 60_000;
 /** The start of every message OpenMausBot sends an agent about an approval. It is never the person's own request. */
 export const APPROVAL_NOTICE_PREFIX = "already approved ak secrets:";
 /** The same notice for a secret kept in OpenMausBot's own Vault (`omb secrets`). */
-export const OMB_APPROVAL_NOTICE_PREFIX = "already approved omb secrets:";
+export const SECRETS_APPROVAL_NOTICE_PREFIX = "already approved omb secrets:";
 
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
 
@@ -230,7 +230,7 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
       recent.push(what ? `${name}: ${what}` : name);
     }
     // The earliest user message, when the daemon keeps one. A notice from OpenMausBot and any other text it sent is not the person's.
-    const ours = (text: string) => text.startsWith(APPROVAL_NOTICE_PREFIX) || text.startsWith(OMB_APPROVAL_NOTICE_PREFIX) || this.sentByUs.has(text);
+    const ours = (text: string) => text.startsWith(APPROVAL_NOTICE_PREFIX) || text.startsWith(SECRETS_APPROVAL_NOTICE_PREFIX) || this.sentByUs.has(text);
     const firstPrompt = await client.fetchAgentTimeline(agentId, { direction: "after", limit: 5, projection: "projected" }).then(
       (page) => page.entries.find((entry) => entry.item.type === "user_message" && typeof entry.item.text === "string" && !ours(entry.item.text))?.item.text as string | undefined,
       () => undefined,
