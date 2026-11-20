@@ -396,6 +396,9 @@ export function createSecretsService(deps: SecretsDeps) {
       }
       const ev = evaluate(scope, asker, caller, "release");
       if (ev.kind !== "covered") throw refusal(ev);
+      // A value that cannot go into the request is refused before the release, so it spends no single-release grant and logs no allow.
+      const stored = known ? valueOf(known.id) : null;
+      if (stored !== null) injectSecret(request, stored);
       const value = release(scope, asker, caller, ev.grant);
       const needles = needlesFor(request, value);
       const mark = `[omb:${ref}]`;
@@ -524,7 +527,7 @@ export function createSecretsService(deps: SecretsDeps) {
         if (existing && input.force !== true) throw new SecretsError(EXIT.exists, "exists", `${input.ref} already exists; pass force to replace its value`);
         audit(adminCaller, { ref: input.ref, project: "", fingerprint: "", purpose: "" }, {}, "check", "", existing ? "admin:set (replace)" : "admin:set");
         if (existing) {
-          deps.vault.updateSecret(existing.id, { value, ...(bots === undefined ? {} : { bots }), ...(profile ? { profile } : {}) });
+          deps.vault.updateSecret(existing.id, { value, ...(bots === undefined ? {} : { bots }), ...(input.profile == null ? {} : { profile: profile ?? {} }) });
           return { ref: input.ref, created: false };
         }
         deps.vault.saveSecret({ name: input.ref, value, source: "settings", bots: bots ?? [], ...(profile ? { profile } : {}) });
@@ -538,7 +541,8 @@ export function createSecretsService(deps: SecretsDeps) {
         const known = lookup(input.ref);
         if (!known) throw new SecretsError(EXIT.missing, "no_such_secret", `${input.ref}: no such secret in the Vault.`);
         audit(adminCaller, { ref: input.ref, project: "", fingerprint: "", purpose: "" }, {}, "check", "", "admin:rotate");
-        const updated = deps.vault.updateSecret(known.id, { value, ...(profile ? { profile } : {}) });
+        // A profile sent replaces the whole of it, an empty one included, so the person can clear allowedHosts.
+        const updated = deps.vault.updateSecret(known.id, { value, ...(input.profile == null ? {} : { profile: profile ?? {} }) });
         return { ref: input.ref, rotatedAt: iso(updated?.updatedAt ?? now()) };
       },
 

@@ -318,6 +318,30 @@ describe("what a fetch refuses before the value is read", () => {
     await f.send("WIDE_KEY", { inject: { as: "query", name: "k" } });
     expect(new URL(seen[0]!.url, "http://x").searchParams.get("k")).toBe("密码-0123456789-密码");
   });
+
+  it("refuses a value a header would trim, since the destination would get another value and echo a form the scrubber misses", async () => {
+    const f = fixture();
+    f.save("TAIL_KEY", "tail-space-0123456789 ");
+    f.save("HEAD_KEY", " head-space-0123456789");
+    f.allow("TAIL_KEY");
+    f.allow("HEAD_KEY");
+    expect(await refusal(() => f.send("TAIL_KEY", {}))).toMatchObject({ exit: 2, code: "invalid_request" });
+    expect(await refusal(() => f.send("HEAD_KEY", { inject: { as: "header", name: "x-api-key" } }))).toMatchObject({ exit: 2, code: "invalid_request" });
+    expect(seen).toEqual([]);
+    await f.send("HEAD_KEY", {});
+    expect(seen[0]!.headers.authorization).toBe("Bearer  head-space-0123456789");
+  });
+
+  it("leaves a single-release allow unspent and logs no release when the value cannot go into the request", async () => {
+    const f = fixture();
+    f.save("LINE_KEY", "first-line-0123456789\nsecond");
+    f.service.admin.grant({ ref: "LINE_KEY", fingerprint: FP, purpose: "deploy", state: "allow", once: true });
+    expect(await refusal(() => f.send("LINE_KEY", {}))).toMatchObject({ exit: 2, code: "invalid_request" });
+    expect(f.service.admin.grants({})).toHaveLength(1);
+    await f.send("LINE_KEY", { inject: { as: "query", name: "k" } });
+    expect(seen).toHaveLength(1);
+    expect(f.service.admin.grants({})).toHaveLength(0);
+  });
 });
 
 describe("what the agent may send", () => {

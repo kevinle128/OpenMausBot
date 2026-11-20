@@ -122,7 +122,10 @@ export function injectSecret(request: FetchRequest, value: string): { url: strin
   } else if (as === "basic-password") {
     headers.set("authorization", `Basic ${Buffer.from(`${name ?? ""}:${value}`).toString("base64")}`);
   } else {
-    if (!HEADER_SAFE.test(value)) throw invalid("the secret cannot be written into a header: it holds a control or non-Latin-1 character");
+    // A header value loses its leading and trailing spaces on the wire, so the destination would get another value than the stored one.
+    if (!HEADER_SAFE.test(value) || value.endsWith(" ") || (as === "header" && value.startsWith(" "))) {
+      throw invalid("the secret cannot be written into a header: it holds a control, non-Latin-1 or boundary space character");
+    }
     headers.set(as === "bearer" ? "authorization" : name!, as === "bearer" ? `Bearer ${value}` : value);
   }
   return { url: url.href, headers };

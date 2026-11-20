@@ -433,6 +433,16 @@ describe("the Vault side", () => {
     f.service.admin.set({ ref: "API_KEY", value: SECRET, profile: { allowedHosts: HOSTS } });
     expect((await refusalOf(() => f.release("API_KEY", asker()))).exit).toBe(8);
   });
+
+  it("replaces the whole profile with an empty one sent to rotate or a forced set, clearing the allowed hosts", () => {
+    const f = fixture();
+    f.service.admin.set({ ref: "API_KEY", value: SECRET, profile: { description: "Billing API", allowedHosts: HOSTS } });
+    f.service.admin.rotate({ ref: "API_KEY", value: "rotated-value-000000000", profile: {} });
+    expect(f.service.describe("API_KEY").profile).toEqual({});
+    f.service.admin.set({ ref: "API_KEY", value: SECRET, force: true, profile: { allowedHosts: HOSTS } });
+    f.service.admin.set({ ref: "API_KEY", value: SECRET, force: true, profile: {} });
+    expect(f.service.describe("API_KEY").profile).toEqual({});
+  });
 });
 
 describe("answers from the person", () => {
