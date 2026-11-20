@@ -68,8 +68,15 @@ describe("arguments", () => {
   });
 
   it("refuses an unknown flag, a missing value and a value on a switch", () => {
-    for (const tokens of [["--nope"], ["--purpose"], ["--include=1"]]) {
+    for (const tokens of [["--nope"], ["--purpose"], ["--include=1"], ["-v"], ["-qv"]]) {
       expect(() => parseArgs(tokens, spec)).toThrowError(expect.objectContaining({ exitCode: EXIT.invalid }));
+    }
+    expect(parseArgs(["-"], spec).positionals).toEqual(["-"]);
+  });
+
+  it("answers exit 2 for a stray argument on a command that takes none", async () => {
+    for (const argv of [["status", "extra"], ["secrets", "list", "X"], ["secrets", "grants", "API_KEY"], ["secrets", "audit", "API_KEY"]]) {
+      expect((await run(argv)).code).toBe(EXIT.invalid);
     }
   });
 
@@ -144,6 +151,11 @@ describe.skipIf(!posix)("identity walk", () => {
   it("does not take a plain node process, a shell or an unreadable table for an agent", async () => {
     const ps = fakePs({ 7: { ppid: 6, comm: "/usr/local/bin/node", args: "node server.js" }, 6: { ppid: 1, comm: "/bin/zsh" } });
     expect(await findAgent({ platform: "darwin", startPid: 7, ps })).toBeNull();
+    const server = join(home, "server.js");
+    writeFileSync(server, "console.log(1)");
+    for (const args of [`node ${server} --provider claude`, `node ${server} pi`, "node node_modules/@openai/codex/bin/codex.js"]) {
+      expect(await findAgent({ platform: "darwin", startPid: 7, ps: fakePs({ 7: { ppid: 1, comm: "/usr/local/bin/node", args } }) })).toBeNull();
+    }
     expect(await findAgent({ platform: "darwin", startPid: 999, ps })).toBeNull();
     expect(await findAgent({ platform: "win32", startPid: 7, ps })).toBeNull();
   });
@@ -386,11 +398,21 @@ describe("pairing and storage", () => {
   });
 
   it("ends a session that did not get exactly the secrets scope and stores nothing", async () => {
-    const seen = await stub((request) => (request.path === "/api/auth/pair" ? { json: pairAnswer(["client"]) } : { json: {} }));
+    // As server/request-auth.ts: logout is open to a client session, the sessions route only to admin.
+    const gate = (scopes: string[]) => (request: { method: string; path: string }) => {
+      if (request.path === "/api/auth/pair") return { json: pairAnswer(scopes) };
+      if (request.method === "POST" && request.path === "/api/auth/logout") return scopes.includes("client") ? { json: { ok: true } } : { status: 403, json: { error: "forbidden" } };
+      return scopes.includes("admin") ? { json: {} } : { status: 403, json: { error: "forbidden: this session lacks the admin scope" } };
+    };
+    const seen = await stub(gate(["client"]));
     const result = await run(["pair", `${seen.url}/pair#code=ABCD-EFGH-JKLM`]);
     expect(result.code).toBe(EXIT.refused);
     expect(result.out + result.err).not.toContain(TOKEN);
-    expect(seen.requests.at(-1)).toMatchObject({ method: "DELETE", path: "/api/auth/sessions/sess-1" });
+    expect(result.err).toContain("so it was ended");
+    expect(seen.requests.at(-1)).toMatchObject({ method: "POST", path: "/api/auth/logout", headers: { authorization: `Bearer ${TOKEN}` } });
+    const admin = await stub(gate(["admin"]));
+    expect((await run(["pair", `${admin.url}/pair#code=ABCD-EFGH-JKLM`])).code).toBe(EXIT.refused);
+    expect(admin.requests.at(-1)).toMatchObject({ method: "DELETE", path: "/api/auth/sessions/sess-1", headers: { authorization: `Bearer ${TOKEN}` } });
     expect(existsSync(join(home, "config", "token"))).toBe(false);
     expect(existsSync(join(home, "config", "config.json"))).toBe(false);
   });

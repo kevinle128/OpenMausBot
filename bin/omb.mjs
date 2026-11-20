@@ -66,6 +66,8 @@ export function parseArgs(tokens, spec) {
       inline = eq < 0 ? undefined : token.slice(eq + 1);
     } else if (/^-[A-Za-z]$/.test(token) && SHORT[token[1]]) {
       name = SHORT[token[1]];
+    } else if (token.startsWith("-") && token !== "-") {
+      throw invalid(`unknown flag ${clean(token, 40)}`);
     } else {
       positionals.push(token);
       continue;
@@ -325,14 +327,12 @@ async function matchAgent(path, args) {
   }
   if (!RUNTIMES.test(base)) return null;
   const argv = await args().catch(() => []);
-  for (const token of argv.slice(1)) {
-    for (const agent of AGENTS) {
-      if (agent.path.test(token) || agent.bin.test(basename(token).replace(/\.(?:c|m)?js$/, ""))) {
-        // The agent's own script is what is hashed: a new Node release must not end its grants, and two Node tools must not share one.
-        const script = token.startsWith("/") && isFile(token) ? token : path;
-        return { agent: agent.name, target: script };
-      }
-    }
+  // Only the runtime's entrypoint counts, never the arguments it passes on to its script.
+  const script = argv.slice(1).find((token) => !token.startsWith("-"));
+  // The agent's own script is what is hashed: a new Node release must not end its grants, and two Node tools must not share one.
+  if (!script || !script.startsWith("/") || !isFile(script)) return null;
+  for (const agent of AGENTS) {
+    if (agent.path.test(script) || agent.bin.test(basename(script).replace(/\.(?:c|m)?js$/, ""))) return { agent: agent.name, target: script };
   }
   return null;
 }
@@ -631,10 +631,13 @@ async function cmdPair(ctx, parsed) {
     const scopes = session?.scopes;
     if (!Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== "secrets") {
       // A server that does not know the scope opens its default one: end that session instead of keeping it.
-      if (typeof session?.id === "string") {
-        await d.fetch(`${origin}/api/auth/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE", redirect: "error", signal: AbortSignal.timeout(15_000), headers: { authorization: `Bearer ${token}` } }).catch(() => undefined);
-      }
-      throw new CliError(EXIT.refused, "the pairing code did not open a secrets-only session, so it was ended and nothing was stored. Ask for a code made with the secrets scope (openmausbot token create NAME --scope secrets) and update OpenMausBot on the server", "blocked");
+      // Logout ends the caller's own session for a client scope; an admin-only session needs the sessions route.
+      const end = (method, route) => d.fetch(`${origin}${route}`, { method, redirect: "error", signal: AbortSignal.timeout(15_000), headers: { authorization: `Bearer ${token}` } })
+        .then((answer) => answer.ok, () => false);
+      let ended = await end("POST", "/api/auth/logout");
+      if (!ended && typeof session?.id === "string") ended = await end("DELETE", `/api/auth/sessions/${encodeURIComponent(session.id)}`);
+      const fate = ended ? "so it was ended" : "and it could not be ended: end it in OpenMausBot";
+      throw new CliError(EXIT.refused, `the pairing code did not open a secrets-only session, ${fate}, and nothing was stored. Ask for a code made with the secrets scope (openmausbot token create NAME --scope secrets) and update OpenMausBot on the server`, "blocked");
     }
   }
   const saved = await saveCredentials(d, origin, token, session);
@@ -646,7 +649,8 @@ async function cmdPair(ctx, parsed) {
   return EXIT.done;
 }
 
-async function cmdStatus(ctx) {
+async function cmdStatus(ctx, { positionals }) {
+  if (positionals.length > 0) throw invalid("usage: omb status");
   const { d } = ctx;
   const creds = await loadCredentials(d);
   let reachable = false;
@@ -863,7 +867,8 @@ async function cmdRequest(ctx, { flags, positionals }) {
   return EXIT.done;
 }
 
-async function cmdList(ctx) {
+async function cmdList(ctx, { positionals }) {
+  if (positionals.length > 0) throw invalid("usage: omb secrets list");
   const creds = await loadCredentials(ctx.d);
   const { data } = await call(ctx.d, creds, "GET", "/api/secrets/list");
   if (!Array.isArray(data)) throw new CliError(EXIT.unreachable, "the server's list has an unexpected shape", "store_unavailable");
@@ -883,7 +888,8 @@ async function cmdDescribe(ctx, { positionals }, kind) {
   return EXIT.done;
 }
 
-async function cmdGrants(ctx) {
+async function cmdGrants(ctx, { positionals }) {
+  if (positionals.length > 0) throw invalid("usage: omb secrets grants");
   const identity = await needIdentity(ctx);
   const creds = await loadCredentials(ctx.d);
   const { data } = await call(ctx.d, creds, "GET", `/api/secrets/grants?${new URLSearchParams({ fingerprint: identity.fingerprint })}`);
@@ -894,7 +900,8 @@ async function cmdGrants(ctx) {
   return EXIT.done;
 }
 
-async function cmdAudit(ctx, { flags }) {
+async function cmdAudit(ctx, { flags, positionals }) {
+  if (positionals.length > 0) throw invalid("usage: omb secrets audit [--secret REF] [--since 24h] [--decision D] [--source S] [--limit N] [--cursor C]");
   const identity = await needIdentity(ctx);
   const query = new URLSearchParams({ fingerprint: identity.fingerprint });
   if (flags.secret !== undefined) query.set("ref", checkRef(flags.secret));
@@ -974,7 +981,7 @@ export async function main(argv, overrides = {}) {
         d.stdout.write(HELP);
         return EXIT.done;
       }
-      return await (head === "pair" ? cmdPair(ctx, parsed) : cmdStatus(ctx));
+      return await (head === "pair" ? cmdPair(ctx, parsed) : cmdStatus(ctx, parsed));
     }
     if (head !== "secrets") throw invalid(`unknown command ${clean(head, 40)}. Try: omb help`);
     const [name, ...tokens] = rest;
@@ -1008,10 +1015,10 @@ export async function main(argv, overrides = {}) {
       case "fetch": return await cmdFetch(ctx, parsed);
       case "run": return await cmdRun(ctx, parsed);
       case "request": return await cmdRequest(ctx, parsed);
-      case "list": return await cmdList(ctx);
+      case "list": return await cmdList(ctx, parsed);
       case "describe": return await cmdDescribe(ctx, parsed, "describe");
       case "get": return await cmdDescribe(ctx, parsed, "get");
-      case "grants": return await cmdGrants(ctx);
+      case "grants": return await cmdGrants(ctx, parsed);
       default: return await cmdAudit(ctx, parsed);
     }
   } catch (error) {
