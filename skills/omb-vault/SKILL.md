@@ -50,7 +50,7 @@ omb secrets run --env PGPASSWORD=DB_PASSWORD --purpose "back up the db" -- /usr/
 
 ## Approval (exit 8)
 
-The first call for a ref, purpose and agent files a request. OMB either approves it at once or shows the person a card. `omb` exits 8 and prints what to wait for.
+The first call for a ref, purpose and agent files a request. OMB either approves it at once, and the same call then goes through, or shows the person a card. In the second case `omb` exits 8 and prints what to wait for.
 
 - Do not retry in a loop, and never try to approve, grant or reveal a secret yourself: those commands are the person's and exit 6.
 - Wait for the notice `already approved omb secrets: REF`, then run the same command once more.

@@ -282,7 +282,7 @@ function pendingText(refs, serverText) {
   const list = refs.join(", ");
   const notices = refs.map((ref) => `"already approved omb secrets: ${ref}"`).join(" or ");
   return `approval pending for ${list}.${serverText ? ` ${serverText}` : ""}\n`
-    + "A card is waiting in OpenMausBot (or OpenMausBot approved it at once). Do not retry in a loop and do not try to approve it yourself.\n"
+    + "A card is waiting in OpenMausBot. Do not retry in a loop and do not try to approve it yourself.\n"
     + `Wait for the notice ${notices}, then run the same command again. If no notice comes, tell the person that omb secrets ${list} needs an answer in OpenMausBot.`;
 }
 
@@ -993,7 +993,7 @@ omb secrets run --env PGPASSWORD=DB_PASSWORD --purpose "back up the db" -- /usr/
 
 ## Approval (exit 8)
 
-The first call for a ref, purpose and agent files a request. OMB either approves it at once or shows the person a card. \`omb\` exits 8 and prints what to wait for.
+The first call for a ref, purpose and agent files a request. OMB either approves it at once, and the same call then goes through, or shows the person a card. In the second case \`omb\` exits 8 and prints what to wait for.
 
 - Do not retry in a loop, and never try to approve, grant or reveal a secret yourself: those commands are the person's and exit 6.
 - Wait for the notice \`already approved omb secrets: REF\`, then run the same command once more.
