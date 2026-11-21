@@ -43,8 +43,8 @@ async function binaryVersion(candidate) {
     if (!version) console.warn(`cua-driver --version gave no version: stdout ${JSON.stringify(String(stdout).slice(0, 200))}, stderr ${JSON.stringify(String(stderr).slice(0, 200))}`);
     return version;
   } catch (error) {
-    console.warn(`cua-driver --version failed: code ${error?.code ?? "?"}, signal ${error?.signal ?? "none"}, killed ${Boolean(error?.killed)}, stderr ${JSON.stringify(String(error?.stderr ?? "").slice(0, 300))}`);
-    return versionOf(error?.stdout) ?? versionOf(error?.stderr);
+    console.warn(`cua-driver --version failed: code ${error?.code ?? "?"}, signal ${error?.signal ?? "none"}, killed ${Boolean(error?.killed)}, stdout ${JSON.stringify(String(error?.stdout ?? "").slice(0, 200))}, stderr ${JSON.stringify(String(error?.stderr ?? "").slice(0, 300))}`);
+    return null;
   }
 }
 
