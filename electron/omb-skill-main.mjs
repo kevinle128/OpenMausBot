@@ -31,9 +31,20 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     return handler(event, ...args);
   };
   const senderServer = (event) => { try { return new URL(event?.senderFrame?.url ?? "").origin; } catch { return null; } };
-  // A remote page learns nothing about this computer's users: the home folder shows as `~` and the omb path stays here.
-  const tilde = (value) => (typeof value === "string" ? value.split(home).join("~") : value);
-  const shown = (event, rows) => (isLocal(event) ? rows : rows.map((row) => ({ ...row, folder: tilde(row.folder), note: tilde(row.note) })));
+  // A remote page learns nothing about this computer's users: the home folder shows as `~`, a harness folder set by an
+  // environment variable as `$NAME`, and the omb path stays here. Only whole path prefixes are replaced.
+  const prefix = (dir) => (typeof dir === "string" && path.isAbsolute(dir) ? path.resolve(dir) : null);
+  const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const redactions = (harnesses) => [[prefix(home), "~"], ...harnesses.filter((h) => typeof h?.env === "string").map((h) => [prefix(env[h.env]), `$${h.env}`])]
+    .filter(([dir]) => dir && dir !== path.sep)
+    .sort((a, b) => b[0].length - a[0].length)
+    .map(([dir, label]) => [new RegExp(`${escaped(dir)}(?![\\w.-])`, "g"), label]);
+  const shown = async (event, rows) => {
+    if (isLocal(event)) return rows;
+    const rules = redactions((await load(source)).HARNESSES ?? []);
+    const redact = (value) => (typeof value === "string" ? rules.reduce((text, [re, label]) => text.replace(re, () => label), value) : value);
+    return rows.map((row) => ({ ...row, folder: redact(row.folder), note: redact(row.note) }));
+  };
   const target = (event) => (isLocal(event) ? { server: origin(), other: remote() } : { server: null, other: senderServer(event) });
   ipcMain.on("omb-skill:page", (event) => { try { event.returnValue = allowed(event) === true; } catch { event.returnValue = false; } });
   const anyPairing = async () => (await run(["status"])).data?.tokenAccepted === true;
@@ -55,7 +66,7 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     if (!available || (!server && !other)) return { available: false, paired: false, rows: [] };
     if (other) {
       const [paired, list] = await Promise.all([anyPairing(), run(["skill", "list"])]);
-      return { available: true, paired, rows: shown(event, Array.isArray(list.data?.rows) ? list.data.rows : []) };
+      return { available: true, paired, rows: await shown(event, Array.isArray(list.data?.rows) ? list.data.rows : []) };
     }
     const [{ paired }, list] = await Promise.all([pairing(server), run(["skill", "list"])]);
     return { available: true, paired, rows: Array.isArray(list.data?.rows) ? list.data.rows : [] };
@@ -83,7 +94,7 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     const copied = copyOmb({ source, home });
     const result = await run(["skill", "install", "--harness", ids.join(",")]);
     if (!Array.isArray(result.data?.rows)) return { rows: [], notes, error: result.error ?? "Installing the skill failed" };
-    if (!isLocal(event)) return { rows: shown(event, result.data.rows), notes, paired: true };
+    if (!isLocal(event)) return { rows: await shown(event, result.data.rows), notes, paired: true };
     return { rows: result.data.rows, notes, command: copied.path, paired: true };
   }, { gesture: true }));
 }

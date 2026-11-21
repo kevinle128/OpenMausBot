@@ -13,7 +13,7 @@ const CODE = "ABCD-EFGH-JKLM";
 const SERVER = "http://127.0.0.1:8799";
 
 /** Real omb for `skill`, scripted answers for `status` and `pair` (no server runs here). */
-function fixture({ status = null, pairFails = false, platform = "darwin", origin = SERVER, remote = null, allowed = () => true, isLocal = () => true, focused = () => true } = {}) {
+function fixture({ status = null, pairFails = false, platform = "darwin", origin = SERVER, remote = null, allowed = () => true, isLocal = () => true, focused = () => true, extraEnv = () => ({}) } = {}) {
   const home = mkdtempSync(path.join(tmpdir(), "omb-skill-main-"));
   const bin = path.join(home, "node-bin");
   mkdirSync(bin);
@@ -41,7 +41,7 @@ function fixture({ status = null, pairFails = false, platform = "darwin", origin
   });
   installOmbSkill({
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: (channel, listener) => listeners.set(channel, listener) }, guard: (_channel, handler) => handler,
-    serverOrigin: () => origin, remoteServer: () => remote, allowed, isLocal, focused, isPackaged: false, resourcesPath: "/nowhere", platform, home, env: { PATH: bin }, load, searchPath: async () => bin,
+    serverOrigin: () => origin, remoteServer: () => remote, allowed, isLocal, focused, isPackaged: false, resourcesPath: "/nowhere", platform, home, env: { PATH: bin, ...extraEnv(home) }, load, searchPath: async () => bin,
   });
   return { handlers, listeners, home, bin, calls, state: () => handlers.get("omb-skill:state")({}), install: (...args) => handlers.get("omb-skill:install")({}, ...args), done: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -180,6 +180,18 @@ test("a page the main window shows from another server installs on this computer
     for (const row of [...state.rows, ...result.rows]) assert.equal(JSON.stringify(row).includes(t.home), false);
     assert.ok(state.rows.some((row) => row.folder?.startsWith("~")));
   } finally { t.done(); }
+});
+
+test("a remote page sees neither the home folder nor a harness folder moved outside it", async () => {
+  const outside = mkdtempSync(path.join(tmpdir(), "omb-claude-dir-"));
+  const t = fixture({ isLocal: () => false, extraEnv: () => ({ CLAUDE_CONFIG_DIR: outside }) });
+  try {
+    const state = await t.handlers.get("omb-skill:state")(mini);
+    const claude = state.rows.find((row) => row.harness === "claudeAgent");
+    assert.equal(JSON.stringify(state.rows).includes(outside), false);
+    assert.ok(claude.folder.startsWith("$CLAUDE_CONFIG_DIR"), claude.folder);
+    for (const row of state.rows) assert.equal(JSON.stringify(row).includes(t.home + "/"), false);
+  } finally { t.done(); rmSync(outside, { recursive: true, force: true }); }
 });
 
 test("an unverified sender is refused on both channels and in the page check, and an install needs the focused window", async () => {
