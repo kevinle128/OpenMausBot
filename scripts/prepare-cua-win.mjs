@@ -1,6 +1,6 @@
 // Stage the Windows CUA executable and native SDK outside ASAR.
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -75,6 +75,13 @@ async function officialBinary() {
     timeout: 60_000,
     windowsHide: true,
   });
+  if (!existsSync(cachedBinary)) {
+    const listed = (await readdir(cache).catch(() => [])).join(", ") || "nothing";
+    const threats = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "Get-MpThreatDetection | Select-Object -Last 5 | ForEach-Object { \"$($_.InitialDetectionTime) $($_.Resources -join ';') $($_.ActionSuccess)\" }"],
+    { timeout: 30_000, windowsHide: true }).then(({ stdout }) => stdout.trim() || "none", (error) => `not readable (${error?.code ?? "error"})`);
+    throw new Error(`cua-driver.exe is missing after the archive was expanded; the folder holds: ${listed}. Recent Defender detections: ${threats}`);
+  }
   if ((await binaryVersion(cachedBinary)) !== expectedVersion) {
     throw new Error(`downloaded CUA Driver does not report version ${expectedVersion}`);
   }
