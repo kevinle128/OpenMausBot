@@ -38,10 +38,10 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
     void (async () => {
       try {
         const desktop = desktopSkill();
+        setOnThisComputer(desktop !== undefined);
         const state = desktop ? await desktop.state() : null;
         const list = desktop ? state?.rows ?? [] : await serverSkillRows();
         if (!live) return;
-        setOnThisComputer(desktop !== undefined);
         setUnavailable(desktop !== undefined && state?.available !== true);
         setRows(list);
       } catch (cause) {

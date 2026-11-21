@@ -174,7 +174,11 @@ test("a page the main window shows from another server installs on this computer
     assert.equal(t.calls.some((argv) => argv[0] === "pair"), false);
     assert.equal(result.rows[0].status, "installed");
     assert.deepEqual(result.notes, [{ key: "pairNeeded", server: "https://mini.example.com" }]);
-    assert.equal((await handler("omb-skill:state")(mini)).available, true);
+    assert.equal("command" in result, false);
+    const state = await handler("omb-skill:state")(mini);
+    assert.equal(state.available, true);
+    for (const row of [...state.rows, ...result.rows]) assert.equal(JSON.stringify(row).includes(t.home), false);
+    assert.ok(state.rows.some((row) => row.folder?.startsWith("~")));
   } finally { t.done(); }
 });
 
@@ -198,4 +202,9 @@ test("an unverified sender is refused on both channels and in the page check, an
 test("a harness the page names that omb does not know is refused", async () => {
   const t = fixture({ status: { server: SERVER, tokenAccepted: true } });
   try { await assert.rejects(() => t.install(["notAHarness"]), /from the list/); } finally { t.done(); }
+  const unpaired = fixture();
+  try {
+    await assert.rejects(() => unpaired.install(["notAHarness"], CODE), /from the list/);
+    assert.deepEqual(unpaired.calls, []);
+  } finally { unpaired.done(); }
 });

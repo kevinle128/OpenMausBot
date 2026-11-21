@@ -31,6 +31,9 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     return handler(event, ...args);
   };
   const senderServer = (event) => { try { return new URL(event?.senderFrame?.url ?? "").origin; } catch { return null; } };
+  // A remote page learns nothing about this computer's users: the home folder shows as `~` and the omb path stays here.
+  const tilde = (value) => (typeof value === "string" ? value.split(home).join("~") : value);
+  const shown = (event, rows) => (isLocal(event) ? rows : rows.map((row) => ({ ...row, folder: tilde(row.folder), note: tilde(row.note) })));
   const target = (event) => (isLocal(event) ? { server: origin(), other: remote() } : { server: null, other: senderServer(event) });
   ipcMain.on("omb-skill:page", (event) => { try { event.returnValue = allowed(event) === true; } catch { event.returnValue = false; } });
   const anyPairing = async () => (await run(["status"])).data?.tokenAccepted === true;
@@ -52,7 +55,7 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     if (!available || (!server && !other)) return { available: false, paired: false, rows: [] };
     if (other) {
       const [paired, list] = await Promise.all([anyPairing(), run(["skill", "list"])]);
-      return { available: true, paired, rows: Array.isArray(list.data?.rows) ? list.data.rows : [] };
+      return { available: true, paired, rows: shown(event, Array.isArray(list.data?.rows) ? list.data.rows : []) };
     }
     const [{ paired }, list] = await Promise.all([pairing(server), run(["skill", "list"])]);
     return { available: true, paired, rows: Array.isArray(list.data?.rows) ? list.data.rows : [] };
@@ -63,6 +66,8 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
     const { server, other } = target(event);
     if (!available || (!server && !other)) throw new Error("Installing the skill from this app is not available on this computer");
     if (code !== undefined && (typeof code !== "string" || !PAIRING_CODE.test(code))) throw new Error("The pairing code is not valid");
+    const known = (await load(source)).HARNESSES?.map((harness) => harness.id);
+    if (!Array.isArray(known) || !ids.every((id) => known.includes(id))) throw new Error("Choose agent harnesses from the list");
     const notes = [];
     if (other) {
       if (!(await anyPairing())) notes.push({ key: "pairNeeded", server: other });
@@ -75,11 +80,10 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
       if (result.code !== 0) return { rows: [], notes, error: result.error ?? "Pairing failed" };
     }
     }
-    const known = (await load(source)).HARNESSES?.map((harness) => harness.id);
-    if (known && !ids.every((id) => known.includes(id))) throw new Error("Choose agent harnesses from the list");
     const copied = copyOmb({ source, home });
     const result = await run(["skill", "install", "--harness", ids.join(",")]);
     if (!Array.isArray(result.data?.rows)) return { rows: [], notes, error: result.error ?? "Installing the skill failed" };
+    if (!isLocal(event)) return { rows: shown(event, result.data.rows), notes, paired: true };
     return { rows: result.data.rows, notes, command: copied.path, paired: true };
   }, { gesture: true }));
 }
