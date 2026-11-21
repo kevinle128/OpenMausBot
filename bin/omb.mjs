@@ -1213,12 +1213,14 @@ function cmdSkillInstall(ctx, { flags, positionals }) {
 }
 
 /** Built in parts, so that this file never holds a whole placeholder. */
-const PLACEHOLDER = new RegExp(["\\$\\{", "secret:", "\\s*([A-Za-z0-9][A-Za-z0-9_.-]{0,127})", "[^}]*\\}"].join(""), "g");
+const PLACEHOLDER = new RegExp(["\\$\\{", "secret:", "\\s*([A-Za-z0-9][A-Za-z0-9_.-]{0,127})", "[^}\\r\\n{]{0,128}\\}"].join(""), "g");
 
 function findPlaceholders(value, refs, depth = 0) {
   if (depth > 64 || refs.size >= 10) return;
   if (typeof value === "string") {
-    for (const found of value.matchAll(PLACEHOLDER)) refs.add(found[1]);
+    for (const found of value.matchAll(PLACEHOLDER)) {
+      if (refs.add(found[1]).size >= 10) return;
+    }
   } else if (Array.isArray(value)) {
     for (const item of value) findPlaceholders(item, refs, depth + 1);
   } else if (isObject(value)) {

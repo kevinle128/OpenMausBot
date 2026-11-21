@@ -337,6 +337,25 @@ describe("hook claude-pretooluse", () => {
     expect(JSON.parse(result.out).hookSpecificOutput.permissionDecisionReason).toContain("API_KEY");
   });
 
+  it("keeps a match inside one placeholder: an unclosed example neither spans lines nor swallows a later placeholder", async () => {
+    const open = ["$", "{", "secret:"].join("");
+    const prose = await run(["hook", "claude-pretooluse"], {}, event({ content: `see \`${open}EXAMPLE\`\nconst x = { a: 1 };` }));
+    expect(prose).toEqual({ code: EXIT.done, out: "", err: "" });
+    const both = await run(["hook", "claude-pretooluse"], {}, event({ content: `\`${open}EXAMPLE\` then ${placeholder("REAL_TOKEN")}` }));
+    expect(JSON.parse(both.out).hookSpecificOutput.permissionDecisionReason).toContain("Names found: REAL_TOKEN.");
+  });
+
+  it("stays fast on many unclosed placeholders and names at most 10 refs", async () => {
+    const open = ["$", "{", "secret:"].join("");
+    const started = Date.now();
+    expect(await run(["hook", "claude-pretooluse"], {}, event({ command: `${open}ABCDEFGH `.repeat(20000) }))).toEqual({ code: EXIT.done, out: "", err: "" });
+    expect(Date.now() - started).toBeLessThan(2000);
+    const many = Array.from({ length: 15 }, (_, i) => placeholder(`N${i}`)).join(" ");
+    const reason: string = JSON.parse((await run(["hook", "claude-pretooluse"], {}, event({ command: many }))).out).hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("N9.");
+    expect(reason).not.toContain("N10");
+  });
+
   it("prints nothing and exits 0 for an ordinary tool call", async () => {
     for (const input of [event({ command: "ls -la" }), event({ command: "echo '${HOME}' ${secret_not_a_ref} secret:NAME" }), event(undefined), JSON.stringify({ tool_name: "Read" })]) {
       expect(await run(["hook", "claude-pretooluse"], {}, input)).toEqual({ code: EXIT.done, out: "", err: "" });
