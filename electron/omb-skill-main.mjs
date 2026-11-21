@@ -11,6 +11,10 @@ import { commandPath } from "./shell-path.mjs";
 const HARNESS_ID = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
 const PAIRING_CODE = /^[A-Za-z0-9-]{4,64}$/;
 const MAX_HARNESSES = 40;
+// omb writes a path at the start of a value or after a space, bracket, quote, `=` or `:`, and ends it with `/`, the end,
+// a space, a closing bracket, a quote or punctuation that ends a clause. Anything else is part of another name.
+const PATH_START = "(?<![^\\s(\\[='\":])";
+const PATH_END = "(?=$|[\\s/)\\],;:'\"]|\\.(?:$|\\s))";
 
 const checkedIds = (value) => {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_HARNESSES || !value.every((id) => typeof id === "string" && HARNESS_ID.test(id))) {
@@ -38,7 +42,7 @@ export function installOmbSkill({ ipcMain, allowed, isLocal, focused = () => tru
   const redactions = (harnesses) => [[prefix(home), "~"], ...harnesses.filter((h) => typeof h?.env === "string").map((h) => [prefix(env[h.env]), `$${h.env}`])]
     .filter(([dir]) => dir && dir !== path.sep)
     .sort((a, b) => b[0].length - a[0].length)
-    .map(([dir, label]) => [new RegExp(`${escaped(dir)}(?![\\w.-])`, "g"), label]);
+    .map(([dir, label]) => [new RegExp(`${PATH_START}${escaped(dir)}${PATH_END}`, "g"), label]);
   const shown = async (event, rows) => {
     if (isLocal(event)) return rows;
     const rules = redactions((await load(source)).HARNESSES ?? []);

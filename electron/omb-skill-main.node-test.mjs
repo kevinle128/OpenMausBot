@@ -194,6 +194,15 @@ test("a remote page sees neither the home folder nor a harness folder moved outs
   } finally { t.done(); rmSync(outside, { recursive: true, force: true }); }
 });
 
+test("a remote page keeps a harness folder whose name matches a segment inside another harness path", async () => {
+  const t = fixture({ isLocal: () => false, extraEnv: () => ({ COPILOT_HOME: "/.claude" }) });
+  try {
+    const rows = (await t.handlers.get("omb-skill:state")(mini)).rows;
+    assert.equal(rows.find((row) => row.harness === "claudeAgent").folder, "~/.claude/skills");
+    assert.ok(rows.find((row) => row.harness === "copilotAgent").folder.startsWith("$COPILOT_HOME/"));
+  } finally { t.done(); }
+});
+
 test("an unverified sender is refused on both channels and in the page check, and an install needs the focused window", async () => {
   const t = fixture({ allowed: () => false });
   try {
