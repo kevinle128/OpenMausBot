@@ -26,6 +26,7 @@ let team = false;
 let loopbackAuth: RequestAuth | null = null;
 const history: Array<{ key: string }> = [];
 const cards: string[] = [];
+const reached: Array<{ url: string; headers: Record<string, string> }> = [];
 
 const mint = (scopes: Scope[]): string => {
   const { code } = sessions.openPairing({ scopes, tokenTtlMs: 3_600_000 });
@@ -43,7 +44,7 @@ async function call(token: string | null, method: string, path: string, body?: u
   return { status: response.status, body: await response.json() as Record<string, any> };
 }
 
-const ask = (extra: Record<string, unknown> = {}) => ({ ref: "API_KEY", project: "default", purpose: "deploy", fingerprint: FP, agentLabel: "claude", ...extra });
+const ask = (extra: Record<string, unknown> = {}) => ({ ref: "API_KEY", url: "https://api.example.com/v1", project: "default", purpose: "deploy", fingerprint: FP, agentLabel: "claude", ...extra });
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "omb-secrets-routes-"));
@@ -51,13 +52,15 @@ beforeEach(async () => {
   loopbackAuth = null;
   history.length = 0;
   cards.length = 0;
+  reached.length = 0;
   sessions = new SessionRegistry({ file: join(dir, "sessions.json") });
   const vault = new VaultStore({ dataDir: dir });
-  vault.saveSecret({ name: "API_KEY", value: SECRET, source: "settings", bots: [PASEO_BOT_ID] });
-  vault.saveSecret({ name: "CARD_KEY", value: SECRET, source: "settings", bots: [] });
+  vault.saveSecret({ name: "API_KEY", value: SECRET, source: "settings", bots: [PASEO_BOT_ID], profile: { allowedHosts: ["api.example.com"] } });
+  vault.saveSecret({ name: "CARD_KEY", value: SECRET, source: "settings", bots: [], profile: { allowedHosts: ["api.example.com"] } });
   const service = createSecretsService({
     vault, dataDir: dir, approvals: { open: (card) => (cards.push(card.subtitle), true), close: () => {} },
     paseoBot: () => ({ id: PASEO_BOT_ID, name: "Paseo", threadId: "t" }), history: (entry) => history.push(entry), botExists: () => true, log: () => {},
+    httpFetch: (async (url: string, init: RequestInit) => (reached.push({ url, headers: Object.fromEntries(new Headers(init.headers)) }), new Response("ok", { status: 200, headers: { "x-from": "destination" } }))) as unknown as typeof fetch,
   });
   const routes = createSecretsRoutes({ service, get team() { return team; } });
   server = createServer(async (req, res) => {
@@ -79,18 +82,18 @@ afterEach(async () => {
 
 describe("what a secrets token can reach", () => {
   const AGENT_PATHS: Array<[string, string]> = [
-    ["POST", "/api/secrets/resolve"], ["POST", "/api/secrets/run-check"], ["POST", "/api/secrets/request"], ["GET", "/api/secrets/list"],
+    ["POST", "/api/secrets/fetch"], ["POST", "/api/secrets/run-check"], ["POST", "/api/secrets/request"], ["GET", "/api/secrets/list"],
     ["GET", "/api/secrets/grants"], ["GET", "/api/secrets/audit"], ["GET", "/api/secrets/describe/API_KEY"], ["GET", "/api/secrets/get/API_KEY"],
   ];
   const OTHER_PATHS: Array<[string, string]> = [
-    ["GET", "/api/vault"], ["POST", "/api/vault/secrets"], ["DELETE", "/api/vault/secrets/x"], ["GET", "/api/auth/session"], ["GET", "/api/auth/sessions"],
+    ["GET", "/api/vault"], ["POST", "/api/vault/secrets"], ["DELETE", "/api/vault/secrets/x"], ["PATCH", "/api/vault/secrets/x"], ["GET", "/api/auth/session"], ["GET", "/api/auth/sessions"],
     ["POST", "/api/auth/pairing"], ["POST", "/api/auth/logout"], ["GET", "/api/bots"], ["PATCH", "/api/bots/b1"], ["GET", "/api/notifications"],
     ["POST", "/api/notifications/read-all"], ["GET", "/api/themes"], ["GET", "/api/health"], ["GET", "/api/threads/t/messages"], ["POST", "/api/threads/t/respond"],
     ["GET", "/api/updates/check"], ["POST", "/api/auth/stream-ticket"], ["GET", "/api/team-files"], ["GET", "/api/settings"], ["GET", "/api/secrets/"], ["GET", "/api/secrets/unknown"],
     ["GET", "/api/secrets/describe/has%20space"], ["GET", "/api/secrets/get/-flag"], ["GET", "/api/secrets/admin/grants"], ["GET", "/api/secrets/admin/audit"],
     ["GET", "/api/secrets/admin/approve"], ["POST", "/api/secrets/admin/set"], ["POST", "/api/secrets/admin/rotate"], ["POST", "/api/secrets/admin/delete"],
     ["POST", "/api/secrets/admin/grant"], ["POST", "/api/secrets/admin/revoke"], ["POST", "/api/secrets/admin/approve"], ["POST", "/api/secrets/admin/reveal"],
-    ["GET", "/api/secrets/resolve"], ["POST", "/api/secrets/list"],
+    ["GET", "/api/secrets/fetch"], ["POST", "/api/secrets/list"], ["POST", "/api/secrets/resolve"],
   ];
 
   it("passes the gate for the agent routes only", () => {
@@ -98,18 +101,19 @@ describe("what a secrets token can reach", () => {
     const gate = (method: string, path: string) =>
       resolveRequestAuth({ method, headers: { authorization: `Bearer ${token}`, host: "mac-mini.tailnet:8799" } } as never, { sessions, cookieName: "omb_session", streamPath: "/api/events", url: new URL(path, "http://x") });
     for (const [method, path] of AGENT_PATHS) expect(gate(method, path).auth, `${method} ${path}`).not.toBeNull();
-    for (const [method, path] of OTHER_PATHS.filter(([method, path]) => !(method === "GET" && /^\/api\/secrets\/(?:resolve)$/.test(path)) && !(method === "POST" && path === "/api/secrets/list"))) {
+    for (const [method, path] of OTHER_PATHS.filter(([method, path]) => !(method === "POST" && path === "/api/secrets/list"))) {
       const result = gate(method, path);
       expect(result.auth, `${method} ${path}`).toBeNull();
       expect(result.status, `${method} ${path}`).toBe(403);
     }
     expect(requiredScope("GET", "/api/secrets/admin/grants")).toBe("admin");
-    expect(requiredScope("POST", "/api/secrets/resolve")).toBe("secrets");
+    expect(requiredScope("POST", "/api/secrets/fetch")).toBe("secrets");
+    expect(requiredScope("POST", "/api/secrets/resolve")).toBe("admin");
   });
 
   it("is answered 403 over HTTP everywhere else, and an admin session reaches both sets", async () => {
     const token = mint(["secrets"]);
-    for (const [method, path] of OTHER_PATHS.filter(([m, p]) => !(m === "GET" && p === "/api/secrets/resolve") && !(m === "POST" && p === "/api/secrets/list"))) {
+    for (const [method, path] of OTHER_PATHS.filter(([m, p]) => !(m === "POST" && p === "/api/secrets/list"))) {
       expect((await call(token, method, path, method === "POST" ? {} : undefined)).status, `${method} ${path}`).toBe(403);
     }
     const admin = mint(["admin", "client"]);
@@ -137,28 +141,33 @@ describe("what a secrets token can reach", () => {
 });
 
 describe("envelopes and exit codes", () => {
-  it("answers resolve with the value in the ak envelope once a grant covers the scope", async () => {
+  it("answers fetch with the destination's answer in the ak envelope once a grant covers the scope, and the value reaches only the destination", async () => {
     const token = mint(["secrets"]);
-    const first = await call(token, "POST", "/api/secrets/resolve", ask({ agentId: "a1", context: "tool:Bash:command" }));
+    const first = await call(token, "POST", "/api/secrets/fetch", ask({ agentId: "a1", context: "tool:Bash:command" }));
     expect(first).toMatchObject({ status: 409, body: { schema_version: 1, error_code: "approval_pending", exit_code: 8 } });
     expect(Object.keys(first.body).sort()).toEqual(["error", "error_code", "exit_code", "schema_version"]);
-    const second = await call(token, "POST", "/api/secrets/resolve", ask());
-    expect(second).toEqual({ status: 200, body: { schema_version: 1, kind: "secrets.resolve", data: { value: SECRET, ref: "API_KEY" } } });
+    const second = await call(token, "POST", "/api/secrets/fetch", ask());
+    expect(second).toEqual({ status: 200, body: { schema_version: 1, kind: "secrets.fetch", data: {
+      status: 200, headers: { "content-type": "text/plain;charset=UTF-8", "x-from": "destination" }, body: Buffer.from("ok").toString("base64"), truncated: false,
+    } } });
+    expect(reached).toHaveLength(1);
+    expect(reached[0]).toMatchObject({ url: "https://api.example.com/v1", headers: { authorization: `Bearer ${SECRET}` } });
+    expect(JSON.stringify(second.body)).not.toContain(SECRET);
   });
 
   it("uses exit 2 for a bad request, 3 for a covered ref that is gone, 6 for a block, 9 for the cool-down", async () => {
     const token = mint(["secrets"]);
     const admin = mint(["admin", "client"]);
-    expect((await call(token, "POST", "/api/secrets/resolve", ask({ ref: "bad ref" }))).body).toMatchObject({ exit_code: 2, error_code: "invalid_request" });
-    expect((await call(token, "POST", "/api/secrets/resolve", ask({ fingerprint: "nope" }))).status).toBe(400);
-    expect((await call(token, "POST", "/api/secrets/resolve", { ref: "API_KEY" })).status).toBe(400);
-    expect((await call(token, "POST", "/api/secrets/resolve", "not an object" as never)).status).toBe(400);
+    expect((await call(token, "POST", "/api/secrets/fetch", ask({ ref: "bad ref" }))).body).toMatchObject({ exit_code: 2, error_code: "invalid_request" });
+    expect((await call(token, "POST", "/api/secrets/fetch", ask({ fingerprint: "nope" }))).status).toBe(400);
+    expect((await call(token, "POST", "/api/secrets/fetch", { ref: "API_KEY" })).status).toBe(400);
+    expect((await call(token, "POST", "/api/secrets/fetch", "not an object" as never)).status).toBe(400);
     await call(admin, "POST", "/api/secrets/admin/grant", { ref: "GONE", fingerprint: FP, purpose: "deploy", state: "allow", persist: true });
-    expect((await call(token, "POST", "/api/secrets/resolve", ask({ ref: "GONE" }))).body).toMatchObject({ exit_code: 3, error_code: "no_such_secret" });
+    expect((await call(token, "POST", "/api/secrets/fetch", ask({ ref: "GONE" }))).body).toMatchObject({ exit_code: 3, error_code: "no_such_secret" });
     await call(admin, "POST", "/api/secrets/admin/grant", { ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "block" });
-    expect((await call(token, "POST", "/api/secrets/resolve", ask()))).toMatchObject({ status: 403, body: { exit_code: 6, error_code: "blocked" } });
-    for (let i = 0; i < 12; i += 1) await call(token, "POST", "/api/secrets/resolve", ask({ ref: "CARD_KEY" }));
-    expect((await call(token, "POST", "/api/secrets/resolve", ask({ ref: "CARD_KEY" })))).toMatchObject({ status: 429, body: { exit_code: 9, error_code: "rate_limited" } });
+    expect((await call(token, "POST", "/api/secrets/fetch", ask()))).toMatchObject({ status: 403, body: { exit_code: 6, error_code: "blocked" } });
+    for (let i = 0; i < 12; i += 1) await call(token, "POST", "/api/secrets/fetch", ask({ ref: "CARD_KEY" }));
+    expect((await call(token, "POST", "/api/secrets/fetch", ask({ ref: "CARD_KEY" })))).toMatchObject({ status: 429, body: { exit_code: 9, error_code: "rate_limited" } });
   });
 
   it("answers run-check with every value or with a request and exit 8", async () => {
@@ -200,9 +209,9 @@ describe("envelopes and exit codes", () => {
 
   it("requires JSON, and refuses a body that is too large", async () => {
     const token = mint(["secrets"]);
-    const form = await fetch(`${base}/api/secrets/resolve`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" }, body: "ref=API_KEY" });
+    const form = await fetch(`${base}/api/secrets/fetch`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" }, body: "ref=API_KEY" });
     expect(form.status).toBe(400);
-    expect((await call(token, "POST", "/api/secrets/resolve", ask({ context: "x".repeat(70_000) }))).body).toMatchObject({ exit_code: 2 });
+    expect((await call(token, "POST", "/api/secrets/fetch", ask({ context: "x".repeat(70_000) }))).body).toMatchObject({ exit_code: 2 });
   });
 
   it("fails closed on a Team Cloud", async () => {
@@ -276,11 +285,11 @@ describe("nothing is logged from these routes", () => {
     const spies = (["log", "info", "warn", "error", "debug"] as const).map((name) => vi.spyOn(console, name).mockImplementation(() => {}));
     const token = mint(["secrets"]);
     const admin = mint(["admin", "client"]);
-    await call(token, "POST", "/api/secrets/resolve", ask());
-    await call(token, "POST", "/api/secrets/resolve", ask());
+    await call(token, "POST", "/api/secrets/fetch", ask());
+    await call(token, "POST", "/api/secrets/fetch", ask());
     await call(admin, "POST", "/api/secrets/admin/set", { ref: "LOGGED_KEY", value: "logged-value-0123456789" });
     await call(admin, "POST", "/api/secrets/admin/reveal", { ref: "LOGGED_KEY" });
-    await call(token, "POST", "/api/secrets/resolve", ask({ ref: "bad ref" }));
+    await call(token, "POST", "/api/secrets/fetch", ask({ ref: "bad ref" }));
     const printed = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
     spies.forEach((spy) => spy.mockRestore());
     expect(printed).not.toContain("SUPERSECRET");

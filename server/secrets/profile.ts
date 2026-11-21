@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ALLOWED_HOSTS_MAX, HOST_NAME_MAX, normalizeHost } from "../../shared/host-name.ts";
 import type { SecretProfile } from "../../shared/vault.ts";
 
 const TEXT_MAX = 1_000;
@@ -8,6 +9,10 @@ const ITEM_MAX = 100;
 
 const text = z.string().trim().min(1).max(TEXT_MAX);
 const item = z.string().trim().min(1).max(ITEM_MAX);
+
+const host = z.string().trim().min(1).max(HOST_NAME_MAX)
+  .refine((entry) => normalizeHost(entry) !== null, "not a host name")
+  .transform((entry) => normalizeHost(entry)!);
 
 const profileFields = z.object({
   description: text.optional(),
@@ -20,6 +25,8 @@ const profileFields = z.object({
   sensitivity: item.optional(),
   expiresAt: z.number().int().positive().optional(),
   rotateUrl: z.string().trim().url().max(TEXT_MAX).optional(),
+  /** The hosts `omb secrets fetch` may send the value to. Only a person sets it. */
+  allowedHosts: z.array(host).max(ALLOWED_HOSTS_MAX).transform((hosts) => [...new Set(hosts)]).optional(),
 });
 
 /** From disk: a field a newer release wrote is dropped and a profile that no longer parses is skipped, never failing the whole Vault file. */

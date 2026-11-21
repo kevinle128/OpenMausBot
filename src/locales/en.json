@@ -3949,6 +3949,8 @@
   "settings.vault.secret.name": "Name",
   "settings.vault.secret.namePlaceholder": "Stripe secret key",
   "settings.vault.secret.nameHint": "Bots ask for it by this name.",
+  "settings.vault.secret.hosts": "Hosts it may be sent to",
+  "settings.vault.secret.hostsHint": "One host per line, such as api.example.com. An agent can have {app} send this secret in a request to these hosts only. Empty: no host.",
   "settings.vault.secret.value": "Secret",
   "settings.vault.secret.valueKeep": "New secret (leave empty to keep the saved one)",
   "settings.vault.secret.save": "Save secret",

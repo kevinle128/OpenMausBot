@@ -507,7 +507,7 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
 /** What a `secrets` token may reach: an agent machine asking for, and reading the metadata of, the secrets it may use.
  * Setting, granting, approving and revealing live under /api/secrets/admin/ and stay admin-only. */
 export const SECRETS_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: RegExp }> = [
-  { methods: ["POST"], path: /^\/api\/secrets\/(?:resolve|run-check|request)$/ },
+  { methods: ["POST"], path: /^\/api\/secrets\/(?:fetch|run-check|request)$/ },
   { methods: ["GET"], path: /^\/api\/secrets\/(?:list|grants|audit)$/ },
   { methods: ["GET"], path: /^\/api\/secrets\/(?:describe|get)\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/ },
 ];

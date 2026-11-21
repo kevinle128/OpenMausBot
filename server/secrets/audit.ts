@@ -12,7 +12,7 @@ export const AUDIT_PAGE_MAX = 500;
 
 export type AuditDecision = "allow" | "deny" | "check";
 export type AuditSource = "adapter" | "cli" | "desktop";
-export type AuditErrorCode = "" | "approval_pending" | "rate_limited" | "blocked" | "host_not_allowed" | "no_such_secret" | "denied" | "approve_refused";
+export type AuditErrorCode = "" | "approval_pending" | "rate_limited" | "blocked" | "host_not_allowed" | "no_such_secret" | "denied" | "approve_refused" | "upstream_failed";
 
 /** One decision. It never holds a value, and never a hash or a part of one. */
 export interface AuditRow {
@@ -33,6 +33,9 @@ export interface AuditRow {
   caller: string;
   destHost?: string;
   agentId?: string;
+  /** Of a fetch: the HTTP method, and the status the destination answered (absent when it did not). Never a URL path, query or body. */
+  method?: string;
+  status?: number;
 }
 
 export type NewAuditRow = Omit<AuditRow, "id" | "at" | "short"> & { fingerprint: string };

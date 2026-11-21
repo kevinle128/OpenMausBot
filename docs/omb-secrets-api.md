@@ -2,7 +2,7 @@
 
 The server side of `omb secrets`: the Vault of OpenMausBot, opened to agent machines under the same command surface, JSON envelope and exit codes as `ak secrets`. A command line client (`omb`) is built against this page.
 
-Everything here is under `/api/secrets/`. Requests and answers are JSON. Nothing in a request or an answer is logged, and a secret value appears in exactly three answers: `resolve`, `run-check` and `admin/reveal`.
+Everything here is under `/api/secrets/`. Requests and answers are JSON. Nothing in a request or an answer is logged, and a secret value appears in exactly two answers: `run-check`, which sends it to the command line client for one pinned program, and `admin/reveal`. `fetch` uses a value on the server and never returns it.
 
 ## Authentication
 
@@ -53,8 +53,8 @@ Failure (the four keys and no others):
 | 2 | `invalid_request`, `no_such_request` | 400 | Bad ref, fingerprint, scope, field or body; no waiting request matches |
 | 3 | `no_such_secret` | 404 | The ref is not in the Vault |
 | 4 | `exists` | 409 | `set` of a name that exists (or differs from one only by case and punctuation) |
-| 5 | `store_unavailable`, `not_available` | 503 | State, ledger or Vault could not be read or written, or the routes are off (Team Cloud). Nothing was released |
-| 6 | `blocked`, `host_not_allowed` | 403 | A block covers the scope, or the destination is not on the grant's hosts. Settled: do not retry |
+| 5 | `store_unavailable`, `not_available`, `upstream_failed` | 503 | State, ledger or Vault could not be read or written, the routes are off (Team Cloud), or the destination of a `fetch` did not answer (error code `upstream_failed`). Nothing was released to the agent |
+| 6 | `blocked`, `host_not_allowed` | 403 | A block covers the scope, or the destination is not on the hosts the person allowed for the secret (or on the grant's hosts). Settled: do not retry |
 | 8 | `approval_pending` | 409 | No live grant covers the scope; a request is filed. The text says whether a person was asked or OpenMausBot approved it at once. Run the same call again |
 | 9 | `rate_limited` | 429 | Over 12 uncovered requests a minute from one fingerprint: refused for 5 minutes. Do not retry |
 
@@ -69,19 +69,38 @@ The asker fields, in every `POST` of the agent routes:
 | `fingerprint` | string | Required. `sha256:` and 64 lowercase hex digits: the hash of the agent binary |
 | `project` | string | At most 512 characters. Default `default`, the shared slot |
 | `purpose` | string | At most 200 characters. Default empty. An empty purpose is a literal, never a wildcard |
-| `agentLabel`, `session`, `context`, `agentId`, `cwd`, `destHost` | string | Optional. Control characters are dropped and long text is cut. `agentId` (the `PASEO_AGENT_ID` of the caller), `agentLabel`, `session` and `cwd` are attribution only |
+| `agentLabel`, `session`, `context`, `agentId`, `cwd`, `destHost` | string | Optional. Control characters are dropped and long text is cut. `agentId` (the `PASEO_AGENT_ID` of the caller), `agentLabel`, `session` and `cwd` are attribution only. `destHost` is never used for a decision: `fetch` takes the host from its `url` |
 
 A ref matches `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`.
 
 ## Agent routes
 
-### `POST /api/secrets/resolve`
+### `POST /api/secrets/fetch`
 
-Body: `{ ref, project?, purpose?, fingerprint, agentLabel?, agentId?, cwd?, session?, context?, destHost? }`.
+Sends one HTTP request for the agent with the secret written into it, and returns the destination's answer. The value stays on this server: it is never in the answer, and every form of it is replaced by `[omb:REF]` in the answer's headers and body.
 
-`200`: `{ "schema_version": 1, "kind": "secrets.resolve", "data": { "value": "...", "ref": "API_KEY" } }`, only when a live allow covers `(ref, project, fingerprint, purpose)`. A single-release allow is spent by this release. When the grant names hosts, `destHost` must be one of them; a restricted grant with no `destHost` is refused with exit 6.
+Body: the asker fields, `ref`, `url`, and optionally:
 
-Otherwise an error envelope: 6 (block or host), 9 (cool-down), 8 (request filed; see below). A ref that is missing from the Vault but covered by a grant answers 3.
+| Field | Rule |
+|---|---|
+| `method` | `GET` (default), `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS` |
+| `headers` | An object of at most 50 printable header values. Refused: a name that is not a header token, a name given twice (any case), `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`, `Trailer`, `Keep-Alive`, `Proxy-Connection`, `Expect` and `Accept-Encoding`, and the header the injection writes (`Authorization` for `bearer` and `basic-password`, the named header for `header`) |
+| `body` | Base64 text. A `GET` or `HEAD` has none. The whole request is at most 64 KiB, so the body is a little under 48 KiB |
+| `inject` | `{ as, name? }`. `bearer` (default): `Authorization: Bearer <value>`. `header`: the header `name`, required. `query`: the query parameter `name`, required, replacing one of that name in the URL. `basic-password`: `Authorization: Basic` with `name` (optional, default empty, no colon) as the user name and the value as the password |
+
+Rules, in this order:
+
+1. The `url` is `https`, with no user name or password. Plain `http` is accepted only for a loopback host (`localhost`, `127.0.0.0/8`, `[::1]`) that the person listed in the secret's `allowedHosts`; any other `http` URL is exit 2.
+2. If the ref is in the Vault, its `allowedHosts` must name the host of the `url`, otherwise exit 6 (`host_not_allowed`) and nothing is filed or asked. An empty list refuses every fetch. A host is the name in lower case, with a port only when it is not the scheme's own (`api.example.com`, `localhost:8080`). The caller's `destHost` is ignored; a grant that names hosts (`allowHosts`) is judged on the host of the `url`.
+3. The grant check is the one of every request (see below): a block is exit 6, a live allow lets the call go on, otherwise a request is filed and the answer is 8 (a card for the person, or approval at once for a secret kept to the Paseo bot or to every bot), or 9. A single-release allow is spent when the call goes on, even if the destination then fails.
+4. The audit row of the call is written first (`allow`, context `fetch <METHOD> <host>`, `destHost`); when it cannot be written, nothing is sent. After the call a second row is written (`check`, `method`, `status`), or with `errorCode: "upstream_failed"` when the destination did not answer. No row holds a path, a query, a header or a body.
+5. The request goes out with no redirect followed, `Accept-Encoding: identity`, a time limit of 60 seconds over headers and body, and at most 10 MiB of body read.
+
+`200`: `{ "schema_version": 1, "kind": "secrets.fetch", "data": { "status": 200, "headers": { "content-type": "application/json" }, "body": "<base64>", "truncated": false } }`. A `3xx` is returned as it is, with its `Location` scrubbed. `headers` has one entry per name, repeated names joined with `, `, and no `content-encoding` or `content-length`: the body is the decoded one. `truncated` is true when the body passed 10 MiB; the body is then cut at 10 MiB and also loses a trailing piece that starts a form of the value.
+
+The forms of the value that are replaced: as it is (and, for a header, as the same characters in Latin-1), base64 and base64url with and without padding, URL-encoded (`encodeURIComponent` and form encoding, upper and lower case hex), JSON-escaped, and hex in lower and upper case. For `basic-password` the same forms of `name:value` too, since a destination that echoes `Authorization` writes that. A form the scrubber cannot see, such as the value split across two chunks of an answer in another character set, is not covered: give a secret only to hosts you trust with it.
+
+Errors besides the table above: exit 2 for a bad `url`, `method`, `headers`, `body` or `inject`, and for a value that cannot be written into a header (a control character or one past Latin-1; use `query` or `basic-password` for it); exit 3 when the ref is not in the Vault (a covered ref that is gone); exit 5 with `upstream_failed` when the destination cannot be reached, answers in a `content-encoding` other than gzip, deflate or br, or does not answer within 60 seconds. The error text names a reason (`timeout`, or an error code such as `ECONNREFUSED`) and never the URL, the value or the destination's own error text.
 
 ### `POST /api/secrets/run-check`
 
@@ -104,7 +123,7 @@ Body: the asker fields, `ref`, and optionally `exec: { path, hash }` with `env`.
   "hint": "sk-…6789", "needsRotation": false, "profile": { "description": "Billing API", "projects": ["site"] } }
 ```
 
-`hint` is a known public prefix plus the last four characters for a value with 16 characters or more after that prefix. For a shorter value it is `null` and the row adds `"hintReason": "short value"`. `needsRotation` is true when the value is older than 90 days. `profile` is `{}` when none was set; its fields are `description`, `projects[]`, `provider`, `kind`, `tags[]`, `whenToUse`, `whenNotToUse`, `sensitivity`, `expiresAt` (epoch milliseconds) and `rotateUrl`.
+`hint` is a known public prefix plus the last four characters for a value with 16 characters or more after that prefix. For a shorter value it is `null` and the row adds `"hintReason": "short value"`. `needsRotation` is true when the value is older than 90 days. `profile` is `{}` when none was set; its fields are `description`, `projects[]`, `provider`, `kind`, `tags[]`, `whenToUse`, `whenNotToUse`, `sensitivity`, `expiresAt` (epoch milliseconds), `rotateUrl` and `allowedHosts[]`, the hosts `fetch` may send the secret to (at most 20, each lower case with a port only when it is not the default, no scheme, path, user or `*`). Only the person sets `allowedHosts`, with `admin/set`, `admin/rotate` or the host list in the secret's edit form in OpenMausBot Settings.
 
 ### `GET /api/secrets/describe/<ref>`
 
@@ -132,11 +151,11 @@ Query: `ref`, `since` (`90m`, `24h`, `7d`), `decision` (`allow`, `deny`, `block`
 
 ```json
 { "id": "...", "at": "2026-11-19T03:00:00.000Z", "decision": "allow", "source": "adapter", "ref": "API_KEY", "project": "default",
-  "purpose": "deploy", "fingerprint": "sha256:...", "agentLabel": "claude", "sessionId": "", "context": "tool:Bash:command",
-  "errorCode": "", "short": "aaaaaaaaaaaa", "caller": "<token session id>", "destHost": "api.example.com", "agentId": "..." }
+  "purpose": "deploy", "fingerprint": "sha256:...", "agentLabel": "claude", "sessionId": "", "context": "fetch GET api.example.com: status 200",
+  "errorCode": "", "short": "aaaaaaaaaaaa", "caller": "<token session id>", "destHost": "api.example.com", "agentId": "...", "method": "GET", "status": 200 }
 ```
 
-A row never holds a value, a hash of one, or part of one. `errorCode` is empty or one of `approval_pending`, `rate_limited`, `blocked`, `host_not_allowed`, `no_such_secret`, `denied`.
+A row never holds a value, a hash of one, or part of one. `errorCode` is empty or one of `approval_pending`, `rate_limited`, `blocked`, `host_not_allowed`, `no_such_secret`, `denied`, `upstream_failed`. `method` and `status` are present on the row a `fetch` writes after the call.
 
 ## Admin routes
 
@@ -145,10 +164,10 @@ Under `/api/secrets/admin/`, for an admin session or token only. A `secrets` tok
 | Route | Body or query | `data` |
 |---|---|---|
 | `POST set` | `{ ref, value, force?, bots?, profile? }` | `{ ref, created }`. Exit 4 when the ref exists (or a name equal to it once case and punctuation are ignored) and `force` is not true. `bots`: `"all"`, `"paseo"`, or a list of bot ids; **default none**, so a new secret asks the person at first use. A trailing newline of `value` is dropped; at most 4096 bytes. A profile that holds the value is refused (exit 2) |
-| `POST rotate` | `{ ref, value, profile? }` | `{ ref, rotatedAt }`. Exit 3 when missing. The profile and the grants stay |
+| `POST rotate` | `{ ref, value, profile? }` | `{ ref, rotatedAt }`. Exit 3 when missing. The grants stay, and so does the profile unless a `profile` is sent, which replaces the whole of it (name `allowedHosts` in it again to keep the hosts) |
 | `POST delete` | `{ ref }` | `{ ref, deleted: true, grantsRemoved }`. Its grants and waiting requests go too |
 | `POST reveal` | `{ ref }` | kind `secrets.get`, `{ ref, value }`. The audit row is written first. A `POST`, so the desktop's mutation check applies to it |
-| `POST grant` | `{ ref, fingerprint, project?, purpose?, state, ttl?, persist?, once?, allowHosts?, exec?, agentLabel? }` | The grant. `state` is `allow` or `block`; name at most one of `ttl` (`90m`, `12h`, `30d`, `2w`), `persist`, `once`; an allow defaults to 24 hours, a block to no end. `allowHosts` (normalized: lowercase, default port and trailing dot dropped, IDNA) is for an ordinary allow only. `exec` is `{ path, hash, env }`. Granting again a scope that names hosts keeps them |
+| `POST grant` | `{ ref, fingerprint, project?, purpose?, state, ttl?, persist?, once?, allowHosts?, exec?, agentLabel? }` | The grant. `state` is `allow` or `block`; name at most one of `ttl` (`90m`, `12h`, `30d`, `2w`), `persist`, `once`; an allow defaults to 24 hours, a block to no end. `allowHosts` (normalized: lowercase, default port and trailing dot dropped, IDNA; a wildcard, a scheme, a path, a user or a name over 255 characters is refused) is for an ordinary allow only. `exec` is `{ path, hash, env }`. Granting again a scope that names hosts keeps them |
 | `POST revoke` | `{ fingerprint, all? , ref?, project?, purpose?, exec? }` | `{ revoked }`. One exact scope (allow and block rows), an exec scope by `exec: { path, env }` (any hash), or `all` of a fingerprint. Values are untouched |
 | `GET approve` | | `{ requests: [...] }`, the waiting requests: `id, ref, project, fingerprint, purpose, exec?, agentLabel?, agentTitle?, cwd?, count, firstSeen, lastSeen` |
 | `POST approve` | `{ state, id?, ref?, fingerprint?, project?, purpose?, env?, ttl? }` | `{ answered: [{ id, ref, state }] }`. `state` is `deny` (stores nothing: the next ask opens a new card), `once`, `ttl` (default 24h) or `persist`. Several matches without `id` is exit 2. An answer closes the card |
@@ -162,7 +181,7 @@ Admin actions are in the ledger too: `decision: "check"` with `context` `admin:s
 For `(ref, project, fingerprint, purpose)` and, for an exec scope, `(program path, variable, program hash)`:
 
 1. A live **block** covers the scope: exit 6. An ordinary block (no `exec`) also covers every exec scope of the same ref, project, fingerprint and purpose. A block beats an allow.
-2. A live **allow** covers it: the call goes on (host check for an ordinary allow with `allowHosts`). Ordinary and exec grants never answer for each other.
+2. A live **allow** covers it: the call goes on (a `fetch` also checks the grant's `allowHosts`, when it has any, against the host of the `url`). Ordinary and exec grants never answer for each other.
 3. Nothing covers it: the request counts against the cool-down (12 a minute per fingerprint, then 5 minutes: exit 9). A request that no grant covered is filed, and a repeat of one scope is one request with a higher `count`. Calls that a grant covers are not counted, and one `run-check` call counts once however many of its variables are uncovered.
 4. A ref **in the Vault, kept to the Paseo bot or to every bot** is allowed for 24 hours by OpenMausBot itself. The Inbox gets an "OpenMausBot tự duyệt" line, and the agent named by a live `agentId` is told `already approved omb secrets: <REF>` followed by a blank line and `𝗯𝘆 𝗢𝗠𝗕`. The call that filed the request still answers exit 8 ("run the same call again"); the retry gets the value. The grant is keyed to the fingerprint, so any agent of that binary may use it.
 5. **Any other ref**, or a ref that is not in the Vault, opens a card in the Paseo conversation with the agent's title, its workspace, the ref, the purpose and, for an exec scope, the program and the variable. The cards of a request are opened again on each uncovered call, so a restart loses none. "Allow 24h" writes a grant, an Inbox line "Bạn đã duyệt" and the plain notice `already approved omb secrets: <REF>` to the named agent; "Deny" writes "Bạn đã từ chối" and nothing else.

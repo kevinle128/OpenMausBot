@@ -115,6 +115,20 @@ describe("the Vault routes", () => {
     expect(store.secretValues()).toEqual([VALUE]);
   });
 
+  it("let an admin set the hosts a secret may be fetched to, keep the rest of its profile, and refuse a wildcard and a bad list", async () => {
+    const { store, call } = await serve();
+    const id = (await call("POST", "/api/vault/secrets", { name: "K", value: VALUE })).body.secret.id;
+    store.updateSecret(id, { profile: { description: "Billing API", allowedHosts: ["old.example.com"] } });
+    const set = await call("PATCH", `/api/vault/secrets/${id}`, { allowedHosts: ["API.Example.com.", "api.example.com:443", "localhost:8080"] });
+    expect(set).toMatchObject({ status: 200, body: { secret: { profile: { description: "Billing API", allowedHosts: ["api.example.com", "localhost:8080"] } } } });
+    expect((await call("PATCH", `/api/vault/secrets/${id}`, { name: "K2" })).body.secret.profile).toMatchObject({ allowedHosts: ["api.example.com", "localhost:8080"] });
+    for (const bad of [["*.example.com"], ["https://api.example.com"], ["api.example.com/v1"], "api.example.com", [1], Array.from({ length: 21 }, (_, i) => `h${i}.example.com`)]) {
+      expect((await call("PATCH", `/api/vault/secrets/${id}`, { allowedHosts: bad })).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(store.listSecrets(TEAM_READER)[0]!.profile?.allowedHosts).toEqual(["api.example.com", "localhost:8080"]);
+    expect((await call("PATCH", `/api/vault/secrets/${id}`, { allowedHosts: [] })).body.secret.profile).toEqual({ description: "Billing API" });
+  });
+
   it("list a linked 1Password secret beside the saved ones, by name only, and never change it", async () => {
     const { call, answers } = await serve("ops_fake-route-token");
     await call("POST", "/api/vault/secrets", { name: "Stripe secret key", value: VALUE });

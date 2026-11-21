@@ -1,11 +1,12 @@
 // `omb secrets`: the agent routes (a `secrets` token or an admin) and, under /api/secrets/admin/, the person's own. Every
-// answer is an envelope the way `ak secrets --json` writes one. A value appears only in the answer to resolve, run-check and
-// admin reveal; no request body or answer is logged.
+// answer is an envelope the way `ak secrets --json` writes one. A value appears only in the answer to run-check and
+// admin reveal; no request body or answer is logged. A fetch answer is the destination's, with the value scrubbed out.
 import { ownerOrAdmin, scopeSatisfied, type RequestAuth } from "../request-auth.ts";
 import type { AuditQuery, AuditSource } from "../secrets/audit.ts";
 import type { Grant } from "../secrets/grants.ts";
 import type { PendingRequest } from "../secrets/pending.ts";
 import type { Asker, Caller, SecretsService } from "../secrets/service.ts";
+import { parseFetchRequest } from "../secrets/fetch.ts";
 import { EXIT, SecretsError, parseTtl, softText } from "../secrets/types.ts";
 import { isJson } from "./logins.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
@@ -139,10 +140,10 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
     try {
       if (admin) return await adminRoute(path.slice(ADMIN.length));
       const route = path.slice(PREFIX.length);
-      if (method === "POST" && route === "resolve") {
+      if (method === "POST" && route === "fetch") {
         const b = await body();
-        const result = service.resolve({ ref: text(b.ref, "ref", 128), asker: askerOf(b) }, adapter);
-        return send("resolve", { value: result.value, ref: result.ref });
+        const result = await service.fetch({ ref: text(b.ref, "ref", 128), request: parseFetchRequest(b), asker: askerOf(b) }, adapter);
+        return send("fetch", result);
       }
       if (method === "POST" && route === "run-check") {
         const b = await body();
@@ -159,7 +160,7 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
         const result = service.request({ ref: text(b.ref, "ref", 128), asker: askerOf(b), ...(exec ? { exec } : {}) }, caller);
         return send("request", { status: result.status, ...(result.requestId ? { requestId: result.requestId } : {}) });
       }
-      if (route === "resolve" || route === "run-check" || route === "request") return wrong();
+      if (route === "fetch" || route === "run-check" || route === "request") return wrong();
       if (route === "list" || route === "grants" || route === "audit" || route.startsWith("describe/") || route.startsWith("get/")) {
         if (method !== "GET") return wrong();
         if (route === "list") return send("list", service.list());

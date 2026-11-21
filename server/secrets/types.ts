@@ -10,7 +10,7 @@ export type ExitCode = typeof EXIT[keyof typeof EXIT];
 
 export type ErrorCode =
   | "invalid_request" | "no_such_secret" | "exists" | "store_unavailable" | "refused" | "blocked" | "host_not_allowed"
-  | "approval_pending" | "rate_limited" | "no_such_request" | "not_available";
+  | "approval_pending" | "rate_limited" | "no_such_request" | "not_available" | "upstream_failed";
 
 export interface ExecScope {
   /** Absolute path of the program, symbolic links followed by the caller. */
@@ -66,20 +66,7 @@ export function softText(value: unknown, max: number): string | undefined {
   return text || undefined;
 }
 
-/** The host a grant names: lowercase, a default port and one trailing dot dropped, an internationalized name in ASCII. */
-export function normalizeHost(raw: string): string | null {
-  const text = raw.trim().toLowerCase();
-  if (!text || text.includes("/") || text.includes("@") || /\s/.test(text)) return null;
-  try {
-    const url = new URL(`https://${text}`);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
-    const host = url.hostname.replace(/\.$/, "");
-    const port = url.port && url.port !== "443" && url.port !== "80" ? `:${url.port}` : "";
-    return host ? `${host}${port}` : null;
-  } catch {
-    return null;
-  }
-}
+export { normalizeHost } from "../../shared/host-name.ts";
 
 /** The variables that steer a loader, a runtime or the program lookup: a secret is never delivered into them. */
 const STEERING = new Set(["PATH", "HOME", "IFS", "SHELL", "ENV", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB", "JAVA_TOOL_OPTIONS", "CLASSPATH", "GOFLAGS", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]);
