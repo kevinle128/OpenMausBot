@@ -16,6 +16,8 @@ export interface Deps {
   cwd: () => string;
   ppid: number;
   procRoot: string;
+  nodePath: string;
+  selfPath: string;
   stdin: AsyncIterable<Uint8Array>;
   stdinIsTTY: boolean;
   stdout: Writable;
@@ -25,6 +27,17 @@ export interface Deps {
   ps: (args: string[]) => Promise<string>;
   security: (args: string[], input?: string) => Promise<string>;
 }
+export interface Harness {
+  id: string;
+  label: string;
+  recognised: boolean;
+  base: string | null;
+  env?: string;
+  sub?: string;
+  reason?: string;
+}
+export declare const HARNESSES: readonly Harness[];
+export declare const SKILL_TEXT: string;
 export declare function main(argv: string[], overrides?: Partial<Deps>): Promise<number>;
 export declare function parseArgs(tokens: string[], spec: Record<string, "bool" | "value" | "repeat">): { flags: Record<string, any>; positionals: string[] };
 export declare function isPrivateHost(host: string): boolean;

@@ -43,6 +43,37 @@ omb pair --token-stdin --server https://maus.example.com < secrets-token
 
 A token ends on its date and never renews. Pair again with a new code or token. `openmausbot token list` and `openmausbot token revoke ID` on the server list and end tokens.
 
+## Install the skill
+
+The `omb-vault` skill tells an agent how to use `omb secrets fetch` and `omb secrets run`. `omb` copies it into the personal skill folder of each agent harness on this machine. These commands need no pairing and no agent above the process.
+
+```sh
+omb skill list
+omb skill install --harness claudeAgent,codex
+omb skill install --all
+```
+
+- `omb skill list` shows, for each harness, the folder and one status: `installed`, `outdated` (the text differs), `missing`, `unsupported` or `refused`. `--json` gives `{schema_version, kind: "skill.list", data: {rows}}`. A row has `harness`, `label`, `folder`, `status`, `recognised` and sometimes `note`.
+- `omb skill install` writes `<folder>/omb-vault/SKILL.md` and reports `installed`, `updated`, `unchanged` or `skipped` (kind `skill.install`). The file is written to a temporary file and renamed, with mode 0644. Folders are made with mode 0755. A harness id is an OpenMausBot driver kind, such as `claudeAgent`, `codex`, `opencodeGo` or `piAgent`; `omb skill list` shows all of them.
+- Harnesses that share a folder, such as `codex` and `devinAgent` with `~/.agents/skills`, are written once and each is reported. DeepSeek documents no literal skill folder, so its row is `skipped`.
+- A folder moves when the harness documents a variable for it and the value is an absolute path: `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`, `QWEN_HOME`, `KIMI_CODE_HOME`, `CLINE_DIR`, `HERMES_HOME`, `VIBE_HOME` and `XDG_CONFIG_HOME` (Muse Code).
+- `omb` never writes through a symbolic link at `omb-vault` or `SKILL.md`. That row is `refused` and the exit code is 6.
+- Exit codes: 0 when every row is `installed`, `updated`, `unchanged` or `skipped`; 2 for an unknown harness id; 5 when a write fails; 6 when a row is `refused`.
+
+`recognised` is `true` when the parent-process walk in [Who is asking](#who-is-asking) can name that agent today: `claudeAgent`, `codex`, `opencodeGo` and `piAgent`. For the other harnesses the skill is installed, but their `omb secrets` calls that need an agent exit 6 until the walk learns them.
+
+### Guard hook for Claude Code
+
+`omb skill install` with `claudeAgent` also adds a `PreToolUse` hook to `settings.json` in the Claude folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`):
+
+```json
+{ "matcher": "*", "hooks": [{ "type": "command", "command": "\"/abs/node\" \"/abs/omb.mjs\" hook claude-pretooluse" }] }
+```
+
+- The entry is added once. A later run brings the paths of an older `omb` entry up to date and keeps every other key and hook. The file is written atomically, and a symbolic link to it is followed.
+- A `settings.json` that is not valid JSON, or has `hooks` in an unexpected shape, is not changed. The `claudeAgent` row carries a note.
+- `omb hook claude-pretooluse` reads the hook event from stdin. If a string anywhere in `tool_input` holds a secret placeholder (the substitution syntax of some agent tools), it answers with `permissionDecision: "deny"`. The reason names the commands to use, `omb secrets fetch` or `omb secrets run`, and the ref names found, never more of the text. In every other case it prints nothing and exits 0, also when stdin is empty or not JSON.
+
 ## Who is asking
 
 `fetch`, `run`, `request`, `grants` and `audit` walk the parent process chain (`ps -o ppid=,comm=` on macOS, `/proc` on Linux) up to a known agent: `claude`, `codex`, `opencode` or `pi`, as a native binary or hosted by `node`, `bun` or `deno` (found from the script path in its arguments). The fingerprint is `sha256:<hex>` of that agent's file: the binary itself, or for a hosted agent its script, so a new Node release does not end grants and two Node tools do not share one. With no agent above the process the command exits 6 and sends nothing.
@@ -59,6 +90,8 @@ All commands take `--json` (one envelope on stdout, errors included) and `-q/--q
 |---|---|
 | `omb pair <link-or-code> [--server URL]`, `omb pair --token-stdin --server URL` | Pair this machine. |
 | `omb status` | Show the pairing and whether the server answers. |
+| `omb skill list`, `omb skill install (--harness ID[,ID...] \| --all)` | Show or write the `omb-vault` skill in the skill folders of the agent harnesses. |
+| `omb hook claude-pretooluse` | Claude Code `PreToolUse` hook. See [Install the skill](#install-the-skill). |
 | `omb secrets fetch <ref> <url> [options]` | Call a URL with the secret injected and print the response body. |
 | `omb secrets run --env VAR=REF ... [--purpose P] [--project X] -- <program> [args]` | Run one program with the values in the named variables. |
 | `omb secrets request <ref> [--purpose P] [--project X] [--exec PROGRAM --env VAR]` | File a request ahead of the call that needs it. Never returns a value. |
