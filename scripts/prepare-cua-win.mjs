@@ -1,6 +1,6 @@
 // Stage the Windows CUA executable and native SDK outside ASAR.
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -32,12 +32,18 @@ if (expectedVersion !== release.version) {
   );
 }
 
+// The first start of a newly written executable can wait for an antivirus scan, so the probe allows 30 s. It reads the
+// version from stdout or stderr, and it logs why a probe gave no version, so a failed check names its cause.
 async function binaryVersion(candidate) {
   if (!candidate || !existsSync(candidate)) return null;
+  const versionOf = (text) => String(text ?? "").match(/cua-driver\s+([\d.]+)/)?.[1] ?? null;
   try {
-    const { stdout } = await run(candidate, ["--version"], { timeout: 5000, windowsHide: true });
-    return stdout.match(/cua-driver\s+([\d.]+)/)?.[1] ?? null;
-  } catch {
+    const { stdout, stderr } = await run(candidate, ["--version"], { timeout: 30_000, windowsHide: true });
+    const version = versionOf(stdout) ?? versionOf(stderr);
+    if (!version) console.warn(`cua-driver --version gave no version: stdout ${JSON.stringify(String(stdout).slice(0, 200))}, stderr ${JSON.stringify(String(stderr).slice(0, 200))}`);
+    return version;
+  } catch (error) {
+    console.warn(`cua-driver --version failed: code ${error?.code ?? "?"}, signal ${error?.signal ?? "none"}, killed ${Boolean(error?.killed)}, stdout ${JSON.stringify(String(error?.stdout ?? "").slice(0, 200))}, stderr ${JSON.stringify(String(error?.stderr ?? "").slice(0, 300))}`);
     return null;
   }
 }
@@ -63,12 +69,17 @@ async function officialBinary() {
   }
   const archive = join(cache, release.file);
   await writeFile(archive, bytes);
-  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "Expand-Archive -LiteralPath $env:OMB_CUA_ARCHIVE -DestinationPath $env:OMB_CUA_EXTRACT"], {
-    env: { ...process.env, OMB_CUA_ARCHIVE: archive, OMB_CUA_EXTRACT: cache },
-    timeout: 60_000,
-    windowsHide: true,
-  });
+  // Windows' own bsdtar reads zip files. PowerShell's Expand-Archive on the runner image of 2026-11-16 expanded nothing
+  // and reported no error.
+  const tar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  await run(tar, ["-xf", archive, "-C", cache], { timeout: 60_000, windowsHide: true });
+  if (!existsSync(cachedBinary)) {
+    const listed = (await readdir(cache).catch(() => [])).join(", ") || "nothing";
+    const threats = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "Get-MpThreatDetection | Select-Object -Last 5 | ForEach-Object { \"$($_.InitialDetectionTime) $($_.Resources -join ';') $($_.ActionSuccess)\" }"],
+    { timeout: 30_000, windowsHide: true }).then(({ stdout }) => stdout.trim() || "none", (error) => `not readable (${error?.code ?? "error"})`);
+    throw new Error(`cua-driver.exe is missing after the archive was expanded; the folder holds: ${listed}. Recent Defender detections: ${threats}`);
+  }
   if ((await binaryVersion(cachedBinary)) !== expectedVersion) {
     throw new Error(`downloaded CUA Driver does not report version ${expectedVersion}`);
   }
