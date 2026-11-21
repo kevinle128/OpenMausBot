@@ -4,12 +4,12 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  accessSync, chmodSync, closeSync, constants as fsConstants, createReadStream, mkdirSync, openSync, readFileSync, readSync,
+  accessSync, chmodSync, closeSync, constants as fsConstants, createReadStream, lstatSync, mkdirSync, openSync, readFileSync, readSync,
   readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, hostname, constants as osConstants } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const VERSION = "0.1.0";
 export const EXIT = { done: 0, invalid: 2, missing: 3, exists: 4, unreachable: 5, refused: 6, pending: 8, limited: 9 };
@@ -45,6 +45,7 @@ const SPECS = {
   list: {}, describe: {}, get: { reveal: "bool" }, grants: {},
   audit: { secret: "value", since: "value", decision: "value", source: "value", limit: "value", cursor: "value" },
 };
+const SKILL_SPECS = { list: {}, install: { harness: "repeat", all: "bool" } };
 const PERSON_ONLY = ["set", "rotate", "delete", "grant", "revoke", "approve"];
 
 /** `--flag value`, `--flag=value`, repeatable flags in arrays, `--` ends the flags. Unknown flags are exit 2. */
@@ -170,17 +171,23 @@ export function configDir(env, home) {
   return env.OMB_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(home, ".config"), "omb");
 }
 
-function writeAtomic(path, text, mode) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+function writeAtomic(path, text, mode, dirMode = 0o700) {
+  mkdirSync(dirname(path), { recursive: true, mode: dirMode });
   const temp = `${path}.${process.pid}.tmp`;
-  const fd = openSync(temp, "w", mode);
+  rmSync(temp, { force: true });
   try {
-    writeFileSync(fd, text);
-  } finally {
-    closeSync(fd);
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, text);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(temp, mode);
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
   }
-  chmodSync(temp, mode);
-  renameSync(temp, path);
 }
 
 const keychainOn = (d) => d.platform === "darwin" && d.env.OMB_TOKEN_STORE !== "file";
@@ -931,6 +938,318 @@ async function cmdAudit(ctx, { flags, positionals }) {
   return EXIT.done;
 }
 
+// Skills and the Claude Code guard hook
+
+/** The omb-vault skill as it is installed. skills/omb-vault/SKILL.md holds the same text. */
+export const SKILL_TEXT = `---
+name: omb-vault
+description: "Use API keys, tokens and other secrets from the OpenMausBot (OMB) Vault through the \`omb secrets\` command, without ever seeing or printing a value. Use when a task needs a credential: an API call with a key, a deploy or a tool that reads a token from its environment, or a .env value."
+when_to_use: "Invoke when a task calls an API that needs a key, runs a program that needs a token, meets a .env file, or the person mentions a secret, key, token, password or the Vault."
+keywords: [secrets, vault, credentials, api-key, token, dotenv, env-file, omb, openmausbot]
+---
+
+# omb-vault: use secrets from the OpenMausBot Vault
+
+The person keeps secrets in the Vault of their OpenMausBot (OMB) server. You never hold a value. You ask OMB to use it for you, in one of two ways:
+
+| You need | Command | Where the value goes |
+|---|---|---|
+| An HTTPS request with the secret in it | \`omb secrets fetch REF URL [options]\` | OMB puts it into the request and gives you the answer with the value struck out. It never reaches your machine. |
+| A program that reads the secret from its environment | \`omb secrets run --env VAR=REF -- /abs/path/program [args]\` | Only into that one program's environment. Its output comes back with the value struck out. |
+
+There is no third way. Never put a secret into a command line, a file, a prompt, a URL you print, or a \`\${secret:...}\`-style placeholder: those are refused.
+
+## Before you start
+
+1. \`omb status\` shows whether this machine is paired with an OMB server. If \`omb\` is missing or not paired, stop and tell the person: "Pair this computer in OpenMausBot: Settings → Vault → Install skill for harnesses." Do not try to pair it yourself.
+2. \`omb secrets list\` shows the names (refs) you may ask for. \`omb secrets describe REF\` shows a ref's profile, including the hosts \`fetch\` may reach. Neither shows a value.
+3. If the ref you need is not there, ask the person to add it in OpenMausBot (Settings → Vault), and for \`fetch\`, to list the API's host under "Allowed hosts". Do not invent a ref name.
+
+## fetch: call an API with the secret
+
+\`\`\`sh
+omb secrets fetch GITHUB_TOKEN https://api.github.com/user --purpose "read the GitHub user"
+omb secrets fetch OPENAI_API_KEY https://api.openai.com/v1/models --inject bearer --purpose "list models"
+omb secrets fetch SENTRY_TOKEN https://sentry.io/api/0/projects/ --inject header:Authorization --include
+omb secrets fetch API_KEY https://api.example.com/v1/items --method POST \\
+  --header 'Content-Type: application/json' --data @payload.json --purpose "create an item"
+\`\`\`
+
+- \`--inject\` is \`bearer\` (default), \`header:NAME\`, \`query:NAME\` or \`basic-password\`. Do not also send the header you inject.
+- Only \`https\` (plain \`http\` only to localhost), no redirects followed, 60 s timeout, body cut at 10 MiB, request body at most about 48 KB.
+- Exit 0 means OMB made the call, whatever status the API answered; read the body. Exit 6 with "host not allowed" means the person must add the host to the ref in OMB.
+
+## run: give the secret to one program
+
+\`\`\`sh
+omb secrets run --env GH_TOKEN=GITHUB_TOKEN --purpose "list PRs" -- /opt/homebrew/bin/gh pr list
+omb secrets run --env PGPASSWORD=DB_PASSWORD --purpose "back up the db" -- /usr/bin/pg_dump -h db.local app
+\`\`\`
+
+- Give the program by absolute path. A shell (\`sh\`, \`bash\`, \`zsh\`), a launcher (\`env\`, \`sudo\`, \`xargs\`, \`nohup\`, \`timeout\`) or a script whose \`#!\` line is \`/usr/bin/env ...\` is refused. For a script, run its interpreter: \`-- /usr/bin/python3 script.py\`.
+- Variables that steer a loader, runtime or proxy (\`PATH\`, \`HOME\`, \`LD_*\`, \`DYLD_*\`, \`NODE_OPTIONS\`, proxy and CA variables) cannot carry a secret.
+- The program gets a clean environment with only the system basics and the granted variables. Its output is relayed with the value struck out.
+- The approval covers that program's exact content. After the program is upgraded, the next call needs a new approval.
+
+## Approval (exit 8)
+
+The first call for a ref, purpose and agent files a request. OMB either approves it at once or shows the person a card. \`omb\` exits 8 and prints what to wait for.
+
+- Do not retry in a loop, and never try to approve, grant or reveal a secret yourself: those commands are the person's and exit 6.
+- Wait for the notice \`already approved omb secrets: REF\`, then run the same command once more.
+- Keep \`--purpose\` short and the same each time for the same job: a new purpose is a new approval.
+
+## Exit codes
+
+| Exit | Meaning | What you do |
+|---|---|---|
+| 0 | Done (\`run\`: the program's own status) | Go on |
+| 2 | Wrong arguments, ref, variable or program | Fix the command |
+| 3 | No such secret | Ask the person to add it in OMB |
+| 5 | Server, token store or program not available, or the pairing ended | Tell the person; nothing was released |
+| 6 | Refused (host not allowed, unknown agent, person-only command) | Do not retry; tell the person why |
+| 8 | Approval pending | Wait for the notice, then run the same command once |
+| 9 | Rate limited | Stop and tell the person |
+
+## .env files
+
+Do not copy a value out of a \`.env\` file into a command, a message or another file. If a task needs a value from a \`.env\` file regularly, suggest that the person moves it into the OMB Vault, then use \`fetch\` or \`run\`.
+
+## Never
+
+- Print, log, echo, write or summarize a secret value, even part of one.
+- Use \`omb secrets get --reveal\`, \`grant\`, \`approve\`, \`set\`, \`rotate\` or \`delete\`: the person does these in OpenMausBot.
+- Pass a secret on a command line, in a URL you print, or through a shell.
+`;
+
+const SKILL_NAME = "omb-vault";
+const HOOK_COMMAND_END = "hook claude-pretooluse";
+const OWN_HOOK = /omb(?:\.mjs)?" hook claude-pretooluse$/;
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const NOT_RECOGNISED = "omb cannot tell this agent apart yet; its omb secrets calls exit 6 until that is added";
+
+/** A harness reads personal skills from `<base>/<sub>`. `env` names the variable that moves `base`; only an absolute value counts. */
+export const HARNESSES = [
+  { id: "claudeAgent", label: "Claude", recognised: true, base: ".claude", env: "CLAUDE_CONFIG_DIR" },
+  { id: "codex", label: "Codex", recognised: true, base: ".agents" },
+  { id: "opencodeGo", label: "OpenCode", recognised: true, base: ".config/opencode" },
+  { id: "piAgent", label: "pi", recognised: true, base: ".pi/agent", env: "PI_CODING_AGENT_DIR" },
+  { id: "geminiAgent", label: "Gemini", recognised: false, base: ".gemini" },
+  { id: "antigravityAgent", label: "Google Gemini (Antigravity)", recognised: false, base: ".gemini/config" },
+  { id: "cursorAgent", label: "Cursor", recognised: false, base: ".cursor" },
+  { id: "copilotAgent", label: "GitHub Copilot", recognised: false, base: ".copilot", env: "COPILOT_HOME" },
+  { id: "grokAgent", label: "Grok", recognised: false, base: ".grok" },
+  { id: "qwenAgent", label: "Qwen", recognised: false, base: ".qwen", env: "QWEN_HOME" },
+  { id: "kimiAgent", label: "Kimi", recognised: false, base: ".kimi-code", env: "KIMI_CODE_HOME" },
+  { id: "kiroAgent", label: "Kiro", recognised: false, base: ".kiro" },
+  { id: "droidAgent", label: "Droid", recognised: false, base: ".factory" },
+  { id: "clineAgent", label: "Cline", recognised: false, base: ".cline", env: "CLINE_DIR" },
+  { id: "devinAgent", label: "Devin", recognised: false, base: ".agents" },
+  { id: "hermesAgent", label: "Hermes", recognised: false, base: ".hermes", env: "HERMES_HOME" },
+  { id: "ompAgent", label: "OMP", recognised: false, base: ".omp/agent" },
+  { id: "mistralVibeAgent", label: "Mistral (Vibe)", recognised: false, base: ".vibe", env: "VIBE_HOME" },
+  { id: "deepseekAgent", label: "DeepSeek Harness", recognised: false, base: null, reason: "DeepSeek documents no literal skill folder" },
+  { id: "commandCodeAgent", label: "Command Code", recognised: false, base: ".commandcode" },
+  { id: "museCode", label: "Muse Code", recognised: false, base: ".config", env: "XDG_CONFIG_HOME", sub: "muse/skills" },
+];
+
+function harnessBase(harness, env, home) {
+  const moved = harness.env ? env[harness.env] : undefined;
+  return typeof moved === "string" && isAbsolute(moved) ? moved : join(home, harness.base);
+}
+
+function skillFolder(harness, env, home) {
+  return harness.base === null ? null : join(harnessBase(harness, env, home), harness.sub ?? "skills");
+}
+
+const lstatOrNull = (path) => {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+    throw error;
+  }
+};
+
+/** What the folder holds now: missing, same, different, or refused when the skill folder or file is a link or the wrong kind. */
+function inspectSkill(folder) {
+  try {
+    const dir = join(folder, SKILL_NAME);
+    const dirStat = lstatOrNull(dir);
+    if (dirStat === null) return { state: "missing" };
+    if (dirStat.isSymbolicLink()) return { state: "refused", reason: `${dir} is a symbolic link: omb does not write through it` };
+    if (!dirStat.isDirectory()) return { state: "refused", reason: `${dir} is not a folder` };
+    const file = join(dir, "SKILL.md");
+    const fileStat = lstatOrNull(file);
+    if (fileStat === null) return { state: "missing" };
+    if (fileStat.isSymbolicLink()) return { state: "refused", reason: `${file} is a symbolic link: omb does not write through it` };
+    if (!fileStat.isFile()) return { state: "refused", reason: `${file} is not a file` };
+    return { state: readFileSync(file, "utf8") === SKILL_TEXT ? "same" : "different" };
+  } catch (error) {
+    return { state: "failed", reason: `cannot read ${clean(folder, 200)} (${clean(error?.code ?? "error", 40)})` };
+  }
+}
+
+function installSkill(folder) {
+  const seen = inspectSkill(folder);
+  if (seen.state === "same") return { status: "unchanged" };
+  if (seen.state === "refused" || seen.state === "failed") return { status: seen.state, note: seen.reason };
+  try {
+    writeAtomic(join(folder, SKILL_NAME, "SKILL.md"), SKILL_TEXT, 0o644, 0o755);
+  } catch (error) {
+    return { status: "failed", note: `cannot write ${clean(folder, 200)} (${clean(error?.code ?? "error", 40)})` };
+  }
+  return { status: seen.state === "missing" ? "installed" : "updated" };
+}
+
+const hookCommand = (d) => `"${d.nodePath}" "${d.selfPath}" ${HOOK_COMMAND_END}`;
+
+/** Adds the omb guard to `hooks.PreToolUse` of the Claude settings file: one entry, its path brought up to date, every other key kept. */
+function registerClaudeHook(d) {
+  const claude = HARNESSES.find((harness) => harness.id === "claudeAgent");
+  const settingsPath = join(harnessBase(claude, d.env, d.home), "settings.json");
+  const command = hookCommand(d);
+  if ([d.nodePath, d.selfPath].some((path) => /["$`\\\n\r]/.test(path))) return { state: "untouched", note: "the path of node or omb has a character a hook command cannot quote, so the hook was not added" };
+  let target = settingsPath;
+  let settings = {};
+  let mode = 0o600;
+  try {
+    if (lstatOrNull(settingsPath) !== null) {
+      target = realpathSync(settingsPath);
+      mode = statSync(target).mode & 0o777;
+      settings = JSON.parse(readFileSync(target, "utf8"));
+    }
+  } catch (error) {
+    const why = error instanceof SyntaxError ? "is not valid JSON" : `cannot be read (${clean(error?.code ?? "error", 40)})`;
+    return { state: "untouched", note: `${settingsPath} ${why}, so the hook was not added` };
+  }
+  const hooks = settings?.hooks ?? {};
+  const listed = hooks?.PreToolUse ?? [];
+  if (!isObject(settings) || !isObject(hooks) || !Array.isArray(listed)) return { state: "untouched", note: `${settingsPath} has hooks in a shape omb does not edit, so the hook was not added` };
+  let found = 0;
+  let changed = false;
+  const trimmed = new Set();
+  for (const entry of listed) {
+    if (!isObject(entry) || !Array.isArray(entry.hooks)) continue;
+    entry.hooks = entry.hooks.filter((hook) => {
+      if (!isObject(hook) || typeof hook.command !== "string" || !OWN_HOOK.test(hook.command)) return true;
+      if (++found > 1) {
+        changed = true;
+        trimmed.add(entry);
+        return false;
+      }
+      if (hook.command !== command) {
+        hook.command = command;
+        changed = true;
+      }
+      return true;
+    });
+  }
+  const kept = listed.filter((entry) => !(trimmed.has(entry) && entry.hooks.length === 0));
+  if (found === 0) {
+    kept.push({ matcher: "*", hooks: [{ type: "command", command }] });
+    changed = true;
+  }
+  if (!changed) return { state: "unchanged", note: `the guard hook is already in ${settingsPath}` };
+  settings.hooks = { ...hooks, PreToolUse: kept };
+  try {
+    writeAtomic(target, `${JSON.stringify(settings, null, 2)}\n`, mode);
+  } catch (error) {
+    return { state: "failed", note: `cannot write ${settingsPath} (${clean(error?.code ?? "error", 40)}), so the hook was not added` };
+  }
+  return { state: found === 0 ? "registered" : "updated", note: `the guard hook ${found === 0 ? "was added to" : "was updated in"} ${settingsPath}` };
+}
+
+function skillRow(harness, d, result) {
+  const notes = [result.note, harness.reason, harness.base !== null && !harness.recognised ? NOT_RECOGNISED : null].filter(Boolean);
+  const row = { harness: harness.id, label: harness.label, folder: skillFolder(harness, d.env, d.home), status: result.status, recognised: harness.recognised };
+  if (notes.length > 0) row.note = notes.join(". ");
+  return row;
+}
+
+const rowText = (row) => `${row.harness}  ${row.status}  ${row.folder ?? "-"}${row.note ? `  (${clean(row.note, 300)})` : ""}`;
+
+function cmdSkillList(ctx, { positionals }) {
+  if (positionals.length > 0) throw invalid("usage: omb skill list [--json]");
+  const { d } = ctx;
+  const rows = HARNESSES.map((harness) => {
+    const folder = skillFolder(harness, d.env, d.home);
+    if (folder === null) return skillRow(harness, d, { status: "unsupported" });
+    const seen = inspectSkill(folder);
+    const status = { missing: "missing", same: "installed", different: "outdated" }[seen.state] ?? seen.state;
+    return skillRow(harness, d, { status, note: seen.reason });
+  });
+  emit(ctx, "skill.list", { rows }, rows.map(rowText));
+  return EXIT.done;
+}
+
+function cmdSkillInstall(ctx, { flags, positionals }) {
+  if (positionals.length > 0 || (flags.all === true) === (flags.harness !== undefined)) throw invalid("usage: omb skill install (--harness ID[,ID...] | --all) [--json]");
+  const { d } = ctx;
+  let chosen = HARNESSES;
+  if (flags.harness !== undefined) {
+    const ids = flags.harness.flatMap((item) => item.split(",").map((id) => id.trim()));
+    const unknown = ids.filter((id) => !HARNESSES.some((harness) => harness.id === id));
+    if (unknown.length > 0) throw invalid(`unknown harness ${unknown.map((id) => clean(id, 40) || "(empty)").join(", ")}. Known: ${HARNESSES.map((harness) => harness.id).join(", ")}`);
+    chosen = HARNESSES.filter((harness) => ids.includes(harness.id));
+  }
+  const written = new Map();
+  const rows = chosen.map((harness) => {
+    const folder = skillFolder(harness, d.env, d.home);
+    if (folder === null) return skillRow(harness, d, { status: "skipped" });
+    if (!written.has(folder)) written.set(folder, installSkill(folder));
+    return skillRow(harness, d, written.get(folder));
+  });
+  let hookFailed = false;
+  const claudeRow = rows.find((row) => row.harness === "claudeAgent");
+  if (claudeRow) {
+    const hook = registerClaudeHook(d);
+    hookFailed = hook.state === "failed";
+    claudeRow.note = [claudeRow.note, hook.note].filter(Boolean).join(". ");
+  }
+  emit(ctx, "skill.install", { rows }, rows.map(rowText));
+  if (hookFailed || rows.some((row) => row.status === "failed")) return EXIT.unreachable;
+  return rows.some((row) => row.status === "refused") ? EXIT.refused : EXIT.done;
+}
+
+/** Built in parts, so that this file never holds a whole placeholder. */
+const PLACEHOLDER = new RegExp(["\\$\\{", "secret:", "\\s*([A-Za-z0-9][A-Za-z0-9_.-]{0,127})", "[^}]*\\}"].join(""), "g");
+
+function findPlaceholders(value, refs, depth = 0) {
+  if (depth > 64 || refs.size >= 10) return;
+  if (typeof value === "string") {
+    for (const found of value.matchAll(PLACEHOLDER)) refs.add(found[1]);
+  } else if (Array.isArray(value)) {
+    for (const item of value) findPlaceholders(item, refs, depth + 1);
+  } else if (isObject(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      findPlaceholders(key, refs, depth + 1);
+      findPlaceholders(item, refs, depth + 1);
+    }
+  }
+}
+
+/** Claude Code PreToolUse hook: denies a tool call whose input holds a secret placeholder. When the input cannot be read, the call goes on. */
+async function cmdHookClaude(ctx) {
+  const { d } = ctx;
+  if (d.stdinIsTTY) return EXIT.done;
+  let input;
+  try {
+    input = JSON.parse((await readStream(d.stdin, 16 * 1024 * 1024)).toString("utf8"));
+  } catch {
+    return EXIT.done;
+  }
+  if (!isObject(input) || (input.hook_event_name !== undefined && input.hook_event_name !== "PreToolUse")) return EXIT.done;
+  const refs = new Set();
+  findPlaceholders(input.tool_input, refs);
+  if (refs.size === 0) return EXIT.done;
+  const reason = "Secret placeholders are not replaced here, and a secret value must not be written into a command, a file or a request. "
+    + "To call an API with a secret, run: omb secrets fetch REF URL. To give a program a secret in its environment, run: omb secrets run --env VAR=REF -- /abs/path/program. "
+    + `See the omb-vault skill. Names found: ${[...refs].join(", ")}.`;
+  d.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } })}\n`);
+  return EXIT.done;
+}
+
 const HELP = `omb ${VERSION}: use the OpenMausBot Vault from an agent machine
 
   omb pair <link-or-code> [--server URL]        pair this machine (a link ends in /pair#code=...)
@@ -944,14 +1263,21 @@ const HELP = `omb ${VERSION}: use the OpenMausBot Vault from an agent machine
   omb secrets request <ref> [--purpose P] [--project X] [--exec PROGRAM --env VAR]
   omb secrets list | describe <ref> | get <ref> | grants | audit [--secret REF] [--since 24h] [--limit N]
 
+  omb skill list [--json]                       where the omb-vault skill is or is not installed, per agent harness
+  omb skill install (--harness ID[,ID...] | --all) [--json]
+                                                write the omb-vault skill into the harness skill folders; for claudeAgent
+                                                also add the guard hook to settings.json
+  omb hook claude-pretooluse                    Claude Code PreToolUse hook (reads stdin): denies secret placeholders
+
 set, rotate, delete, grant, revoke, approve and get --reveal are done by the person in the OpenMausBot app.
 Exit codes: 0 done, 2 invalid, 3 no such secret, 4 exists, 5 server or store unreachable, 6 refused,
-8 approval pending, 9 rate limited. Flags: --json, -q/--quiet.
+8 approval pending, 9 rate limited. skill install: 5 a write failed, 6 a skill folder is a symbolic link. Flags: --json, -q/--quiet.
 `;
 
 export async function main(argv, overrides = {}) {
   const d = {
     env: process.env, platform: process.platform, home: process.env.HOME || homedir(), cwd: () => process.cwd(), ppid: process.ppid, procRoot: "/proc",
+    nodePath: process.execPath, selfPath: fileURLToPath(import.meta.url),
     stdin: process.stdin, stdinIsTTY: process.stdin.isTTY === true, stdout: process.stdout, stderr: process.stderr, proc: process,
     fetch: (...args) => globalThis.fetch(...args),
     ps: (args) => new Promise((done, fail) => execFile("ps", args, { encoding: "utf8", timeout: 5000 }, (error, out) => (error ? fail(error) : done(out)))),
@@ -982,6 +1308,30 @@ export async function main(argv, overrides = {}) {
         return EXIT.done;
       }
       return await (head === "pair" ? cmdPair(ctx, parsed) : cmdStatus(ctx, parsed));
+    }
+    if (head === "hook") {
+      ctx.command = "hook";
+      if (rest.length !== 1 || rest[0] !== "claude-pretooluse") throw invalid("usage: omb hook claude-pretooluse");
+      return await cmdHookClaude(ctx);
+    }
+    if (head === "skill") {
+      const [sub, ...tokens] = rest;
+      ctx.command = `skill ${sub ?? ""}`.trim();
+      ctx.json = tokens.includes("--json");
+      ctx.quiet = tokens.includes("-q") || tokens.includes("--quiet");
+      if (sub === undefined || sub === "help" || sub === "-h" || sub === "--help") {
+        d.stdout.write(HELP);
+        return EXIT.done;
+      }
+      if (!Object.hasOwn(SKILL_SPECS, sub)) throw invalid(`unknown command omb skill ${clean(sub, 40)}. Try: omb help`);
+      const parsed = parseArgs(tokens, SKILL_SPECS[sub]);
+      ctx.json = parsed.flags.json === true;
+      ctx.quiet = parsed.flags.quiet === true;
+      if (parsed.flags.help) {
+        d.stdout.write(HELP);
+        return EXIT.done;
+      }
+      return sub === "list" ? cmdSkillList(ctx, parsed) : cmdSkillInstall(ctx, parsed);
     }
     if (head !== "secrets") throw invalid(`unknown command ${clean(head, 40)}. Try: omb help`);
     const [name, ...tokens] = rest;
