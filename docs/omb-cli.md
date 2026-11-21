@@ -62,6 +62,18 @@ omb skill install --all
 
 `recognised` is `true` when the parent-process walk in [Who is asking](#who-is-asking) can name that agent today: `claudeAgent`, `codex`, `opencodeGo` and `piAgent`. For the other harnesses the skill is installed, but their `omb secrets` calls that need an agent exit 6 until the walk learns them.
 
+### From the app
+
+In Settings → Vault, **Install skill for harnesses** opens a list of the harnesses (the rows of `omb skill list`) with a check box on each row and **Select all**. A row shows `installed`, `outdated`, `missing` or `unsupported`, and a note when `omb` cannot name that agent yet. One **Install** button does the work, and a second click updates in place. The result of each row shows after it (`installed`, `updated`, `unchanged`, `skipped`, `refused` or `failed`).
+
+- **Desktop app (macOS and Linux):** it installs on the computer where the window is open, because the agents run there, whichever server or home page the main window shows. The page sends harness ids only. The app copies its bundled `omb` to `~/.local/bin/omb` (mode 0755), writes the embedded skill and adds the Claude hook. Main accepts the call from the main window's own page and its verified saved-server and home pages only, and an install also needs a click in the focused window.
+  - On the app's own server, it pairs this computer with that server when `omb` is not paired: the window asks the server for a pairing code with the `secrets` scope only, and the app runs `omb pair` in its own process, so the code is on no command line. A pairing with another server stays, and the dialog says so.
+  - On another server's page, or while connected to another server, the app does not pair. If `omb status` shows no pairing, the dialog shows the next step with that server's own address: pair in the server's Settings → Vault, or run `omb pair --token-stdin --server ORIGIN < FILE` with a token made by `openmausbot token create NAME --scope secrets --out FILE`.
+  - The Claude hook points at `~/.local/bin/omb` and at the `node` found on `PATH`.
+- **Desktop app on Windows:** the dialog says the app cannot install there.
+- **Plain browser:** the dialog installs on the computer that runs the server, through `GET` and `POST /api/secrets/admin/skill-install` (admin only; body `{ "harnesses": ["codex"] }`). For another computer it shows `omb skill install --harness ...` and, on request, a new `secrets`-scope pairing link for `omb pair`. The link shows once and is not stored. The server bundle ships `bin/omb.mjs` beside `index.js` (desktop app, container image and npm package); a build without it answers 503.
+- The button is not shown on a Team Cloud, where the secrets routes answer 503.
+
 ### Guard hook for Claude Code
 
 `omb skill install` with `claudeAgent` also adds a `PreToolUse` hook to `settings.json` in the Claude folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`):

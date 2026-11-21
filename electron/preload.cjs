@@ -117,7 +117,10 @@ ipcRenderer.on("desktop-language:changed", (_event, language) => {
   for (const listener of languageListeners) listener(language);
 });
 const onHomePage = !isLocalPage && homePage();
-const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : []), ...(onHomePage ? HOME_PAGE : [])]);
+function ombSkillPage() {
+  try { return ipcRenderer.sendSync("omb-skill:page") === true; } catch { return false; }
+}
+const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : []), ...(onHomePage ? HOME_PAGE : []), ...(ombSkillPage() ? ["ombSkill"] : [])]);
 
 // Keep in parity with shared/workspace-backup-client.ts (a sandboxed preload cannot import it).
 const COMPANY_BACKUP_CLIENT_KEYS = [
@@ -440,6 +443,12 @@ const bridge = {
     state: () => ipcRenderer.invoke("open-at-login:state"),
     set: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("open-at-login:set", on === true) : Promise.reject(new Error("Turn on the switch to open OpenMausBot at login.")),
+  },
+  /** Settings → Vault: put the omb-vault skill and the omb command on this computer. This computer's page only; main refuses any other. */
+  ombSkill: {
+    state: () => invokeWithPlainError("omb-skill:state"),
+    install: (harnesses, pairingCode) => isLocalPage || navigator.userActivation?.isActive === true
+      ? invokeWithPlainError("omb-skill:install", harnesses, pairingCode) : Promise.reject(new Error("Choose Install to put the skill on this computer.")),
   },
   setCredential: (name, value, options) => ipcRenderer.invoke("credential:set", name, value, options),
   // Saved keys this launch could not read, and "Reset saved keys" (main asks the person first, then restarts).

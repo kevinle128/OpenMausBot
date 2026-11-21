@@ -7,6 +7,7 @@ import type { Grant } from "../secrets/grants.ts";
 import type { PendingRequest } from "../secrets/pending.ts";
 import type { Asker, Caller, SecretsService } from "../secrets/service.ts";
 import { parseFetchRequest } from "../secrets/fetch.ts";
+import type { SkillInstaller } from "../secrets/skill-install.ts";
 import { EXIT, SecretsError, parseTtl, softText } from "../secrets/types.ts";
 import { isJson } from "./logins.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
@@ -15,6 +16,8 @@ export interface SecretsRouteDeps {
   service: SecretsService;
   /** On a Team Cloud a secret may be a member's own, and an agent token has no member: these routes then refuse. */
   team: boolean;
+  /** Installs the omb-vault skill on the computer the server runs on (admin only). */
+  skills: SkillInstaller;
 }
 
 const PREFIX = "/api/secrets/";
@@ -110,7 +113,7 @@ function queryOf(url: URL): Omit<AuditQuery, "fingerprint"> {
 }
 
 export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
-  const { service } = deps;
+  const { service, skills } = deps;
 
   return async function secretsRoutes(ctx: RouteContext) {
     const { req, res, url, path, method, auth, json, readBody } = ctx;
@@ -193,11 +196,19 @@ export function createSecretsRoutes(deps: SecretsRouteDeps): RouteHandler {
             grants: service.admin.grants({ ...(fingerprint ? { fingerprint } : {}), ...(query.ref ? { ref: query.ref } : {}) }).map(grantView),
           });
         }
+        if (route === "skill-install") return send("skill.list", { rows: await skills.list() });
         return json(res, 404, { error: "not found" });
       }
       if (method !== "POST") return wrong();
       const b = await body();
       switch (route) {
+        case "skill-install": {
+          onlyKeys(b, ["harnesses"]);
+          if (!Array.isArray(b.harnesses) || !b.harnesses.length || b.harnesses.length > 40 || !b.harnesses.every((id) => typeof id === "string" && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(id))) {
+            throw new SecretsError(EXIT.invalid, "invalid_request", "harnesses must be a list of harness ids");
+          }
+          return send("skill.install", await skills.install([...new Set(b.harnesses as string[])]));
+        }
         case "set": return send("set", service.admin.set({ ref: text(b.ref, "ref", 128), value: b.value, force: b.force === true, bots: b.bots, profile: b.profile }));
         case "rotate": return send("rotate", service.admin.rotate({ ref: text(b.ref, "ref", 128), value: b.value, profile: b.profile }));
         case "delete": return send("delete", service.admin.remove(text(b.ref, "ref", 128)));

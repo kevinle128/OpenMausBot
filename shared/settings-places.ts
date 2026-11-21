@@ -60,6 +60,7 @@ export const SETTINGS_PLACES = [
   {"id":"desktop-kinds","path":"Settings → Desktops & browser → Desktops","words":["private desktop","sandbox","docker","podman","container","vps","own server","cloud desktops","desktop","vm"],"advanced":true},
   {"id":"saved-steps","path":"Settings → Desktops & browser → Repeat computer tasks without AI","words":["repeat","saved steps","without ai"],"advanced":true},
   {"id":"vault","path":"Settings → Vault","words":["password","passwords","login","logins","secrets","1password","2fa","totp"]},
+  {"id":"vault-install-skill","path":"Settings → Vault → Install skill for harnesses","words":["skill","skills","omb","harness","agent","install","pair"]},
   {"id":"spending","path":"Settings → Spending","words":["spending","cost","costs","tokens","money","usage"],"advanced":true},
   {"id":"grok-move","path":"Settings → Import & export → Bring things in → Move from Grok Bot","words":["grok","grok bot","move from","import","bring","another app"]},
   {"id":"ai-apps","path":"Settings → Import & export → Bring things in → From your AI apps","words":["import","bring","skills","mcp","claude code","codex","cursor","gemini"]},

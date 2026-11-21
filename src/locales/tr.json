@@ -5903,5 +5903,6 @@
   "voice.deepseek.description": "Yanıtları ve sesli mesajları DeepSeek’in Stella veya Tide sesiyle okur. DeepSeek’i seçtiğinde dikte ve Sırayla konuş da seni DeepSeek konuşmadan metne dönüştürme ile duyar; kayıt başına yaklaşık iki dakikaya kadar. DeepSeek API anahtarını kullanır ve ücreti DeepSeek tarafından alınır.",
   "voice.deepseek.stella": "Stella (kadın)",
   "voice.deepseek.tide": "Tide (erkek)",
-  "call.capability.turnsNeedDeepSeekKey": "Aramalarda sırayla konuşmak için bir DeepSeek anahtarı ekle"
+  "call.capability.turnsNeedDeepSeekKey": "Aramalarda sırayla konuşmak için bir DeepSeek anahtarı ekle",
+  "settings.vault.skill.open": "Harness'ler için skill yükle"
 }

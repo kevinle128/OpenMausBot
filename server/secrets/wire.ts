@@ -7,6 +7,7 @@ import { createSecretsRoutes } from "../routes/secrets.ts";
 import type { Store } from "../store.ts";
 import type { VaultStore } from "../vault-store.ts";
 import { createSecretsService } from "./service.ts";
+import { createSkillInstaller } from "./skill-install.ts";
 
 export interface SecretsHost {
   vault: Pick<VaultStore, "listSecrets" | "secret" | "saveSecret" | "updateSecret" | "removeSecret" | "markUsed">;
@@ -40,5 +41,5 @@ export function createSecrets(host: SecretsHost) {
     botExists: host.botExists,
     log: (message) => console.warn(message),
   });
-  return { service, routes: createSecretsRoutes({ service, team: host.team }) };
+  return { service, routes: createSecretsRoutes({ service, team: host.team, skills: createSkillInstaller() }) };
 }

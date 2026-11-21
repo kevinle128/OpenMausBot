@@ -146,6 +146,10 @@ if (existsSync(join(root, "enterprise", "server", "index.ts"))) {
 // The packaged desktop and the container launcher run this bootstrap to turn on Node's compile cache.
 // Copied, not bundled: esbuild would inline index.js into it.
 copyFileSync(join(root, "scripts", "desktop-server-entry.mjs"), join(root, "dist-server", "desktop-entry.mjs"));
+// The omb command beside the bundle: Settings → Vault copies it to ~/.local/bin/omb. The desktop app, the container image and
+// the npm package all ship dist-server, so each carries it.
+mkdirSync(join(root, "dist-server", "bin"), { recursive: true });
+copyFileSync(join(root, "bin", "omb.mjs"), join(root, "dist-server", "bin", "omb.mjs"));
 
 // The model catalog snapshot (server/model-catalog/catalog.ts) is read from
 // disk, not inlined: 1.5 MB of JSON has no place in index.js. The bundle looks

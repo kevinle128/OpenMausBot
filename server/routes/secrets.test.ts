@@ -26,6 +26,7 @@ let team = false;
 let loopbackAuth: RequestAuth | null = null;
 const history: Array<{ key: string }> = [];
 const cards: string[] = [];
+const skills = { list: vi.fn(), install: vi.fn() };
 const reached: Array<{ url: string; headers: Record<string, string> }> = [];
 
 const mint = (scopes: Scope[]): string => {
@@ -53,6 +54,8 @@ beforeEach(async () => {
   history.length = 0;
   cards.length = 0;
   reached.length = 0;
+  skills.list.mockReset().mockResolvedValue([{ harness: "codex", label: "Codex", folder: "/home/me/.agents/skills", status: "missing", recognised: true }]);
+  skills.install.mockReset().mockResolvedValue({ rows: [{ harness: "codex", label: "Codex", folder: "/home/me/.agents/skills", status: "installed", recognised: true }], command: "/home/me/.local/bin/omb" });
   sessions = new SessionRegistry({ file: join(dir, "sessions.json") });
   const vault = new VaultStore({ dataDir: dir });
   vault.saveSecret({ name: "API_KEY", value: SECRET, source: "settings", bots: [PASEO_BOT_ID], profile: { allowedHosts: ["api.example.com"] } });
@@ -62,7 +65,7 @@ beforeEach(async () => {
     paseoBot: () => ({ id: PASEO_BOT_ID, name: "Paseo", threadId: "t" }), history: (entry) => history.push(entry), botExists: () => true, log: () => {},
     httpFetch: (async (url: string, init: RequestInit) => (reached.push({ url, headers: Object.fromEntries(new Headers(init.headers)) }), new Response("ok", { status: 200, headers: { "x-from": "destination" } }))) as unknown as typeof fetch,
   });
-  const routes = createSecretsRoutes({ service, get team() { return team; } });
+  const routes = createSecretsRoutes({ service, get team() { return team; }, skills });
   server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const resolved = resolveRequestAuth(req, { sessions, cookieName: "omb_session", streamPath: "/api/events", url });
@@ -92,7 +95,7 @@ describe("what a secrets token can reach", () => {
     ["GET", "/api/updates/check"], ["POST", "/api/auth/stream-ticket"], ["GET", "/api/team-files"], ["GET", "/api/settings"], ["GET", "/api/secrets/"], ["GET", "/api/secrets/unknown"],
     ["GET", "/api/secrets/describe/has%20space"], ["GET", "/api/secrets/get/-flag"], ["GET", "/api/secrets/admin/grants"], ["GET", "/api/secrets/admin/audit"],
     ["GET", "/api/secrets/admin/approve"], ["POST", "/api/secrets/admin/set"], ["POST", "/api/secrets/admin/rotate"], ["POST", "/api/secrets/admin/delete"],
-    ["POST", "/api/secrets/admin/grant"], ["POST", "/api/secrets/admin/revoke"], ["POST", "/api/secrets/admin/approve"], ["POST", "/api/secrets/admin/reveal"],
+    ["POST", "/api/secrets/admin/grant"], ["POST", "/api/secrets/admin/revoke"], ["POST", "/api/secrets/admin/approve"], ["POST", "/api/secrets/admin/reveal"], ["GET", "/api/secrets/admin/skill-install"], ["POST", "/api/secrets/admin/skill-install"],
     ["GET", "/api/secrets/fetch"], ["POST", "/api/secrets/list"], ["POST", "/api/secrets/resolve"],
   ];
 
@@ -277,6 +280,38 @@ describe("the person's routes", () => {
     await call(admin, "POST", "/api/secrets/admin/grant", { ref: "CARD_KEY", fingerprint: FP, state: "allow" });
     const audit = await call(admin, "GET", "/api/secrets/admin/audit?ref=CARD_KEY");
     expect(audit.body.data.grants.map((grant: { ref: string }) => grant.ref)).toEqual(["CARD_KEY"]);
+  });
+});
+
+describe("installing the skill on the server's computer", () => {
+  it("lists and installs for an admin, with the ids the person chose", async () => {
+    const admin = mint(["admin", "client"]);
+    expect(await call(admin, "GET", "/api/secrets/admin/skill-install")).toMatchObject({ status: 200, body: { kind: "secrets.skill.list", data: { rows: [{ harness: "codex", status: "missing" }] } } });
+    const done = await call(admin, "POST", "/api/secrets/admin/skill-install", { harnesses: ["codex", "codex", "piAgent"] });
+    expect(done).toMatchObject({ status: 200, body: { kind: "secrets.skill.install", data: { rows: [{ status: "installed" }], command: "/home/me/.local/bin/omb" } } });
+    expect(skills.install).toHaveBeenCalledWith(["codex", "piAgent"]);
+  });
+
+  it("refuses a secrets token, a client token, a service-trust loopback and a Team Cloud, and installs nothing", async () => {
+    for (const scopes of [["secrets"], ["client"]] as Scope[][]) {
+      const token = mint(scopes);
+      expect((await call(token, "GET", "/api/secrets/admin/skill-install")).status).toBe(403);
+      expect((await call(token, "POST", "/api/secrets/admin/skill-install", { harnesses: ["codex"] })).status).toBe(403);
+    }
+    loopbackAuth = { kind: "loopback", scopes: ["client"], trust: "service" };
+    expect((await call(null, "POST", "/api/secrets/admin/skill-install", { harnesses: ["codex"] })).status).toBe(403);
+    loopbackAuth = null;
+    team = true;
+    expect((await call(mint(["admin", "client"]), "POST", "/api/secrets/admin/skill-install", { harnesses: ["codex"] })).status).toBe(503);
+    expect(skills.install).not.toHaveBeenCalled();
+  });
+
+  it("answers a wrong body with exit 2 and installs nothing", async () => {
+    const admin = mint(["admin", "client"]);
+    for (const body of [{}, { harnesses: [] }, { harnesses: "codex" }, { harnesses: ["../x"] }, { harnesses: [7] }, { harnesses: ["codex"], extra: 1 }]) {
+      expect(await call(admin, "POST", "/api/secrets/admin/skill-install", body), JSON.stringify(body)).toMatchObject({ status: 400, body: { exit_code: 2 } });
+    }
+    expect(skills.install).not.toHaveBeenCalled();
   });
 });
 
