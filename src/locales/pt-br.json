@@ -11147,5 +11147,6 @@
   "settings.vault.skill.copied": "Copiado",
   "settings.vault.skill.pairError": "Não foi possível gerar o link de pareamento.",
   "settings.vault.skill.serverNotPaired": "A skill está instalada no computador que roda o servidor, mas esse computador ainda não está pareado com o Cofre. Gere um link de pareamento abaixo e rode o comando de pareamento lá também.",
-  "settings.vault.skill.noLink": "Este servidor não tem um endereço que outro computador consiga alcançar em um link. No comando de pareamento, coloque o endereço que você usa para este servidor no lugar de SERVER_URL."
+  "settings.vault.skill.noLink": "Este servidor não tem um endereço que outro computador consiga alcançar em um link. No comando de pareamento, coloque o endereço que você usa para este servidor no lugar de SERVER_URL.",
+  "settings.vault.skill.unavailable": "Este app só instala a skill em um Mac ou em um computador Linux. Abra este servidor em um navegador para instalá-la no computador do servidor."
 }

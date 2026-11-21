@@ -11147,5 +11147,6 @@
   "settings.vault.skill.copied": "Copied",
   "settings.vault.skill.pairError": "Could not make a pairing link.",
   "settings.vault.skill.serverNotPaired": "The skill is installed on the computer that runs the server, but that computer is not paired with the Vault yet. Make a pairing link below and run the pair command there too.",
-  "settings.vault.skill.noLink": "This server has no address another computer can reach in a link. In the pair command, put the address you use for this server in place of SERVER_URL."
+  "settings.vault.skill.noLink": "This server has no address another computer can reach in a link. In the pair command, put the address you use for this server in place of SERVER_URL.",
+  "settings.vault.skill.unavailable": "This app can put the skill on a Mac or a Linux computer only. Open this server in a browser to install it on the server's computer."
 }

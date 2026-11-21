@@ -13,16 +13,17 @@ const CODE = "ABCD-EFGH-JKLM";
 const SERVER = "http://127.0.0.1:8799";
 
 /** Real omb for `skill`, scripted answers for `status` and `pair` (no server runs here). */
-function fixture({ status = null, pairFails = false, platform = "darwin", origin = SERVER, remote = null } = {}) {
+function fixture({ status = null, pairFails = false, platform = "darwin", origin = SERVER, remote = null, allowed = () => true, isLocal = () => true, focused = () => true } = {}) {
   const home = mkdtempSync(path.join(tmpdir(), "omb-skill-main-"));
   const bin = path.join(home, "node-bin");
   mkdirSync(bin);
   writeFileSync(path.join(bin, "node"), "#!/bin/sh\n");
   chmodSync(path.join(bin, "node"), 0o755);
   const calls = [];
-  const handlers = new Map();
+  const handlers = new Map(), listeners = new Map();
   let paired = status;
   const load = async () => ({
+    HARNESSES: realOmb.HARNESSES,
     main: async (argv, overrides) => {
       calls.push(argv);
       if (argv[0] === "status") {
@@ -39,10 +40,10 @@ function fixture({ status = null, pairFails = false, platform = "darwin", origin
     },
   });
   installOmbSkill({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, guard: (_channel, handler) => handler,
-    serverOrigin: () => origin, remoteServer: () => remote, isPackaged: false, resourcesPath: "/nowhere", platform, home, env: { PATH: bin }, load, searchPath: async () => bin,
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: (channel, listener) => listeners.set(channel, listener) }, guard: (_channel, handler) => handler,
+    serverOrigin: () => origin, remoteServer: () => remote, allowed, isLocal, focused, isPackaged: false, resourcesPath: "/nowhere", platform, home, env: { PATH: bin }, load, searchPath: async () => bin,
   });
-  return { home, bin, calls, state: () => handlers.get("omb-skill:state")({}), install: (...args) => handlers.get("omb-skill:install")({}, ...args), done: () => rmSync(home, { recursive: true, force: true }) };
+  return { handlers, listeners, home, bin, calls, state: () => handlers.get("omb-skill:state")({}), install: (...args) => handlers.get("omb-skill:install")({}, ...args), done: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 test("state lists the harnesses and whether this computer is paired with the server", async () => {
@@ -161,4 +162,40 @@ test("connected to another server: the skill installs here, no pairing is tried,
     assert.equal(paired.calls.some((argv) => argv[0] === "pair"), false);
     assert.equal((await paired.state()).paired, true);
   } finally { paired.done(); }
+});
+
+const mini = { senderFrame: { url: "https://mini.example.com/chat" } };
+
+test("a page the main window shows from another server installs on this computer, never pairs, and names that server's own origin", async () => {
+  const t = fixture({ origin: SERVER, remote: "https://companion.example.net", isLocal: () => false });
+  try {
+    const handler = (channel) => t.handlers.get(channel);
+    const result = await handler("omb-skill:install")(mini, ["codex"], CODE);
+    assert.equal(t.calls.some((argv) => argv[0] === "pair"), false);
+    assert.equal(result.rows[0].status, "installed");
+    assert.deepEqual(result.notes, [{ key: "pairNeeded", server: "https://mini.example.com" }]);
+    assert.equal((await handler("omb-skill:state")(mini)).available, true);
+  } finally { t.done(); }
+});
+
+test("an unverified sender is refused on both channels and in the page check, and an install needs the focused window", async () => {
+  const t = fixture({ allowed: () => false });
+  try {
+    await assert.rejects(async () => t.handlers.get("omb-skill:state")({}), /only available in the main window/);
+    await assert.rejects(async () => t.handlers.get("omb-skill:install")({}, ["codex"]), /only available in the main window/);
+    const reply = {}; t.listeners.get("omb-skill:page")({ ...reply, set returnValue(value) { reply.value = value; } });
+    assert.equal(reply.value, false);
+    assert.equal(existsSync(path.join(t.home, ".local", "bin", "omb")), false);
+  } finally { t.done(); }
+  const background = fixture({ focused: () => false });
+  try {
+    await assert.rejects(async () => background.handlers.get("omb-skill:install")({}, ["codex"], CODE), /focused window/);
+    assert.equal((await background.handlers.get("omb-skill:state")({})).available, true);
+    assert.equal(existsSync(path.join(background.home, ".local", "bin", "omb")), false);
+  } finally { background.done(); }
+});
+
+test("a harness the page names that omb does not know is refused", async () => {
+  const t = fixture({ status: { server: SERVER, tokenAccepted: true } });
+  try { await assert.rejects(() => t.install(["notAHarness"]), /from the list/); } finally { t.done(); }
 });

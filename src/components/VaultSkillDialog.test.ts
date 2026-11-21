@@ -177,12 +177,21 @@ describe("Settings → Vault: install the skill from a browser", () => {
     expect(document.body.querySelector("[data-skill-pair-needed]")?.textContent).toContain("omb pair --token-stdin --server https://mini.example.com");
   });
 
-  it("uses the server route in a desktop app that cannot install on its own computer", async () => {
-    (window as { ogb?: unknown }).ogb = { ombSkill: { state: vi.fn().mockResolvedValue({ available: false, paired: false, rows: [] }), install: vi.fn() } };
-    fixture.api.mockResolvedValueOnce({ data: { rows: ROWS } });
+  it("never falls back to the server route when the app's bridge is there, also on another server's page and where the app cannot install", async () => {
+    const install = vi.fn().mockResolvedValue({ rows: [row("codex", "Codex", "installed")], notes: [{ key: "pairNeeded", server: "https://mini.example.com" }] });
+    (window as { ogb?: unknown }).ogb = { ombSkill: { state: vi.fn().mockResolvedValue({ available: true, paired: false, rows: ROWS }), install } };
     await render();
-    expect(document.body.querySelector("[data-skill-where]")?.getAttribute("data-skill-where")).toBe("server");
-    expect(rowOf("codex")).toBeTruthy();
+    await check("codex");
+    await act(async () => button("Install").click());
+    await tick();
+    expect(install).toHaveBeenCalledWith(["codex"]);
+    expect(fixture.api).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    root = createRoot(host);
+    (window as { ogb?: unknown }).ogb = { ombSkill: { state: vi.fn().mockResolvedValue({ available: false, paired: false, rows: [] }), install: vi.fn() } };
+    await render();
+    expect(document.body.querySelector("[data-skill-unavailable]")).not.toBeNull();
+    expect(fixture.api).not.toHaveBeenCalled();
   });
 
   it("says why when the folders cannot be read", async () => {

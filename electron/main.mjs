@@ -1456,7 +1456,7 @@ function reconnectCloud(origin) {
   return signInCloudSession({ origin, mine: other ? origin : myCloud(), pair: () => ensureCloudAccount().pairHome(other?.id ?? null), fetch: (...args) => session.defaultSession.fetch(...args) });
 }
 const loginItem = createOpenAtLogin({ app, file: path.join(app.getPath("userData"), "open-at-login.json"), home: os.homedir() });
-installOpenAtLogin({ ipcMain, guard: localOrHome, loginItem, changed: refreshApplicationMenu }); installOmbSkill({ ipcMain, guard: localOnly, serverOrigin: () => (desktopRemoteAccess ? null : localOriginModule.getLocalOrigin()), remoteServer: () => desktopRemoteAccess?.endpoint ?? null, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
+installOpenAtLogin({ ipcMain, guard: localOrHome, loginItem, changed: refreshApplicationMenu }); installOmbSkill({ ipcMain, isLocal: senderIsLocal, allowed: event => senderIsLocal(event) || homeWindow.homePage(event) || workspaceSenderAllowed(event, mainWindow?.webContents, environmentsState, rendererOrigin()), focused: event => BrowserWindow.fromWebContents(event.sender)?.isFocused() === true, serverOrigin: () => (desktopRemoteAccess ? null : localOriginModule.getLocalOrigin()), remoteServer: () => desktopRemoteAccess?.endpoint ?? null, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
 let hiddenStart = false;
 
 async function openCloudSettings() {

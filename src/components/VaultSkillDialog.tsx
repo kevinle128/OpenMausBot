@@ -24,6 +24,7 @@ const selectable = (row: SkillRow) => row.status !== "unsupported";
 export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<SkillRow[] | null>(null);
   const [onThisComputer, setOnThisComputer] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Map<string, SkillRow> | null>(null);
   const [notes, setNotes] = useState<SkillInstallResult["notes"]>([]);
@@ -38,10 +39,10 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
       try {
         const desktop = desktopSkill();
         const state = desktop ? await desktop.state() : null;
-        const here = state?.available === true;
-        const list = here ? state.rows : await serverSkillRows();
+        const list = desktop ? state?.rows ?? [] : await serverSkillRows();
         if (!live) return;
-        setOnThisComputer(here);
+        setOnThisComputer(desktop !== undefined);
+        setUnavailable(desktop !== undefined && state?.available !== true);
         setRows(list);
       } catch (cause) {
         if (live) { setRows([]); setError(message(cause, t("settings.vault.skill.loadError"))); }
@@ -95,7 +96,8 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
       </>}>
       <div className="flex flex-col gap-3" data-skill-dialog>
         <p className="text-[13px] leading-[18px] text-ink-secondary">{t("settings.vault.skill.intro")}</p>
-        {rows !== null && <p className="text-[12px] leading-4 text-ink-tertiary" data-skill-where={onThisComputer ? "computer" : "server"}>{t(onThisComputer ? "settings.vault.skill.computer" : "settings.vault.skill.server")}</p>}
+        {unavailable && <p role="status" className="text-[13px] leading-[18px] text-ink-secondary" data-skill-unavailable>{t("settings.vault.skill.unavailable")}</p>}
+        {rows !== null && !unavailable && <p className="text-[12px] leading-4 text-ink-tertiary" data-skill-where={onThisComputer ? "computer" : "server"}>{t(onThisComputer ? "settings.vault.skill.computer" : "settings.vault.skill.server")}</p>}
         {rows === null && <p role="status" className="text-[13px] text-ink-secondary">{t("settings.vault.skill.loading")}</p>}
         {rows !== null && rows.length > 0 && (
           <>

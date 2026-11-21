@@ -14,7 +14,7 @@ test("the server bundle step puts omb.mjs where the packaged app and the server 
   const loaded = [];
   const handlers = new Map();
   installOmbSkill({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, guard: (_channel, handler) => handler, serverOrigin: () => "http://127.0.0.1:8799",
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on() {} }, allowed: () => true, isLocal: () => true, serverOrigin: () => "http://127.0.0.1:8799",
     isPackaged: true, resourcesPath: "/Applications/App.app/Contents/Resources", platform: "darwin", home: "/nonexistent-home", env: {}, searchPath: async () => "",
     load: async (file) => { loaded.push(file); return { main: async (_argv, overrides) => { overrides.stdout.write("{}\n"); return 5; } }; },
   });
