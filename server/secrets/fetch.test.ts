@@ -279,18 +279,19 @@ describe("what a fetch refuses before the value is read", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("approves a secret kept to the Paseo bot at once, and the retry goes through", async () => {
+  it("approves a secret kept to the Paseo bot at once, and the same call goes through", async () => {
     const f = fixture();
     f.save("API_KEY", SECRET, [PASEO_BOT_ID]);
-    const first = await refusal(() => f.send("API_KEY", {}));
-    expect(first).toMatchObject({ exit: 8, code: "approval_pending" });
-    expect(first.message).toMatch(/approved it for 24 hours/);
+    expect((await f.send("API_KEY", {})).status).toBe(200);
+    expect(seen).toHaveLength(1);
     await f.service.idle();
     expect(f.cards).toEqual([]);
     expect(f.history).toHaveLength(1);
-    expect(seen).toEqual([]);
+    const rows = f.service.auditFor(FP, {}).entries;
+    expect(rows.findIndex((row) => row.context.startsWith("auto:paseo-scoped"))).toBeGreaterThanOrEqual(0);
     expect((await f.send("API_KEY", {})).status).toBe(200);
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(2);
+    expect(f.history).toHaveLength(1);
   });
 
   it("refuses a block with 6 and a missing secret that a grant covers with 3", async () => {

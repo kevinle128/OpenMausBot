@@ -147,7 +147,7 @@ Every upgrade of the program changes its hash and needs a new approval.
 
 ## Waiting for approval (exit 8)
 
-When no grant covers the call, the server files a request and answers exit 8. A card is waiting in OpenMausBot, or OpenMausBot approved the ref at once. `omb` prints:
+When no grant covers the call, the server files a request. If OpenMausBot approves the ref at once (a ref kept to the Paseo bot or to every bot), the same call goes through: no exit 8, and the agent need not run it again. Otherwise the server answers exit 8 and a card is waiting in OpenMausBot. `omb` prints:
 
 ```text
 approval pending for API_KEY. <the server's sentence>
@@ -155,7 +155,7 @@ A card is waiting in OpenMausBot (or OpenMausBot approved it at once). Do not re
 Wait for the notice "already approved omb secrets: API_KEY", then run the same command again. ...
 ```
 
-The agent waits for that notice, then runs the same command once more. Retrying in a loop trips the rate limit (12 uncovered requests a minute per fingerprint, then 5 minutes: exit 9). `omb` never retries a request by itself.
+For an approval by a person, the agent waits for that notice, then runs the same command once more. Retrying in a loop trips the rate limit (12 uncovered requests a minute per fingerprint, then 5 minutes: exit 9). `omb` never retries a request by itself.
 
 ## Exit codes and envelope
 

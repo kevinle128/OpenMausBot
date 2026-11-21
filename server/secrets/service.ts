@@ -222,7 +222,7 @@ export function createSecretsService(deps: SecretsDeps) {
     return { granted, request };
   }
 
-  /** Decides one scope. A scope no grant covers files a request, and either grants it at once (a secret kept to the Paseo bot) or opens a card. */
+  /** Decides one scope. A scope no grant covers files a request, and either grants it at once (a secret kept to the Paseo bot) or opens a card. A release call that was granted at once goes on with the new grant; a plain request only reports it. */
   function evaluate(scope: SecretScope, asker: Asker, caller: Caller, mode: "release" | "request", admit: () => ReturnType<RateLimiter["admit"]> = () => limiter.admit(scope.fingerprint)): Eval {
     const found = grants.match(scope);
     if (found.kind === "block") {
@@ -249,11 +249,12 @@ export function createSecretsService(deps: SecretsDeps) {
     const { request } = pending.record(scope, attribution(asker));
     if (known?.scoped) {
       audit(caller, scope, asker, "allow", "", `auto:paseo-scoped ${asker.context ?? ""}`.trim(), "adapter");
-      grantFor(request, { createdBy: "omb", expiresAt: now() + DEFAULT_ALLOW_MS });
+      const grant = grantFor(request, { createdBy: "omb", expiresAt: now() + DEFAULT_ALLOW_MS });
       pending.settle(request);
       deps.approvals.close(cardKey(request.id));
-      later(async () => history(request, { told: await tell(request, "omb").catch(() => null) }));
-      return { kind: "pending", request, autoGranted: true };
+      // A release call gets the value now, so only a plain request tells the agent: a notice after a call that went through would wake it to run that call again.
+      later(async () => history(request, { told: mode === "request" ? await tell(request, "omb").catch(() => null) : null }));
+      return mode === "release" ? { kind: "covered", grant } : { kind: "pending", request, autoGranted: true };
     }
     audit(caller, scope, asker, "deny", "approval_pending", asker.context ?? "approval pending");
     openCard(request, known !== null);
@@ -261,9 +262,7 @@ export function createSecretsService(deps: SecretsDeps) {
   }
 
   const pendingError = (ev: Extract<Eval, { kind: "pending" }>): SecretsError =>
-    new SecretsError(EXIT.pending, "approval_pending", ev.autoGranted
-      ? `${ev.request.ref}: OpenMausBot approved it for 24 hours just now. Run the same call again.`
-      : `${ev.request.ref}: approval is pending. ${REVIEW_MESSAGE}`);
+    new SecretsError(EXIT.pending, "approval_pending", `${ev.request.ref}: approval is pending. ${REVIEW_MESSAGE}`);
 
   function refusal(ev: Exclude<Eval, { kind: "covered" }>): SecretsError {
     if (ev.kind === "pending") return pendingError(ev);
@@ -463,10 +462,7 @@ export function createSecretsService(deps: SecretsDeps) {
         const stopped = waiting.find((ev) => ev.kind !== "pending");
         if (stopped) throw refusal(stopped);
         const refs = waiting.flatMap((ev) => (ev.kind === "pending" ? [ev.request.ref] : []));
-        const auto = waiting.every((ev) => ev.kind === "pending" && ev.autoGranted);
-        throw new SecretsError(EXIT.pending, "approval_pending", auto
-          ? `${refs.join(", ")}: OpenMausBot approved it for 24 hours just now. Run the same call again.`
-          : `${refs.join(", ")}: approval is pending. ${REVIEW_MESSAGE}`);
+        throw new SecretsError(EXIT.pending, "approval_pending", `${refs.join(", ")}: approval is pending. ${REVIEW_MESSAGE}`);
       }
       const values = releaseAll(covered, input.asker, caller);
       return covered.map(({ scope }, index) => ({ var: scope.exec!.env, ref: scope.ref, value: values[index]! }));

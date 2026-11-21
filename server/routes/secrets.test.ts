@@ -144,12 +144,13 @@ describe("what a secrets token can reach", () => {
 });
 
 describe("envelopes and exit codes", () => {
-  it("answers fetch with the destination's answer in the ak envelope once a grant covers the scope, and the value reaches only the destination", async () => {
+  it("answers fetch with the destination's answer in the ak envelope, at once for a ref kept to the Paseo bot, and the value reaches only the destination", async () => {
     const token = mint(["secrets"]);
-    const first = await call(token, "POST", "/api/secrets/fetch", ask({ agentId: "a1", context: "tool:Bash:command" }));
+    const first = await call(token, "POST", "/api/secrets/fetch", ask({ ref: "CARD_KEY" }));
     expect(first).toMatchObject({ status: 409, body: { schema_version: 1, error_code: "approval_pending", exit_code: 8 } });
     expect(Object.keys(first.body).sort()).toEqual(["error", "error_code", "exit_code", "schema_version"]);
-    const second = await call(token, "POST", "/api/secrets/fetch", ask());
+    expect(reached).toHaveLength(0);
+    const second = await call(token, "POST", "/api/secrets/fetch", ask({ agentId: "a1", context: "tool:Bash:command" }));
     expect(second).toEqual({ status: 200, body: { schema_version: 1, kind: "secrets.fetch", data: {
       status: 200, headers: { "content-type": "text/plain;charset=UTF-8", "x-from": "destination" }, body: Buffer.from("ok").toString("base64"), truncated: false,
     } } });
