@@ -28,3 +28,11 @@ it("shows this app's update where the desktop app answers, with no Download step
   expect(ready).toContain("Restart and install");
   expect(render({ status: "downloaded", version: "0.2.0", installMode: "handoff" })).toContain("MausBot 0.2.0 is ready. Install it in a terminal.");
 });
+
+it("offers the check on a server's page that is not the app's own home page, once the desktop app answers it", () => {
+  const html = render({ status: "idle" });
+  expect(html).toContain("Check for updates");
+  expect(html).not.toContain("disabled");
+  expect(window.ogb).not.toHaveProperty("home");
+  expect(window.ogb).not.toHaveProperty("remoteClient");
+});

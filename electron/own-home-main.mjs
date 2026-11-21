@@ -230,6 +230,10 @@ export function installOwnHome({ localRequest, fetch: fetchImpl, environments, h
     away: () => home.away(),
     /** A server of the person's own is chosen as home: no move to My Cloud starts. */
     active: () => Boolean(chosen()),
+    /** The address of the server the person chose as home, whether or not the move there has finished, while it is still a
+     * server they saved by hand (not a Team or Cloud entry at the same address): the one server whose page may ask for this
+     * app's own update. */
+    target: () => placeOf()?.origin ?? null,
     /** The chosen server's address while home is there: This computer is no place of its own then. */
     origin: () => (home.away() ? chosen()?.origin ?? null : null),
     /** The move under way, by its phase and the server's name: this computer's own screen says it while it is stopped. */
