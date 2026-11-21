@@ -29,7 +29,7 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState<SkillInstallResult["notes"]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [link, setLink] = useState<string | null>(null);
+  const [pairing, setPairing] = useState<{ code: string; link: string | null } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
@@ -67,21 +67,21 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
       } else result = await installOnServer(ids);
       if (result.error) setError(result.error);
       setNotes(result.notes ?? []);
-      if (result.rows.length) setResults(new Map(result.rows.map((row) => [row.harness, row])));
+      if (result.rows.length) setResults((now) => new Map([...(now ?? []), ...result.rows.map((row) => [row.harness, row] as const)]));
     } catch (cause) { setError(message(cause, t("settings.vault.skill.installError"))); }
     finally { setBusy(false); }
   };
 
   const makeLink = async () => {
     setError(null);
-    try { setLink((await requestSecretsPairing()).link); }
+    try { setPairing(await requestSecretsPairing()); }
     catch (cause) { setError(message(cause, t("settings.vault.skill.pairError"))); }
   };
   const copy = async (key: string, text: string) => {
     if (await copyText(text) !== "empty") { setCopied(key); setTimeout(() => setCopied((now) => (now === key ? null : now)), 2000); }
   };
   const commands = [
-    ...(link ? [["pair", t("settings.vault.skill.pairCommand"), `omb pair '${link}'`] as const] : []),
+    ...(pairing ? [["pair", t("settings.vault.skill.pairCommand"), pairing.link ? `omb pair '${pairing.link}'` : `omb pair ${pairing.code} --server SERVER_URL`] as const] : []),
     ["install", t("settings.vault.skill.installCommand"), ids.length ? `omb skill install --harness ${ids.join(",")}` : "omb skill install --all"] as const,
   ];
 
@@ -127,7 +127,9 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
             </ul>
           </>
         )}
-        {notes?.map((note) => note.key === "pairNeeded"
+        {notes?.map((note) => note.key === "serverNotPaired"
+          ? <p key={note.key} role="status" className="text-[12px] leading-4 text-warning" data-skill-server-not-paired>{t("settings.vault.skill.serverNotPaired")}</p>
+          : note.key === "pairNeeded"
           ? <p key={note.key} role="status" className="text-[12px] leading-4 text-warning" data-skill-pair-needed>{t("settings.vault.skill.pairNeeded", { server: note.server })}</p>
           : <p key={note.key} role="status" className="text-[12px] leading-4 text-warning">{t("settings.vault.skill.pairedElsewhere", { server: note.server })}</p>)}
         {error && <p role="alert" className="text-[12px] leading-4 text-danger">{error}</p>}
@@ -135,7 +137,8 @@ export function VaultSkillDialog({ onClose }: { onClose: () => void }) {
           <section className="flex flex-col gap-2 border-t-[0.5px] border-(--settings-edge) pt-3" data-skill-others>
             <div className="text-[13px] font-medium text-ink">{t("settings.vault.skill.others")}</div>
             <p className="text-[12px] leading-4 text-ink-tertiary">{t("settings.vault.skill.othersLine")}</p>
-            {!link && <button type="button" className="ui-button self-start" onClick={() => void makeLink()}>{t("settings.vault.skill.pairLink")}</button>}
+            {!pairing && <button type="button" className="ui-button self-start" onClick={() => void makeLink()}>{t("settings.vault.skill.pairLink")}</button>}
+            {pairing && !pairing.link && <p className="text-[12px] leading-4 text-ink-tertiary" data-skill-no-link>{t("settings.vault.skill.noLink")}</p>}
             {commands.map(([key, label, command]) => (
               <div key={key} className="flex flex-col gap-1">
                 <span className="text-[12px] text-ink-secondary">{label}</span>

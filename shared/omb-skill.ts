@@ -11,14 +11,16 @@ export interface SkillRow {
   note?: string;
 }
 
+/** `pairedElsewhere`: this computer is paired with another server and that pairing stays. `pairNeeded`: the app is connected to this server, cannot pair this computer itself, and this computer is not paired. `serverNotPaired`: the skill went onto the server's computer, which is not paired with the server yet. */
+export type SkillNote = { key: "pairedElsewhere" | "pairNeeded"; server: string } | { key: "serverNotPaired" };
+
 export interface SkillInstallResult {
   rows: SkillRow[];
   /** The path of the omb command this install left on the computer. */
   command?: string;
   /** This computer is not paired with the server yet and no code was given; nothing was installed. */
   needsPairing?: true;
-  /** `pairedElsewhere`: this computer is paired with another server and that pairing stays. `pairNeeded`: the app is connected to this server, cannot pair this computer itself, and this computer is not paired. */
-  notes?: Array<{ key: "pairedElsewhere" | "pairNeeded"; server: string }>;
+  notes?: SkillNote[];
   error?: string;
 }
 

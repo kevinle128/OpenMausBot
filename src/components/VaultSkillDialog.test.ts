@@ -134,6 +134,35 @@ describe("Settings → Vault: install the skill from a browser", () => {
     expect(fixture.copy).toHaveBeenCalledWith("omb pair 'https://maus.example.com/pair#code=ABCD-EFGH-JKLM'");
   });
 
+  it("keeps the outcome of an earlier install when a second one covers other rows, and says the server's computer is not paired", async () => {
+    fixture.api.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+      if (!init) return { data: { rows: ROWS } };
+      const [harness] = JSON.parse(init.body ?? "{}").harnesses as string[];
+      return { data: { rows: [row(harness, harness, "updated")], command: "/home/me/.local/bin/omb", notes: [{ key: "serverNotPaired" }] } };
+    });
+    await render();
+    await check("codex");
+    await act(async () => button("Install").click());
+    await tick();
+    await check("codex");
+    await check("geminiAgent");
+    await act(async () => button("Install").click());
+    await tick();
+    expect(rowOf("codex").textContent).toContain("Updated");
+    expect(rowOf("geminiAgent").textContent).toContain("Updated");
+    expect(document.body.querySelector("[data-skill-server-not-paired]")?.textContent).toContain("not paired with the Vault yet");
+  });
+
+  it("puts the code and --server in the pair command when the server has no link another computer can open", async () => {
+    fixture.api.mockImplementation(async (path: string) => (path === "/api/auth/pairing" ? { code: "ABCD-EFGH-JKLM", url: null } : { data: { rows: ROWS } }));
+    await render();
+    await act(async () => button("Make a pairing link").click());
+    await tick();
+    expect(document.body.querySelector("[data-skill-command=pair]")?.textContent).toBe("omb pair ABCD-EFGH-JKLM --server SERVER_URL");
+    expect(document.body.querySelector("[data-skill-no-link]")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(`${location.origin}/pair`);
+  });
+
   it("installs on this computer while connected to another server, asks for no pairing code, and shows the next step", async () => {
     const install = vi.fn().mockResolvedValue({ rows: [row("codex", "Codex", "installed")], notes: [{ key: "pairNeeded", server: "https://mini.example.com" }] });
     (window as { ogb?: unknown }).ogb = { remoteClient: { active: true }, ombSkill: { state: vi.fn().mockResolvedValue({ available: true, paired: false, rows: ROWS }), install } };

@@ -11,7 +11,7 @@ let home: string;
 let bin: string;
 
 // A clean environment object: a stray CLAUDE_CONFIG_DIR or XDG_CONFIG_HOME of the machine must never steer a write.
-const installer = (extra: { source?: string } = {}) => createSkillInstaller({ environment: { PATH: bin }, home, source: OMB, ...extra });
+const installer = (extra: { source?: string; platform?: NodeJS.Platform } = {}) => createSkillInstaller({ environment: { PATH: bin }, home, source: OMB, ...extra });
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "omb-skill-server-"));
@@ -52,6 +52,16 @@ describe("the skill installer of the server", () => {
   it("answers that the server has no omb command when the file is missing, and a bad id with exit 2", async () => {
     await expect(installer({ source: join(home, "none.mjs") }).install(["codex"])).rejects.toMatchObject({ exit: 5 });
     await expect(installer().install(["nope"])).rejects.toMatchObject({ exit: 2 });
+  });
+
+  it("says the server's computer is not paired after an install there", async () => {
+    expect((await installer().install(["codex"])).notes).toEqual([{ key: "serverNotPaired" }]);
+  });
+
+  it("refuses to list or install on Windows, where omb does not run, and writes nothing", async () => {
+    await expect(installer({ platform: "win32" }).list()).rejects.toMatchObject({ exit: 5, code: "not_available" });
+    await expect(installer({ platform: "win32" }).install(["codex"])).rejects.toMatchObject({ exit: 5 });
+    expect(existsSync(join(home, ".local", "bin", "omb"))).toBe(false);
   });
 
   it("leaves an omb copy that Node runs although the file has no extension", () => {

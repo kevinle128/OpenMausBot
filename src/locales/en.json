@@ -11145,5 +11145,7 @@
   "settings.vault.skill.pairNeeded": "The skill is installed, but this computer is not paired with the server yet. To pair it, on the server run `openmausbot token create NAME --scope secrets --out FILE`, copy FILE here, and run `omb pair --token-stdin --server {server} < FILE`.",
   "settings.vault.skill.copy": "Copy",
   "settings.vault.skill.copied": "Copied",
-  "settings.vault.skill.pairError": "Could not make a pairing link."
+  "settings.vault.skill.pairError": "Could not make a pairing link.",
+  "settings.vault.skill.serverNotPaired": "The skill is installed on the computer that runs the server, but that computer is not paired with the Vault yet. Make a pairing link below and run the pair command there too.",
+  "settings.vault.skill.noLink": "This server has no address another computer can reach in a link. In the pair command, put the address you use for this server in place of SERVER_URL."
 }
