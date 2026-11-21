@@ -16,6 +16,7 @@ import { Card, LearnMore, SETTINGS_INPUT, SettingsEmptyRow, SettingsField, Setti
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { EnvImportForm, SecretForm } from "./VaultSecretForms";
 import { BitwardenConnection } from "./BitwardenConnection";
+import { VaultSkillDialog } from "./VaultSkillDialog";
 
 // Security: a row never shows a password or a secret, which no route returns. A saved value can only be replaced.
 
@@ -72,6 +73,7 @@ export function VaultSettings() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [keysOff, setKeysOff] = useState<string[]>([]);
+  const [skillOpen, setSkillOpen] = useState(false);
 
   const load = async () => {
     try {
@@ -286,10 +288,14 @@ export function VaultSettings() {
           </div>
           <OnePasswordConnection status={onePassword} disabled={logins === null} bots={bots} botNames={botNames} team={Boolean(state.config?.team)}
             onChange={async (next) => { setOnePassword(next); await load(); }} />
+          {!state.config?.team && <div data-vault-skill className="contents">
+            <SettingsLinkRow title={t("settings.vault.skill.open")} subtitle={t("settings.vault.skill.intro")} onClick={() => setSkillOpen(true)} />
+          </div>}
           {bitwarden && <BitwardenConnection status={bitwarden} disabled={logins === null} team={Boolean(state.config?.team)}
             onChange={async (next) => { setBitwarden(next); await load(); }} />}
         </SettingsRows>
       </SettingsGroup>}
+      {skillOpen && <VaultSkillDialog onClose={() => setSkillOpen(false)} />}
     </div>
   );
 }

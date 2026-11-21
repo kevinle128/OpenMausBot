@@ -104,7 +104,7 @@ import { createDesktopIncludedX } from "./included-x.mjs"; import { createDeskto
 import { cloudPageSenderAllowed, cloudPlanDisk, cloudUnreachableText, createCloudPowerGate, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, signInCloudSession, withCloudHome } from "./cloud-home.mjs";
 import { installCloudFiles } from "./cloud-sync-main.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs"; import { installTeamJoin } from "./team-join-main.mjs";
-import { createLendingTarget } from "./lending-target.mjs"; import { createOpenAtLogin, installOpenAtLogin } from "./open-at-login.mjs";
+import { createLendingTarget } from "./lending-target.mjs"; import { createOpenAtLogin, installOpenAtLogin } from "./open-at-login.mjs"; import { installOmbSkill } from "./omb-skill-main.mjs";
 import { cleanWorkspaceDir, createCleanWorkspace, profilesDir } from "./clean-workspace.mjs"; import { createLocalProfiles, createProfileRegistry } from "./local-profiles.mjs"; import { createPlaceSwitch } from "./place-switch.mjs"; import { installOneHome } from "./one-home-main.mjs"; import { handSaved, installOwnHome } from "./own-home-main.mjs"; import { reopenSavedServer, serverOpens } from "./saved-server.mjs"; import { installTwoPlacesMain } from "./two-places-main.mjs";
 import { askForMicrophone, openPrivacySettings } from "./privacy-settings.mjs";
 import { createHomeWindow, installHomeWindowIpc, HOME_SCREEN_PATH } from "./home-window.mjs";
@@ -1456,7 +1456,7 @@ function reconnectCloud(origin) {
   return signInCloudSession({ origin, mine: other ? origin : myCloud(), pair: () => ensureCloudAccount().pairHome(other?.id ?? null), fetch: (...args) => session.defaultSession.fetch(...args) });
 }
 const loginItem = createOpenAtLogin({ app, file: path.join(app.getPath("userData"), "open-at-login.json"), home: os.homedir() });
-installOpenAtLogin({ ipcMain, guard: localOrHome, loginItem, changed: refreshApplicationMenu });
+installOpenAtLogin({ ipcMain, guard: localOrHome, loginItem, changed: refreshApplicationMenu }); installOmbSkill({ ipcMain, guard: localOnly, serverOrigin: () => (desktopRemoteAccess ? null : localOriginModule.getLocalOrigin()), remoteServer: () => desktopRemoteAccess?.endpoint ?? null, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
 let hiddenStart = false;
 
 async function openCloudSettings() {

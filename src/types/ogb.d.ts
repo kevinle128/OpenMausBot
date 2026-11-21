@@ -450,6 +450,11 @@ const __APP_VERSION__: string;
       openLogsFolder?(): Promise<{ folder: string; opened: boolean; error?: string }>;
       /** This app's own login item, which opens the window. `available`: false in a build that cannot add one. */
       openAtLogin?: { state(): Promise<{ available: boolean; on: boolean }>; set(on: boolean): Promise<{ available: boolean; on: boolean }> };
+      /** Settings → Vault: puts the omb command and the omb-vault skill on this computer (this app's own page only). `install` pairs this computer first when `pairingCode` is given and it is not paired yet. */
+      ombSkill?: {
+        state(): Promise<import("../../shared/omb-skill").SkillState>;
+        install(harnesses: string[], pairingCode?: string): Promise<import("../../shared/omb-skill").SkillInstallResult>;
+      };
       /** Saved keys this launch could not read (this app's own page only). `reset` asks the person, moves the unreadable
        * file aside and restarts; it resolves "cancelled" when they say no, "quitting" (doing nothing) when the app began
        * to quit while they decided, "failed" (after telling them) when the file could not be moved, and "readable"

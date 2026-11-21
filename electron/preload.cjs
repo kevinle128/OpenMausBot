@@ -441,6 +441,11 @@ const bridge = {
     set: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("open-at-login:set", on === true) : Promise.reject(new Error("Turn on the switch to open OpenMausBot at login.")),
   },
+  /** Settings → Vault: put the omb-vault skill and the omb command on this computer. This computer's page only; main refuses any other. */
+  ombSkill: {
+    state: () => invokeWithPlainError("omb-skill:state"),
+    install: (harnesses, pairingCode) => invokeWithPlainError("omb-skill:install", harnesses, pairingCode),
+  },
   setCredential: (name, value, options) => ipcRenderer.invoke("credential:set", name, value, options),
   // Saved keys this launch could not read, and "Reset saved keys" (main asks the person first, then restarts).
   credentialStore: {

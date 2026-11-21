@@ -334,7 +334,7 @@ describe("Settings → Vault: logins", () => {
     expect(host.textContent).toContain("Only you can use them, in your own chats with that bot");
     expect([...host.querySelectorAll("[data-secret-row]")].map((row) => row.textContent)).toEqual([expect.stringContaining("Saved from a chat · Pepper")]);
     for (const absent of ["Add", "Change Stripe secret key"]) expect(button(absent), absent).toBeUndefined();
-    for (const selector of ["[data-onepassword]", "[data-vault-keys]", "[data-vault-filter]"]) expect(host.querySelector(selector), selector).toBeNull();
+    for (const selector of ["[data-onepassword]", "[data-vault-keys]", "[data-vault-skill]", "[data-vault-filter]"]) expect(host.querySelector(selector), selector).toBeNull();
     await click("Delete Stripe secret key");
     await click("Delete for good");
     expect(fixture.api).toHaveBeenNthCalledWith(2, "/api/vault/secrets/s9", { method: "DELETE" });
@@ -460,6 +460,23 @@ describe("Settings → Vault: keys and secrets", () => {
     expect(host.querySelector("[data-vault-keys]")!.textContent).toContain("AI and app keys");
     await act(async () => host.querySelector<HTMLButtonElement>("[data-vault-keys] button")!.click());
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+  });
+});
+
+describe("Settings → Vault: install the skill", () => {
+  it("opens the dialog from the More group, and offers it on no Team Cloud", async () => {
+    fixture.api.mockResolvedValueOnce({ logins: [], secrets: [], onePassword: OFF }).mockResolvedValueOnce({ data: { rows: [] } });
+    await render();
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-vault-skill] button")!.click());
+    expect(document.body.querySelector("[data-skill-dialog]")).not.toBeNull();
+    expect(fixture.api).toHaveBeenCalledWith("/api/secrets/admin/skill-install");
+  });
+
+  it("is absent on a Team Cloud", async () => {
+    fixture.config = { team: { id: "t1", name: "Acme" } };
+    fixture.api.mockResolvedValueOnce({ logins: [], secrets: [], onePassword: OFF });
+    await render();
+    expect(host.querySelector("[data-vault-skill]")).toBeNull();
   });
 });
 
