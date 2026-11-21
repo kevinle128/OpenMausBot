@@ -252,7 +252,8 @@ export function createSecretsService(deps: SecretsDeps) {
       const grant = grantFor(request, { createdBy: "omb", expiresAt: now() + DEFAULT_ALLOW_MS });
       pending.settle(request);
       deps.approvals.close(cardKey(request.id));
-      later(async () => history(request, { told: await tell(request, "omb").catch(() => null) }));
+      // A release call gets the value now, so only a plain request tells the agent: a notice after a call that went through would wake it to run that call again.
+      later(async () => history(request, { told: mode === "request" ? await tell(request, "omb").catch(() => null) : null }));
       return mode === "release" ? { kind: "covered", grant } : { kind: "pending", request, autoGranted: true };
     }
     audit(caller, scope, asker, "deny", "approval_pending", asker.context ?? "approval pending");
