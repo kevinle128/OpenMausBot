@@ -15,6 +15,7 @@ const LOCAL = "http://127.0.0.1:8799";
 const CLOUD = "https://home-7f3k2.fly.dev";
 const OTHER = "https://bots.example.test";
 const OWN = "https://omb-c-a.fly.dev";
+const MINI = "https://mac-mini.tailnet.test";
 
 const fixture = vi.hoisted(() => ({ autoUpdater: null, handlers: new Map(), home: "" }));
 
@@ -53,7 +54,7 @@ function mainRule() {
     mainWindow: window,
     environmentsState: { environments: [], activeId: environments.LOCAL_ID },
     cloudAccount: { homeTarget: () => ({ origin: CLOUD }), state: () => ({ status: "connected", account: { id: "a1" } }), isOwnCloud: () => false },
-    rememberedHome: null, savedCloudHomeOrigin, cloudSignInRestored: true,
+    rememberedHome: null, savedCloudHomeOrigin, cloudSignInRestored: true, ownHome: null,
     // ensureCloudAccount's world: a packaged app, and a sign-in client whose state the test sets.
     app: { isPackaged: true, getPath: () => "/unused", getVersion: () => "1.0.0" }, process: { platform: "darwin", env: {} }, cloudTarget,
     path: { join: (...parts) => parts.join("/") }, os: { hostname: () => "mac" }, shell: {}, safeStorage: {},
@@ -74,7 +75,8 @@ function mainRule() {
     window.webContents = shown.webContents;
     context.environmentsState = {
       environments: [{ id: "cloud", name: "My Cloud", origin: CLOUD }, { id: "vps", name: "VPS", origin: OTHER },
-        { id: "own", name: "Client A", origin: OWN, cloud: { id: "c-a", role: "owner" } }],
+        { id: "own", name: "Client A", origin: OWN, cloud: { id: "c-a", role: "owner" } },
+        { id: "mini", name: "Mac mini", origin: MINI, kind: "remote" }],
       activeId,
     };
   };
@@ -218,6 +220,54 @@ it("another Cloud of the person's own gets the update bridge as My Cloud's page 
   expect(has(OTHER, "vps")).toBe(false);
   rule.signedIn({ status: "connected", account: { id: "a1" }, machine: { origin: CLOUD, status: "ready" }, clouds: [cloud({ id: "c-home", origin: CLOUD, primary: true }), cloud({ runsOn: "server", managed: false })] });
   expect(has(OWN, "own")).toBe(false);
+});
+
+it("the server the person made their home gets the update bridge and its channels while the window shows it, and no other server does", async () => {
+  const rule = mainRule();
+  const has = (origin, activeId) => {
+    rule.show(page(origin), activeId);
+    return "updater" in bridgeFor(origin, { rule }).bridge;
+  };
+  expect(has(MINI, "mini"), "a saved server is not offered the updater until the person chose it as home").toBe(false);
+
+  rule.context.ownHome = { target: () => MINI };
+  expect(has(MINI, "mini")).toBe(true);
+  expect(has(OTHER, "vps"), "another server stays refused").toBe(false);
+  expect(has(MINI, "vps"), "the home's address is not enough while the window shows another server").toBe(false);
+  rule.show(page(MINI), "mini");
+  expect(rule.offered({ sender: rule.window.webContents, senderFrame: { url: `${OTHER}/` } }), "a frame of another origin is refused").toBe(false);
+
+  const { handlers } = await load(rule.pageAllowed);
+  const mini = page(MINI);
+  rule.show(mini, "mini");
+  for (const channel of ["update:check", "update:install", "update:get-state", "update:seen"]) expect(() => handlers.get(channel)(mini.event), channel).not.toThrow();
+  const other = page(OTHER);
+  rule.show(other, "vps");
+  for (const channel of ["update:check", "update:install", "update:get-state", "update:seen"]) expect(() => handlers.get(channel)(other.event), channel).toThrow(/only available/);
+
+  rule.context.ownHome = { target: () => null };
+  rule.show(mini, "mini");
+  expect(() => handlers.get("update:check")(mini.event)).toThrow(/only available/);
+
+  rule.context.desktopRemoteAccess = { endpoint: "https://companion.example.test" };
+  rule.context.ownHome = { target: () => MINI };
+  rule.show(page(MINI), "mini");
+  expect(rule.offered({ sender: rule.window.webContents, senderFrame: { url: `${MINI}/` } }), "a client of another computer offers the updater only on its own page").toBe(false);
+  rule.context.desktopRemoteAccess = false;
+  const choosing = bridgeFor(MINI, { rule });
+  await expect(choosing.bridge.updater.install()).rejects.toThrow(/Restart to update/);
+  expect(Object.keys(choosing.bridge.updater).sort(), "the page asks only to check or install").toEqual(["check", "install", "onState", "seen"]);
+});
+
+it("a laptop connected to another computer as its client keeps the update bridge on its own page", async () => {
+  const rule = mainRule();
+  rule.context.desktopRemoteAccess = { endpoint: "https://companion.example.test" };
+  const { handlers } = await load(rule.pageAllowed);
+  const local = page(LOCAL);
+  rule.show(local);
+  expect(rule.offered(local.event)).toBe(true);
+  for (const channel of ["update:check", "update:install", "update:get-state", "update:seen"]) expect(() => handlers.get(channel)(local.event), channel).not.toThrow();
+  expect(Object.keys(bridgeFor(LOCAL).bridge.updater).sort()).toEqual(["check", "install", "onState", "seen"]);
 });
 
 it("a downloaded update installs when the app quits, except a system package, which is the person's to install", async () => {

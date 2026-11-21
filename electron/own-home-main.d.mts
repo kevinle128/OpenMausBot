@@ -53,6 +53,8 @@ export function installOwnHome(deps: {
   busy(): boolean;
   away(): boolean;
   active(): boolean;
+  /** The chosen server's address, before or after the move finished, while it is still a server saved by hand. */
+  target(): string | null;
   origin(): string | null;
   underWay(): { phase: string; name: string } | null;
   home(): { id: string; origin: string; environmentId: string; name: string } | null;

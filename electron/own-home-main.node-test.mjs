@@ -129,11 +129,16 @@ test("while the move goes, this computer's screen names the server; once home is
   const moving = install({ answers: {}, choice, journal: { v: 1, phase: "final", cloud } });
   assert.deepEqual(moving.own.underWay(), { phase: "final", name: "Garage server" });
   assert.equal(moving.own.origin(), null);
+  assert.equal(moving.own.target(), garage.origin, "the chosen server is named before the move has finished");
   assert.equal(moving.own.home(), null, "nothing is lent before the switch");
   moving.own.close();
   const done = install({ answers: {}, choice, journal: { v: 1, phase: "done", cloud, doneAt: 1 } });
   assert.equal(done.own.underWay(), null);
   assert.equal(done.own.origin(), garage.origin);
+  assert.equal(done.own.target(), garage.origin);
+  assert.equal(install({ answers: {} }).own.target(), null, "no choice, no target");
+  const elsewhere = { ...choice, origin: "https://not-saved.example.test" };
+  assert.equal(install({ answers: {}, choice: elsewhere }).own.target(), null, "a chosen address that is no server saved by hand is no target");
   assert.deepEqual(done.own.home(), { id: "g", origin: garage.origin, environmentId: ID, name: "Garage server" });
   assert.equal(done.own.offers(garage), false);
   done.own.close();
