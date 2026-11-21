@@ -24,3 +24,6 @@ onlyBuiltDependencies:
 overrides:
   dompurify: 3.4.17
   fast-uri: 3.1.9
+patchedDependencies:
+  '@getpaseo/client@0.16.0-beta.2': patches/@getpaseo__client@0.16.0-beta.2.patch
+  '@getpaseo/protocol@0.16.0-beta.2': patches/@getpaseo__protocol@0.16.0-beta.2.patch
