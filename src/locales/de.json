@@ -4027,5 +4027,6 @@
   "call.capability.turnsNeedDeepSeekKey": "Füge einen DeepSeek-Schlüssel hinzu, um in Anrufen abwechselnd zu sprechen",
   "chat.notice.acpNodeTooOld": "{provider} braucht Node.js {needed} oder neuer, aber auf diesem Computer ist Node.js {found}. Aktualisiere Node.js von nodejs.org und sende deine Nachricht dann erneut.",
   "chat.newChatHint": "Starte einen neuen Chat, um Tokens zu sparen.",
-  "chat.newChatHintButton": "Neuer Chat"
+  "chat.newChatHintButton": "Neuer Chat",
+  "settings.vault.skill.open": "Skill für Harnesses installieren"
 }

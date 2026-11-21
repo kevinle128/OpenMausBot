@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import baseTest from "node:test";
+
+// omb supports macOS and Linux only: file modes and a shell `node` stand-in do not hold on Windows.
+const test = (name, run) => baseTest(name, { skip: process.platform === "win32" && "omb supports macOS and Linux only" }, run);
 import { installOmbSkill } from "./omb-skill-main.mjs";
 
 test("the server bundle step puts omb.mjs where the packaged app and the server look for it", async () => {

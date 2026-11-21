@@ -6403,5 +6403,6 @@
   "voice.deepseek.description": "Lee en voz alta las respuestas y los mensajes de voz con la voz Stella o Tide de DeepSeek. Al elegir DeepSeek, el dictado y el modo Por turnos también te escuchan con la transcripción de voz de DeepSeek, hasta unos dos minutos por grabación. Usa tu clave de API de DeepSeek y DeepSeek lo factura.",
   "voice.deepseek.stella": "Stella (femenina)",
   "voice.deepseek.tide": "Tide (masculina)",
-  "call.capability.turnsNeedDeepSeekKey": "Añade una clave de DeepSeek para hablar por turnos en las llamadas"
+  "call.capability.turnsNeedDeepSeekKey": "Añade una clave de DeepSeek para hablar por turnos en las llamadas",
+  "settings.vault.skill.open": "Instalar la skill para los harnesses"
 }

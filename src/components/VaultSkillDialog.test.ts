@@ -135,7 +135,7 @@ describe("Settings → Vault: install the skill from a browser", () => {
   });
 
   it("keeps the outcome of an earlier install when a second one covers other rows, and says the server's computer is not paired", async () => {
-    fixture.api.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+    fixture.api.mockImplementation(async (_path: string, init?: { method?: string; body?: string }) => {
       if (!init) return { data: { rows: ROWS } };
       const [harness] = JSON.parse(init.body ?? "{}").harnesses as string[];
       return { data: { rows: [row(harness, harness, "updated")], command: "/home/me/.local/bin/omb", notes: [{ key: "serverNotPaired" }] } };

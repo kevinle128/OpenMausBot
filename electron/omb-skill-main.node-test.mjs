@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import baseTest from "node:test";
+
+// omb supports macOS and Linux only: file modes and a shell `node` stand-in do not hold on Windows.
+const test = (name, run) => baseTest(name, { skip: process.platform === "win32" && "omb supports macOS and Linux only" }, run);
 import * as realOmb from "../bin/omb.mjs";
 import { installOmbSkill } from "./omb-skill-main.mjs";
 

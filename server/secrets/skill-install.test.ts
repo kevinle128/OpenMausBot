@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createSkillInstaller } from "./skill-install.ts";
 
-const OMB = new URL("../../bin/omb.mjs", import.meta.url).pathname;
+const OMB = fileURLToPath(new URL("../../bin/omb.mjs", import.meta.url));
 let home: string;
 let bin: string;
 
@@ -22,7 +23,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-describe("the skill installer of the server", () => {
+// omb supports macOS and Linux only: file modes, a shell `node` stand-in and symbolic links do not hold on Windows.
+describe.skipIf(process.platform === "win32")("the skill installer of the server", () => {
   it("lists every harness with its state", async () => {
     const rows = await installer().list();
     expect(rows).toHaveLength(21);
@@ -44,7 +46,7 @@ describe("the skill installer of the server", () => {
 
   it("leaves a symbolic link at ~/.local/bin/omb alone", async () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    execFileSync("ln", ["-s", OMB, join(home, ".local", "bin", "omb")]);
+    symlinkSync(OMB, join(home, ".local", "bin", "omb"));
     await installer().install(["codex"]);
     expect(readFileSync(join(home, ".local", "bin", "omb"), "utf8")).toBe(readFileSync(OMB, "utf8"));
   });
