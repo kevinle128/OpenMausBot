@@ -32,13 +32,19 @@ if (expectedVersion !== release.version) {
   );
 }
 
+// The first start of a newly written executable can wait for an antivirus scan, so the probe allows 30 s. It reads the
+// version from stdout or stderr, and it logs why a probe gave no version, so a failed check names its cause.
 async function binaryVersion(candidate) {
   if (!candidate || !existsSync(candidate)) return null;
+  const versionOf = (text) => String(text ?? "").match(/cua-driver\s+([\d.]+)/)?.[1] ?? null;
   try {
-    const { stdout } = await run(candidate, ["--version"], { timeout: 5000, windowsHide: true });
-    return stdout.match(/cua-driver\s+([\d.]+)/)?.[1] ?? null;
-  } catch {
-    return null;
+    const { stdout, stderr } = await run(candidate, ["--version"], { timeout: 30_000, windowsHide: true });
+    const version = versionOf(stdout) ?? versionOf(stderr);
+    if (!version) console.warn(`cua-driver --version gave no version: stdout ${JSON.stringify(String(stdout).slice(0, 200))}, stderr ${JSON.stringify(String(stderr).slice(0, 200))}`);
+    return version;
+  } catch (error) {
+    console.warn(`cua-driver --version failed: code ${error?.code ?? "?"}, signal ${error?.signal ?? "none"}, killed ${Boolean(error?.killed)}, stderr ${JSON.stringify(String(error?.stderr ?? "").slice(0, 300))}`);
+    return versionOf(error?.stdout) ?? versionOf(error?.stderr);
   }
 }
 
