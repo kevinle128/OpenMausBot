@@ -69,12 +69,10 @@ async function officialBinary() {
   }
   const archive = join(cache, release.file);
   await writeFile(archive, bytes);
-  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "Expand-Archive -LiteralPath $env:OMB_CUA_ARCHIVE -DestinationPath $env:OMB_CUA_EXTRACT"], {
-    env: { ...process.env, OMB_CUA_ARCHIVE: archive, OMB_CUA_EXTRACT: cache },
-    timeout: 60_000,
-    windowsHide: true,
-  });
+  // Windows' own bsdtar reads zip files. PowerShell's Expand-Archive on the runner image of 2026-11-16 expanded nothing
+  // and reported no error.
+  const tar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  await run(tar, ["-xf", archive, "-C", cache], { timeout: 60_000, windowsHide: true });
   if (!existsSync(cachedBinary)) {
     const listed = (await readdir(cache).catch(() => [])).join(", ") || "nothing";
     const threats = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
