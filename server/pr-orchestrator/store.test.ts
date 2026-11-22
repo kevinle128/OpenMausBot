@@ -78,6 +78,34 @@ describe.each([["memory", () => open()], ["file", () => open(tempFile())]])("orc
     expect(store.lastReceivedAt()).toBe(3_000);
   });
 
+  it("applied rows after a sequence stop before the first pending row", () => {
+    const store = make();
+    expect(store.maxReceivedSeq()).toBe(0);
+    store.insertReceived([received("a"), received("b"), received("c"), received("d")]);
+    const [first, failed, pending, later] = store.receivedByStatus("pending", 10);
+    store.setReceivedStatus(first!.seq, "applied", null);
+    store.setReceivedStatus(failed!.seq, "failed", "bad");
+    store.setReceivedStatus(later!.seq, "applied", null);
+    expect(store.appliedAfter(0, 10).map((row) => row.seq)).toEqual([first!.seq]);
+    expect(store.appliedAfter(first!.seq, 10)).toEqual([]);
+    expect(pending!.status).toBe("pending");
+    expect(store.maxReceivedSeq()).toBe(later!.seq);
+    expect(store.latestApplied(10).map((row) => row.seq)).toEqual([later!.seq, first!.seq]);
+  });
+
+  it("failed rows are left out of the feed", () => {
+    const store = make();
+    store.insertReceived([received("a"), received("b"), received("c")]);
+    const [first, failed, last] = store.receivedByStatus("pending", 10);
+    store.setReceivedStatus(first!.seq, "applied", null);
+    store.setReceivedStatus(failed!.seq, "failed", "bad");
+    store.setReceivedStatus(last!.seq, "applied", null);
+    expect(store.appliedAfter(0, 10).map((row) => row.seq)).toEqual([first!.seq, last!.seq]);
+    expect(store.appliedAfter(0, 1).map((row) => row.seq)).toEqual([first!.seq]);
+    expect(store.latestApplied(10).map((row) => row.seq)).toEqual([last!.seq, first!.seq]);
+    expect(store.latestApplied(1).map((row) => row.seq)).toEqual([last!.seq]);
+  });
+
   it("appends ledger rows with increasing seq and reads them back per PR in order", () => {
     const store = make();
     const a = store.append(ledgerRow("github:acme/app#1", 1));

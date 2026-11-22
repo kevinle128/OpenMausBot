@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { vaultNameKey } from "../../shared/vault.ts";
 import { buildAdapters, type AttachParts } from "../pr-orchestrator/adapters/build.ts";
 import { noneAttached, type AttachedAdapters } from "../pr-orchestrator/adapters/switched.ts";
+import type { PrStatusForBot } from "../pr-orchestrator/bot-status.ts";
 import { createConfigSource, orchestratorActive } from "../pr-orchestrator/config.ts";
 import { updateConnectorInstance } from "../pr-orchestrator/config-writer.ts";
-import type { Owner, SubjectKey } from "../pr-orchestrator/types.ts";
-import { connectorViewsIn, createOrchestratorCore, EMPTY_CONNECTOR_STATUS, inboundInstanceIn, routinesIn, type OrchestratorCore } from "../pr-orchestrator/core.ts";
+import type { Owner, PrKey, SubjectKey } from "../pr-orchestrator/types.ts";
+import { connectorViewsIn, createOrchestratorCore, EMPTY_CONNECTOR_STATUS, inboundInstanceIn, routinesIn, type LedgerEventForBot, type OrchestratorCore } from "../pr-orchestrator/core.ts";
 import { BUILT_IN_CONNECTORS } from "../pr-orchestrator/connectors/index.ts";
 import { createConnectorRegistry } from "../pr-orchestrator/connectors/registry.ts";
 import { createEventsDoor } from "../pr-orchestrator/intake.ts";
@@ -25,9 +26,19 @@ export interface PrOrchestratorHostDeps {
   log?: (line: string) => void;
 }
 
+/** Reads of applied PR events. While no core runs, the reads return nothing and `subscribe` keeps the listener for the next core. */
+export interface EventFeed {
+  eventsAfter(seq: number, limit: number): LedgerEventForBot[];
+  latestEvents(limit: number): LedgerEventForBot[];
+  prStatus(prKey: PrKey): PrStatusForBot | null;
+  headSeq(): number;
+  subscribe(listener: () => void): () => void;
+}
+
 export interface PrOrchestratorHost {
   door: IngressDoor;
   routes: RouteHandler;
+  feed: EventFeed;
   start(): void;
   /**
    * Hands over what the adapters need from the server (the Paseo connection, the Inbox parts). It works with no core: the
@@ -52,6 +63,12 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
   let core: OrchestratorCore | null = null;
   let running = false;
   let stopping: Promise<void> | null = null;
+  const feedListeners = new Set<() => void>();
+  let feedUnsub = new Map<() => void, () => void>();
+  const attachFeed = (current: OrchestratorCore): void => {
+    feedUnsub = new Map();
+    for (const listener of feedListeners) feedUnsub.set(listener, current.onApplied(listener));
+  };
 
   // Security: a secret (the hub's key, a forge credential) is read from the Vault for one use and dropped. It is never
   // logged, cached, returned by a route or sent to a bot. Only the team's secrets count, never a person's own.
@@ -72,6 +89,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     if (core) return core;
     if (!running || stopping || !(existsSync(configPath) || existsSync(dbPath))) return null;
     core = createOrchestratorCore({ dbPath, configPath, connectors: BUILT_IN_CONNECTORS, key, log, attached: () => attached ?? noneAttached() });
+    attachFeed(core);
     core.start();
     return core;
   };
@@ -134,9 +152,26 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     }
   };
 
+  const feed: EventFeed = {
+    eventsAfter: (seq, limit) => ensureCore()?.eventsAfter(seq, limit) ?? [],
+    latestEvents: (limit) => ensureCore()?.latestEvents(limit) ?? [],
+    prStatus: (key) => ensureCore()?.prStatus(key) ?? null,
+    headSeq: () => ensureCore()?.headSeq() ?? 0,
+    subscribe(listener) {
+      feedListeners.add(listener);
+      if (core) feedUnsub.set(listener, core.onApplied(listener));
+      return () => {
+        feedListeners.delete(listener);
+        feedUnsub.get(listener)?.();
+        feedUnsub.delete(listener);
+      };
+    },
+  };
+
   return {
     door,
     routes,
+    feed,
     attach(parts) {
       if (attached) {
         log("pr-orchestrator: adapters are already attached; the second attach is ignored");

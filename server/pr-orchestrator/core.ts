@@ -4,7 +4,8 @@ import { startDueTimer } from "../due-timer.ts";
 import { createCommandBus, configOfCommand, subjectLabelOf, type CommandBus } from "./command-bus.ts";
 import { askCardOf, portHandlers } from "./command-handlers.ts";
 import { noneAttached, switchedPorts, type AttachedAdapters } from "./adapters/switched.ts";
-import { configJsonSchema, createConfigSource, orchestratorActive, resolveRoutines } from "./config.ts";
+import { prStatusForBot, type PrStatusForBot } from "./bot-status.ts";
+import { configJsonSchema, createConfigSource, orchestratorActive, resolveForRepo, resolveRoutines } from "./config.ts";
 import { createConnectorSupervisor, type ConnectorSupervisor } from "./connectors-supervisor.ts";
 import { BUILT_IN_CONNECTORS } from "./connectors/index.ts";
 import { createConnectorRegistry, type ConnectorEventType, type ConnectorRegistry } from "./connectors/registry.ts";
@@ -15,10 +16,10 @@ import type { ConnectorDefinition } from "./ports.ts";
 import { createProcessManager, type EvaluationInfo, type ProcessManager } from "./process-manager.ts";
 import { createScheduler, type Scheduler } from "./scheduler.ts";
 import { describeRoutineWith, testRoutine as runRoutineTest, toSimInputs, type RoutineTestResult } from "./simulate.ts";
-import { openOrchestratorStore, type OrchestratorStore, type ReceivedStatus } from "./store.ts";
+import { openOrchestratorStore, type AppliedReceivedRow, type OrchestratorStore, type ReceivedStatus } from "./store.ts";
 import {
   ROUTINE_HISTORY_SHOWN,
-  prKey as makePrKey, type CommandRecord, type IntakeSink, type LedgerRow, type OrchestratorConfig, type PrKey, type PrRecord, type PrState,
+  prKey as makePrKey, type CommandRecord, type IntakeSink, type LedgerRow, type OmbEvent, type OrchestratorConfig, type PrKey, type PrRecord, type PrState,
   type Owner, type Provider, type Routine, type TimerRecord, type TriggerName,
 } from "./types.ts";
 
@@ -42,6 +43,8 @@ export interface CoreDeps {
   installed?: CommandContext["installed"];
   startTimer?: typeof startDueTimer;
   onEvaluate?(info: EvaluationInfo): void;
+  /** Called once after a drain that applied at least one row. */
+  onApplied?(): void;
   log(line: string): void;
 }
 
@@ -67,7 +70,10 @@ export function createCoreParts(deps: CoreDeps): CoreParts {
   });
   const config = () => deps.config().config;
   const bus = createCommandBus({ store: deps.store, pm, handlers, ports, ...(deps.installed ? { installed: deps.installed } : {}), config, now: deps.now, log: deps.log, onSettled: poke });
-  scheduler = createScheduler({ store: deps.store, pm, bus, now: deps.now, config, startTimer: deps.startTimer, log: deps.log });
+  scheduler = createScheduler({
+    store: deps.store, pm, bus, now: deps.now, config, startTimer: deps.startTimer, log: deps.log,
+    ...(deps.onApplied ? { onApplied: deps.onApplied } : {}),
+  });
   return { store: deps.store, pm, bus, scheduler, ports };
 }
 
@@ -120,8 +126,83 @@ export interface OrchestratorCore {
   routineRuns(routineId: string): RoutineRun[];
   /** Dry run of one routine on one stored input of a PR; touches no table of the live store. Throws InvalidRoutineError for a draft that the config schema refuses. */
   testRoutine(req: { routine?: object; routineId?: string; prKey: PrKey; inputSeq: number }): Promise<RoutineTestResult>;
+  /** Applied PR events with seq above the given seq, oldest first. `rawRef` is omitted. A pending row ends the read. */
+  eventsAfter(seq: number, limit: number): LedgerEventForBot[];
+  /** The newest applied PR events, newest first. */
+  latestEvents(limit: number): LedgerEventForBot[];
+  /** The ledger status of one PR, or null when the ledger has no such PR. */
+  prStatus(prKey: PrKey): PrStatusForBot | null;
+  /** The highest received seq, or 0 when no row exists. */
+  headSeq(): number;
+  /** Called once after a drain that applied at least one row. Returns a function that removes the listener. */
+  onApplied(listener: () => void): () => void;
   verifyProjection(): PrKey[];
   reprocess(status: "failed"): number;
+}
+
+/** One applied PR event, as a bot feed reads it. */
+export interface LedgerEventForBot {
+  seq: number;
+  connector: string;
+  event: Omit<OmbEvent, "rawRef">;
+  receivedAt: number;
+}
+
+function ledgerEvent(row: AppliedReceivedRow): LedgerEventForBot | null {
+  let stored: OmbEvent;
+  try {
+    stored = JSON.parse(row.json) as OmbEvent;
+  } catch {
+    return null;
+  }
+  if (stored.subject?.kind !== "pr" || !("forge" in stored.subject)) return null;
+  const { rawRef: _rawRef, ...event } = stored;
+  return { seq: row.seq, connector: row.connector, event, receivedAt: row.receivedAt };
+}
+
+function eventsAfterRows(store: OrchestratorStore, seq: number, limit: number): LedgerEventForBot[] {
+  if (limit < 1) return [];
+  const found: LedgerEventForBot[] = [];
+  let after = seq;
+  while (found.length < limit) {
+    const room = limit - found.length;
+    const rows = store.appliedAfter(after, room);
+    if (rows.length === 0) break;
+    const last = rows[rows.length - 1]!.seq;
+    if (last <= after) break;
+    after = last;
+    for (const row of rows) {
+      const item = ledgerEvent(row);
+      if (!item) continue;
+      found.push(item);
+      if (found.length === limit) break;
+    }
+    if (rows.length < room) break;
+  }
+  return found;
+}
+
+function latestEventRows(store: OrchestratorStore, limit: number): LedgerEventForBot[] {
+  if (limit < 1) return [];
+  let ask = limit;
+  let rows = store.latestApplied(ask);
+  const take = (batch: AppliedReceivedRow[]): LedgerEventForBot[] => {
+    const found: LedgerEventForBot[] = [];
+    for (const row of batch) {
+      const item = ledgerEvent(row);
+      if (!item) continue;
+      found.push(item);
+      if (found.length === limit) break;
+    }
+    return found;
+  };
+  let found = take(rows);
+  while (found.length < limit && rows.length === ask && ask < 1_000_000) {
+    ask *= 2;
+    rows = store.latestApplied(ask);
+    found = take(rows);
+  }
+  return found;
 }
 
 export interface CoreOptions {
@@ -198,11 +279,22 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   const loaded = () => source.current();
   const attached = deps.attached ?? noneAttached;
   const switched = switchedPorts(() => loaded().config, attached);
+  const appliedListeners = new Set<() => void>();
+  const notifyApplied = (): void => {
+    const listeners = Array.from(appliedListeners);
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (error) {
+        log(`pr-orchestrator: an applied-event listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  };
   const parts = createCoreParts({
     store, connectors: registry, config: loaded, now, newId: deps.newId ?? randomUUID,
     handlers: { ...portHandlers(), ...deps.handlers }, ports: overlay(switched, deps.ports),
     ...(deps.ports ? {} : { installed: switched.installed }),
-    startTimer: deps.startTimer, log,
+    startTimer: deps.startTimer, onApplied: notifyApplied, log,
   });
   const supervisor: ConnectorSupervisor = createConnectorSupervisor({
     store, sink: parts.pm, registry, config: () => loaded().config, key, validator: createOmbEventValidator(), now, log,
@@ -362,6 +454,21 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
       const rows = store.ledger(req.prKey).filter(row => row.causationSeq === null && row.seq <= req.inputSeq);
       if (rows.at(-1)?.seq !== req.inputSeq) throw new RangeError(`ledger row ${req.inputSeq} of ${req.prKey} is not an input`);
       return runRoutineTest({ config, inputs: toSimInputs(rows), routine, inputIndex: rows.length - 1, registry });
+    },
+
+    eventsAfter: (seq, limit) => eventsAfterRows(store, seq, limit),
+    latestEvents: (limit) => latestEventRows(store, limit),
+    prStatus(prKey) {
+      const record = store.getPr(prKey);
+      if (!record) return null;
+      const at = now();
+      const { config, version } = loaded();
+      return prStatusForBot(record, { now: at, config: resolveForRepo(config, record.provider, record.repo), configVersion: version }, at);
+    },
+    headSeq: () => store.maxReceivedSeq(),
+    onApplied(listener) {
+      appliedListeners.add(listener);
+      return () => { appliedListeners.delete(listener); };
     },
 
     verifyProjection: () => parts.pm.verifyProjection(),

@@ -16,6 +16,8 @@ export interface SchedulerDeps {
   config(): OrchestratorConfig;
   /** Tests and the simulator replace the real due timer to drive run and next by hand. */
   startTimer?: typeof startDueTimer;
+  /** Called once when this run applied at least one received row. */
+  onApplied?(): void;
   log(line: string): void;
 }
 
@@ -42,7 +44,17 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   async function run(): Promise<void> {
-    pm.drain();
+    const appliedBefore = store.countReceivedByStatus().applied;
+    try {
+      pm.drain();
+    } finally {
+      // Rows commit one by one, so a drain that throws midway may still have applied some.
+      try {
+        if (store.countReceivedByStatus().applied > appliedBefore) deps.onApplied?.();
+      } catch (error) {
+        deps.log(`pr-orchestrator: an applied-event listener failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     for (const timer of store.dueTimers(deps.now(), TIMER_BATCH)) {
       try {
         pm.fireTimer(timer);

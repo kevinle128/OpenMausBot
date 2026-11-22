@@ -165,6 +165,48 @@ describe("PR orchestrator host", () => {
     await expect(host.stop()).resolves.toBeUndefined();
   });
 
+  it("the feed reads nothing while no core runs and keeps its listener across a restart", async () => {
+    const { host, base } = await serve();
+    let calls = 0;
+    const stopListen = host.feed.subscribe(() => { calls += 1; });
+    expect(host.feed.eventsAfter(0, 10)).toEqual([]);
+    expect(host.feed.latestEvents(10)).toEqual([]);
+    expect(host.feed.prStatus("github:acme/widgets#42")).toBeNull();
+    expect(host.feed.headSeq()).toBe(0);
+    expect(existsSync(dbPath())).toBe(false);
+
+    writeConfig();
+    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    host.start();
+    const opened = validFixtures().find(item => item.type === "pr.opened")!.event as { id: string };
+    expect((await post(base, HUB_KEY, [opened])).status).toBe(200);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    const events = host.feed.eventsAfter(0, 10);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.event).not.toHaveProperty("rawRef");
+    expect(events[0]!.seq).toBe(host.feed.headSeq());
+    expect(host.feed.prStatus("github:acme/widgets#42")).toMatchObject({
+      title: "Add the widget", owner: null, mergeable: null, number: 42,
+    });
+    expect(host.feed.prStatus("github:acme/widgets#42")?.gaps).not.toContain("forge_stale");
+
+    await host.stop();
+    expect(host.feed.eventsAfter(0, 10)).toEqual([]);
+    expect(host.feed.latestEvents(10)).toEqual([]);
+    expect(host.feed.prStatus("github:acme/widgets#42")).toBeNull();
+    expect(host.feed.headSeq()).toBe(0);
+    expect(calls).toBe(1);
+
+    host.start();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(calls).toBe(1);
+    expect((await post(base, HUB_KEY, [{ ...opened, id: `${opened.id}:again` }])).status).toBe(200);
+    await vi.waitFor(() => expect(calls).toBe(2));
+    expect(host.feed.eventsAfter(0, 10)).toHaveLength(2);
+    stopListen();
+    expect(host.feed.headSeq()).toBeGreaterThan(0);
+  });
+
   describe("with adapters", () => {
     const KEY = "github:acme/widgets#1";
     const pr = { provider: "github" as const, repo: "acme/widgets", number: 1, url: null };

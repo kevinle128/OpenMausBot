@@ -90,6 +90,10 @@ export interface ReceivedRow {
   seq: number; eventId: string; prKey: PrKey | null; kind: string | null; receivedAt: number; occurredAt: string | null;
   status: ReceivedStatus; reason: string | null; json: string;
 }
+/** One applied received row, in the order the feed reads it. */
+export interface AppliedReceivedRow {
+  seq: number; connector: string; subjectKey: string; receivedAt: number; json: string;
+}
 export type ConnectorOutcome = "accepted" | "duplicate" | "rejected" | "bad_signature" | "bad_request" | "error";
 
 export interface OrchestratorStore {
@@ -106,6 +110,16 @@ export interface OrchestratorStore {
   }>): string[];
   /** Oldest first. */
   receivedByStatus(status: ReceivedStatus, limit: number): ReceivedRow[];
+  /**
+   * Applied rows with seq above the given seq, oldest first.
+   * A pending row ends the read: a later applied row stays hidden until that pending row is applied.
+   * Failed rows are left out.
+   */
+  appliedAfter(seq: number, limit: number): AppliedReceivedRow[];
+  /** Applied rows, newest first. */
+  latestApplied(limit: number): AppliedReceivedRow[];
+  /** The highest received seq, or 0 when no row exists. */
+  maxReceivedSeq(): number;
   setReceivedStatus(seq: number, status: ReceivedStatus, reason: string | null): void;
   countReceivedByStatus(): Record<ReceivedStatus, number>;
   lastReceivedAt(): number | null;
@@ -194,6 +208,11 @@ const readLedger = (row: Row): LedgerRow => ({
   entry: JSON.parse(String(row.json)) as LedgerEntry,
 });
 
+const readApplied = (row: Row): AppliedReceivedRow => ({
+  seq: Number(row.seq), connector: String(row.connector), subjectKey: String(row.subject_key),
+  receivedAt: Number(row.received_at), json: String(row.json),
+});
+
 const readReceived = (row: Row): ReceivedRow => {
   const subject = String(row.subject_key);
   return {
@@ -254,6 +273,15 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
       (event_id, connector, subject_key, subject_kind, kind, received_at, occurred_at, status, reason, json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     receivedByStatus: db.prepare("SELECT * FROM received_events WHERE status = ? ORDER BY seq LIMIT ?"),
+    appliedAfter: db.prepare(`SELECT * FROM received_events
+      WHERE seq > ? AND status = 'applied'
+        AND NOT EXISTS (
+          SELECT 1 FROM received_events AS earlier
+          WHERE earlier.status = 'pending' AND earlier.seq > ? AND earlier.seq < received_events.seq
+        )
+      ORDER BY seq LIMIT ?`),
+    latestApplied: db.prepare("SELECT * FROM received_events WHERE status = 'applied' ORDER BY seq DESC LIMIT ?"),
+    maxReceivedSeq: db.prepare("SELECT MAX(seq) AS seq FROM received_events"),
     setReceivedStatus: db.prepare("UPDATE received_events SET status = ?, reason = ? WHERE seq = ?"),
     countReceived: db.prepare("SELECT status, COUNT(*) AS count FROM received_events GROUP BY status"),
     lastReceived: db.prepare("SELECT MAX(received_at) AS at FROM received_events"),
@@ -397,6 +425,9 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
       return added;
     }),
     receivedByStatus: (status, limit) => all(q.receivedByStatus, status, limit).map(readReceived),
+    appliedAfter: (seq, limit) => all(q.appliedAfter, seq, seq, limit).map(readApplied),
+    latestApplied: (limit) => all(q.latestApplied, limit).map(readApplied),
+    maxReceivedSeq: () => nullableNumber(one(q.maxReceivedSeq), "seq") ?? 0,
     setReceivedStatus: (seq, status, reason) => { q.setReceivedStatus.run(status, reason, seq); },
     countReceivedByStatus: () => {
       const counts: Record<ReceivedStatus, number> = { pending: 0, applied: 0, failed: 0 };

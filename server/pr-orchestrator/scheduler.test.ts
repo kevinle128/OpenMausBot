@@ -56,6 +56,26 @@ describe("scheduler", () => {
     expect(timer.stopped()).toBe(true);
   });
 
+  it("tells the applied-event listener about rows that committed before a drain threw", async () => {
+    h = makeHarness();
+    const timer = manualTimer();
+    const config = orchestratorConfigSchema.parse({ enabled: true });
+    const bus = createCommandBus({ store: h.store, pm: h.pm, ports: stubPorts(), config: () => config, now: h.clock.now, log: () => {}, handlers: stubHandlers() });
+    const failingPm = { ...h.pm, drain: () => { h.pm.drain(); throw new Error("store unavailable"); } };
+    let notified = 0;
+    const scheduler = createScheduler({
+      store: h.store, pm: failingPm, bus, now: h.clock.now, config: () => config, startTimer: timer.startTimer, log: line => h.logs.push(line),
+      onApplied: () => { notified += 1; },
+    });
+    scheduler.start();
+    h.store.setMeta("last_prune_at", String(h.clock.now()));
+    h.pm.accept([{ event: ev.opened(), raw: "{}" }], h.clock.now());
+
+    await expect(timer.options().run()).rejects.toThrow("store unavailable");
+    expect(notified).toBe(1);
+    scheduler.stop();
+  });
+
   it("fires a due timer exactly once", async () => {
     const { timer } = setup();
     h.send(ev.opened());

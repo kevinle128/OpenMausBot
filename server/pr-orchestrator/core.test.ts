@@ -126,6 +126,50 @@ describe("orchestrator core", () => {
     expect(runs[0]).toMatchObject({ prKey: DEFAULT_PR_KEY, trigger: "pr.conflict.detected" });
     expect(runs[0]?.actions[0]).toMatchObject({ action: "TellOwner", result: "issued" });
   });
+
+  it("eventsAfter returns PR events in order without rawRef", async () => {
+    writeFileSync(configPath(), JSON.stringify({ enabled: true }));
+    const session = open();
+    session.core.start();
+    const thread = {
+      ...ev.opened(),
+      type: "chat.message.posted",
+      subject: { kind: "thread", id: "t1" },
+      subjectKey: "subject:github-event:thread:t1",
+      data: {},
+    };
+    receive(session, ev.opened(), thread, ev.ciFinished());
+    await session.run();
+    const events = session.core.eventsAfter(0, 10);
+    expect(session.core.status(false).counts.receivedByStatus).toMatchObject({ applied: 3, failed: 0 });
+    expect(events.map(item => item.event.type)).toEqual(["pr.opened", "pr.ci.finished"]);
+    expect(events[0]!.seq).toBeLessThan(events[1]!.seq);
+    expect(events[0]!.connector).toBe("github-event");
+    expect(events[0]!.event).not.toHaveProperty("rawRef");
+    expect(events[1]!.event).not.toHaveProperty("rawRef");
+    expect(session.core.latestEvents(1).map(item => item.event.type)).toEqual(["pr.ci.finished"]);
+    expect(session.core.prStatus(DEFAULT_PR_KEY)?.owner).toBeNull();
+    receive(session, ev.pushed());
+    expect(session.core.eventsAfter(0, 10)).toHaveLength(2);
+    expect(session.core.headSeq()).toBeGreaterThan(events[1]!.seq);
+  });
+
+  it("a drain that applies rows calls the listener once", async () => {
+    writeFileSync(configPath(), JSON.stringify({ enabled: true }));
+    const session = open();
+    session.core.start();
+    let calls = 0;
+    const stop = session.core.onApplied(() => { calls += 1; });
+    receive(session, ev.opened(), ev.ciFinished());
+    await session.run();
+    expect(calls).toBe(1);
+    await session.run();
+    expect(calls).toBe(1);
+    stop();
+    receive(session, ev.pushed());
+    await session.run();
+    expect(calls).toBe(1);
+  });
 });
 
 describe("orchestrator core with the real due timer", () => {
