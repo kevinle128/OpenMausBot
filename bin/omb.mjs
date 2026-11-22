@@ -288,13 +288,10 @@ function pendingText(refs, serverText) {
 
 // Who is asking: the agent binary above this process, found by walking the parent chain.
 
-const AGENTS = [
-  { name: "claude", bin: /^claude(-code)?$/, path: /\/claude\/versions\/[^/]+$|\/@anthropic-ai\/claude-code\// },
-  { name: "codex", bin: /^codex$/, path: /\/@openai\/codex\// },
-  { name: "opencode", bin: /^\.?opencode$/, path: /\/opencode-ai\/|\/opencode\/bin\// },
-  { name: "pi", bin: /^pi$/, path: /\/pi-coding-agent\// },
-];
-const RUNTIMES = /^(node|nodejs|bun|deno)$/;
+const RUNTIMES = /^(node|nodejs|bun|deno|python\d*(\.\d+)*)$/i;
+// Cursor CLI 2026.11: its launcher starts the bundled Node with `exec -a "$0"`, so `ps` shows that Node under the launcher's name.
+// Such a process counts only through the script it hosts, never through the launcher or the bundled Node.
+const RENAMED_RUNTIMES = /^(cursor-agent|agent)$/;
 const MAX_WALK = 40;
 
 export async function sha256File(path) {
@@ -329,19 +326,18 @@ async function psDescribe(ps, pid) {
 
 async function matchAgent(path, args) {
   const base = basename(path ?? "").replace(/\.exe$/i, "");
-  for (const agent of AGENTS) {
-    if (agent.bin.test(base) || agent.path.test(path ?? "")) return { agent: agent.name, target: path };
+  if (!RENAMED_RUNTIMES.test(base)) {
+    const named = AGENTS.find((agent) => agent.bin.test(base) || agent.path?.test(path ?? ""));
+    if (named) return { agent: named.name, target: path };
+    if (!RUNTIMES.test(base)) return null;
   }
-  if (!RUNTIMES.test(base)) return null;
   const argv = await args().catch(() => []);
   // Only the runtime's entrypoint counts, never the arguments it passes on to its script.
   const script = argv.slice(1).find((token) => !token.startsWith("-"));
   // The agent's own script is what is hashed: a new Node release must not end its grants, and two Node tools must not share one.
   if (!script || !script.startsWith("/") || !isFile(script)) return null;
-  for (const agent of AGENTS) {
-    if (agent.path.test(script) || agent.bin.test(basename(script).replace(/\.(?:c|m)?js$/, ""))) return { agent: agent.name, target: script };
-  }
-  return null;
+  const hosted = AGENTS.find((agent) => agent.path?.test(script) || agent.bin.test(basename(script).replace(/\.(?:c|m)?js$/, "")));
+  return hosted ? { agent: hosted.name, target: script } : null;
 }
 
 const isFile = (path) => { try { return statSync(path).isFile(); } catch { return false; } };
@@ -375,7 +371,7 @@ async function needIdentity(ctx) {
   const { d } = ctx;
   const found = await findAgent({ platform: d.platform, ps: d.ps, procRoot: d.procRoot, startPid: d.ppid });
   if (!found) {
-    throw new CliError(EXIT.refused, "no known agent (claude, codex, opencode, pi) was found above this process, so this command cannot say who is asking. Run it from an agent session", "blocked");
+    throw new CliError(EXIT.refused, `no known agent (${AGENTS.map((agent) => agent.name).join(", ")}) was found above this process, so this command cannot say who is asking. Run it from an agent session`, "blocked");
   }
   return found;
 }
@@ -1026,32 +1022,36 @@ const SKILL_NAME = "omb-vault";
 const HOOK_COMMAND_END = "hook claude-pretooluse";
 const OWN_HOOK = /omb(?:\.mjs)?" hook claude-pretooluse$/;
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const NOT_RECOGNISED = "omb cannot tell this agent apart yet; its omb secrets calls exit 6 until that is added";
 
-/** A harness reads personal skills from `<base>/<sub>`. `env` names the variable that moves `base`; only an absolute value counts. */
+/**
+ * A harness reads personal skills from `<base>/<sub>`. `env` names the variable that moves `base`; only an absolute value counts.
+ * `agent` is how the parent-process walk knows the harness: `bin` is the name of its file, `path` a path of its file or of the script a runtime hosts.
+ */
 export const HARNESSES = [
-  { id: "claudeAgent", label: "Claude", recognised: true, base: ".claude", env: "CLAUDE_CONFIG_DIR" },
-  { id: "codex", label: "Codex", recognised: true, base: ".agents" },
-  { id: "opencodeGo", label: "OpenCode", recognised: true, base: ".config/opencode" },
-  { id: "piAgent", label: "pi", recognised: true, base: ".pi/agent", env: "PI_CODING_AGENT_DIR" },
-  { id: "geminiAgent", label: "Gemini", recognised: false, base: ".gemini" },
-  { id: "antigravityAgent", label: "Google Gemini (Antigravity)", recognised: false, base: ".gemini/config" },
-  { id: "cursorAgent", label: "Cursor", recognised: false, base: ".cursor" },
-  { id: "copilotAgent", label: "GitHub Copilot", recognised: false, base: ".copilot", env: "COPILOT_HOME" },
-  { id: "grokAgent", label: "Grok", recognised: false, base: ".grok" },
-  { id: "qwenAgent", label: "Qwen", recognised: false, base: ".qwen", env: "QWEN_HOME" },
-  { id: "kimiAgent", label: "Kimi", recognised: false, base: ".kimi-code", env: "KIMI_CODE_HOME" },
-  { id: "kiroAgent", label: "Kiro", recognised: false, base: ".kiro" },
-  { id: "droidAgent", label: "Droid", recognised: false, base: ".factory" },
-  { id: "clineAgent", label: "Cline", recognised: false, base: ".cline", env: "CLINE_DIR" },
-  { id: "devinAgent", label: "Devin", recognised: false, base: ".agents" },
-  { id: "hermesAgent", label: "Hermes", recognised: false, base: ".hermes", env: "HERMES_HOME" },
-  { id: "ompAgent", label: "OMP", recognised: false, base: ".omp/agent" },
-  { id: "mistralVibeAgent", label: "Mistral (Vibe)", recognised: false, base: ".vibe", env: "VIBE_HOME" },
-  { id: "deepseekAgent", label: "DeepSeek Harness", recognised: false, base: null, reason: "DeepSeek documents no literal skill folder" },
-  { id: "commandCodeAgent", label: "Command Code", recognised: false, base: ".commandcode" },
-  { id: "museCode", label: "Muse Code", recognised: false, base: ".config", env: "XDG_CONFIG_HOME", sub: "muse/skills" },
-];
+  { id: "claudeAgent", label: "Claude", base: ".claude", env: "CLAUDE_CONFIG_DIR", agent: { name: "claude", bin: /^claude(-code)?$/, path: /\/claude\/versions\/[^/]+$|\/@anthropic-ai\/claude-code\// } },
+  { id: "codex", label: "Codex", base: ".agents", agent: { name: "codex", bin: /^codex$/, path: /\/@openai\/codex\// } },
+  { id: "opencodeGo", label: "OpenCode", base: ".config/opencode", agent: { name: "opencode", bin: /^\.?opencode$/, path: /\/opencode-ai\/|\/opencode\/bin\// } },
+  { id: "piAgent", label: "pi", base: ".pi/agent", env: "PI_CODING_AGENT_DIR", agent: { name: "pi", bin: /^pi$/, path: /(?<!@oh-my-pi)\/pi-coding-agent\// } },
+  { id: "geminiAgent", label: "Gemini", base: ".gemini", agent: { name: "gemini", bin: /^gemini$/, path: /\/@google\/gemini-cli\// } },
+  { id: "antigravityAgent", label: "Google Gemini (Antigravity)", base: ".gemini/config", agent: { name: "antigravity", bin: /^(agy|agy_acp_server\.par|localharness_external)$/ } },
+  { id: "cursorAgent", label: "Cursor", base: ".cursor", agent: { name: "cursor", bin: /^cursor-agent$/, path: /\/cursor-agent\/versions\/[^/]+\/index\.js$/ } },
+  { id: "copilotAgent", label: "GitHub Copilot", base: ".copilot", env: "COPILOT_HOME", agent: { name: "copilot", bin: /^copilot$/, path: /\/@github\/copilot\// } },
+  { id: "grokAgent", label: "Grok", base: ".grok", agent: { name: "grok", bin: /^grok$/, path: /\/\.grok\/downloads\/grok-[^/]+$/ } },
+  { id: "qwenAgent", label: "Qwen", base: ".qwen", env: "QWEN_HOME", agent: { name: "qwen", bin: /^qwen$/ } },
+  { id: "kimiAgent", label: "Kimi", base: ".kimi-code", env: "KIMI_CODE_HOME", agent: { name: "kimi", bin: /^kimi$/ } },
+  { id: "kiroAgent", label: "Kiro", base: ".kiro", agent: { name: "kiro", bin: /^kiro-cli$/ } },
+  { id: "droidAgent", label: "Droid", base: ".factory", agent: { name: "droid", bin: /^droid$/ } },
+  { id: "clineAgent", label: "Cline", base: ".cline", env: "CLINE_DIR", agent: { name: "cline", bin: /^cline$/, path: /\/node_modules\/cline\// } },
+  { id: "devinAgent", label: "Devin", base: ".agents", agent: { name: "devin", bin: /^devin$/ } },
+  { id: "hermesAgent", label: "Hermes", base: ".hermes", env: "HERMES_HOME", agent: { name: "hermes", bin: /^hermes$/ } },
+  { id: "ompAgent", label: "OMP", base: ".omp/agent", agent: { name: "omp", bin: /^omp$/, path: /\/@oh-my-pi\/pi-coding-agent\// } },
+  { id: "mistralVibeAgent", label: "Mistral (Vibe)", base: ".vibe", env: "VIBE_HOME", agent: { name: "vibe", bin: /^vibe(-acp)?$/ } },
+  { id: "deepseekAgent", label: "DeepSeek Harness", base: null, reason: "DeepSeek documents no literal skill folder" },
+  { id: "commandCodeAgent", label: "Command Code", base: ".commandcode", agent: { name: "command-code", bin: /^command-code$/, path: /\/node_modules\/command-code\// } },
+  { id: "museCode", label: "Muse Code", base: ".config", env: "XDG_CONFIG_HOME", sub: "muse/skills", agent: { name: "muse", bin: /^muse$/ } },
+].map((harness) => ({ ...harness, recognised: harness.base !== null && harness.agent !== undefined }));
+
+const AGENTS = HARNESSES.flatMap((harness) => (harness.recognised ? [harness.agent] : []));
 
 function harnessBase(harness, env, home) {
   const moved = harness.env ? env[harness.env] : undefined;
@@ -1161,7 +1161,7 @@ function registerClaudeHook(d) {
 }
 
 function skillRow(harness, d, result) {
-  const notes = [result.note, harness.reason, harness.base !== null && !harness.recognised ? NOT_RECOGNISED : null].filter(Boolean);
+  const notes = [result.note, harness.reason].filter(Boolean);
   const row = { harness: harness.id, label: harness.label, folder: skillFolder(harness, d.env, d.home), status: result.status, recognised: harness.recognised };
   if (notes.length > 0) row.note = notes.join(". ");
   return row;

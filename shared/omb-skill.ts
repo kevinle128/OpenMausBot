@@ -6,7 +6,7 @@ export interface SkillRow {
   label: string;
   folder: string | null;
   status: SkillStatus;
-  /** True when omb can name this agent today; otherwise the skill installs but `omb secrets` calls that need an agent are refused. */
+  /** True when omb can name this agent. Every harness with a skill folder is named; a harness without one is not. */
   recognised: boolean;
   note?: string;
 }

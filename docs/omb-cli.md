@@ -60,11 +60,11 @@ omb skill install --all
 - `omb` never writes through a symbolic link at `omb-vault` or `SKILL.md`. That row is `refused` and the exit code is 6.
 - Exit codes: 0 when every row is `installed`, `updated`, `unchanged` or `skipped`; 2 for an unknown harness id; 5 when a write fails; 6 when a row is `refused`.
 
-`recognised` is `true` when the parent-process walk in [Who is asking](#who-is-asking) can name that agent today: `claudeAgent`, `codex`, `opencodeGo` and `piAgent`. For the other harnesses the skill is installed, but their `omb secrets` calls that need an agent exit 6 until the walk learns them.
+`recognised` is `true` when the parent-process walk in [Who is asking](#who-is-asking) can name that agent. Every harness with a skill folder is recognised. DeepSeek has no skill folder, so it is not.
 
 ### From the app
 
-In Settings → Vault, **Install skill for harnesses** opens a list of the harnesses (the rows of `omb skill list`) with a check box on each row and **Select all**. A row shows `installed`, `outdated`, `missing` or `unsupported`, and a note when `omb` cannot name that agent yet. One **Install** button does the work, and a second click updates in place. The result of each row shows after it (`installed`, `updated`, `unchanged`, `skipped`, `refused` or `failed`).
+In Settings → Vault, **Install skill for harnesses** opens a list of the harnesses (the rows of `omb skill list`) with a check box on each row and **Select all**. A row shows `installed`, `outdated`, `missing` or `unsupported`, and the reason when a harness is unsupported. One **Install** button does the work, and a second click updates in place. The result of each row shows after it (`installed`, `updated`, `unchanged`, `skipped`, `refused` or `failed`).
 
 - **Desktop app (macOS and Linux):** it installs on the computer where the window is open, because the agents run there, whichever server or home page the main window shows. The page sends harness ids only. The app copies its bundled `omb` to `~/.local/bin/omb` (mode 0755), writes the embedded skill and adds the Claude hook. Main accepts the call from the main window's own page and its verified saved-server and home pages only, and an install also needs a click in the focused window.
   - On the app's own server, it pairs this computer with that server when `omb` is not paired: the window asks the server for a pairing code with the `secrets` scope only, and the app runs `omb pair` in its own process, so the code is on no command line. A pairing with another server stays, and the dialog says so.
@@ -88,7 +88,7 @@ In Settings → Vault, **Install skill for harnesses** opens a list of the harne
 
 ## Who is asking
 
-`fetch`, `run`, `request`, `grants` and `audit` walk the parent process chain (`ps -o ppid=,comm=` on macOS, `/proc` on Linux) up to a known agent: `claude`, `codex`, `opencode` or `pi`, as a native binary or hosted by `node`, `bun` or `deno` (found from the script path in its arguments). The fingerprint is `sha256:<hex>` of that agent's file: the binary itself, or for a hosted agent its script, so a new Node release does not end grants and two Node tools do not share one. With no agent above the process the command exits 6 and sends nothing.
+`fetch`, `run`, `request`, `grants` and `audit` walk the parent process chain (`ps -o ppid=,comm=` on macOS, `/proc` on Linux) up to a known agent: one of the harnesses of `omb skill list` that has a skill folder (`claude`, `codex`, `opencode`, `pi`, `gemini`, `antigravity`, `cursor`, `copilot`, `grok`, `qwen`, `kimi`, `kiro`, `droid`, `cline`, `devin`, `hermes`, `omp`, `vibe`, `command-code`, `muse`). The agent is a native binary, or a script hosted by `node`, `bun`, `deno` or `python` (found from the script path in its arguments). The Cursor launcher starts its bundled Node under the name `cursor-agent` or `agent`; that process counts only through the `cursor-agent/versions/<version>/index.js` script it hosts. The fingerprint is `sha256:<hex>` of that agent's file: the binary itself, or for a hosted agent its script, so a new Node release does not end grants and two Node tools do not share one. With no agent above the process the command exits 6 and sends nothing.
 
 `omb` sends the fingerprint, the agent label, `PASEO_AGENT_ID`, and `PASEO_AGENT_CWD` (or the working folder). The server treats the fingerprint as part of a grant's key and the rest as attribution. The token is the real boundary.
 
