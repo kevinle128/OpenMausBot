@@ -202,6 +202,18 @@ half hours. Now:
   packaged-server smoke and the Electron smokes.
 - `ci-stop-closed.yml` cancels a PR's CI run when the PR is merged or closed. PR runs share a group named by the PR number (`ci-pr-<n>`), never by `github.ref`: a merged PR's closed event reports the base branch as `github.ref`, which made every merge cancel main's CI (fixed Oct 3 2026).
 
+## Fork server on the Mac mini
+
+`fork-mini-deploy.yml` updates the OpenMausBot server on the fork's Mac mini. It
+runs on the mini's runner after CI ends green for a push to `main`, and by hand
+with `gh workflow run fork-mini-deploy.yml`. It fast-forwards
+`/Users/agent/omb/OpenMausBot`, installs dependencies only when the lockfile
+changed, builds the web app into `dist-deploy`, swaps it for `dist`, restarts
+`com.openmausbot.server` and waits for a new process to answer `/api/health`.
+If none answers, it restores the previous commit and `dist` and fails. It
+refuses to run when the checkout has local changes. The signed desktop app
+stays with `fork-desktop-build.yml`, which is still manual.
+
 ## Windows
 
 Windows runners are slow to get and a Windows shard takes as long as a Linux

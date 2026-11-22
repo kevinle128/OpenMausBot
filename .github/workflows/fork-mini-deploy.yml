@@ -1,0 +1,147 @@
+name: Fork Mini Deploy
+
+# Brings the OpenMausBot server on the fork's Mac mini to the newest green commit
+# of main. It runs on the mini's own runner after the CI workflow ends green for a
+# push to main, or by hand (`gh workflow run fork-mini-deploy.yml`) to retry.
+#
+# The server is the launchd agent com.openmausbot.server. It runs the TypeScript
+# sources straight from the checkout in /Users/agent/omb/OpenMausBot (a sparsebundle
+# that start-server.sh mounts) and serves the web app from that checkout's dist
+# folder. A deploy therefore fast-forwards that checkout, installs dependencies when
+# the lockfile changed, builds the web app aside, swaps dist, restarts the agent and
+# waits for a new process to answer /api/health. When it does not, the job restores
+# the previous commit and dist and restarts again, then fails.
+#
+# This is not the desktop build: Fork Desktop Build makes the signed app and stays
+# manual.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer one waits instead of cancelling a running restart.
+concurrency:
+  group: fork-mini-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'kevinle128/OpenMausBot'
+      && (github.event_name == 'workflow_dispatch'
+        || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: [self-hosted, macOS, ARM64, openmausbot]
+    timeout-minutes: 30
+    env:
+      CHECKOUT: /Users/agent/omb/OpenMausBot
+      SERVICE: com.openmausbot.server
+      HEALTH_URL: http://127.0.0.1:8799/api/health
+      # The agent's own PATH: node 24 first, so corepack finds the pinned pnpm.
+      PATH: /Users/agent/omb/node24/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Fast-forward the checkout
+        id: update
+        run: |
+          set -euo pipefail
+          cd "$CHECKOUT"
+          mount | grep -F " on ${CHECKOUT} (" > /dev/null || { echo "::error::${CHECKOUT} is not mounted"; exit 1; }
+          if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+            echo "::error::The mini checkout has local changes; refusing to deploy over them"
+            git status --short --untracked-files=no
+            exit 1
+          fi
+          git fetch --quiet origin main
+          target="${TARGET_SHA:-$(git rev-parse origin/main)}"
+          git cat-file -e "${target}^{commit}"
+          previous="$(git rev-parse HEAD)"
+          if git merge-base --is-ancestor "$target" "$previous"; then
+            echo "The mini already has ${target:0:9} or a newer commit. Nothing to deploy."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git merge-base --is-ancestor "$previous" "$target" || { echo "::error::${target:0:9} does not descend from the mini's ${previous:0:9}"; exit 1; }
+          git merge --ff-only --quiet "$target"
+          deps=false
+          if ! git diff --quiet "$previous" "$target" -- package.json pnpm-lock.yaml pnpm-workspace.yaml patches; then deps=true; fi
+          {
+            echo "changed=true"
+            echo "previous=${previous}"
+            echo "target=${target}"
+            echo "deps=${deps}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Updated the mini checkout ${previous:0:9} -> ${target:0:9} (dependencies changed: ${deps})."
+
+      - name: Install dependencies
+        if: steps.update.outputs.changed == 'true' && steps.update.outputs.deps == 'true'
+        run: |
+          set -euo pipefail
+          cd "$CHECKOUT"
+          corepack pnpm install --frozen-lockfile
+
+      - name: Build the web app aside
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          cd "$CHECKOUT"
+          rm -rf dist-deploy
+          corepack pnpm exec vite build --outDir dist-deploy --emptyOutDir
+          [[ -s dist-deploy/index.html ]] || { echo "::error::The build made no index.html"; exit 1; }
+
+      - name: Swap dist and restart the server
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          cd "$CHECKOUT"
+          old_pid="$(curl -fsS -m 5 "$HEALTH_URL" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).pid' || echo none)"
+          rm -rf dist.prev
+          mv dist dist.prev
+          mv dist-deploy dist
+          launchctl kickstart -k "gui/$(id -u)/${SERVICE}"
+          for _ in $(seq 1 60); do
+            sleep 2
+            pid="$(curl -fsS -m 3 "$HEALTH_URL" 2> /dev/null | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).pid' 2> /dev/null || true)"
+            if [[ -n "$pid" && "$pid" != "$old_pid" ]]; then
+              echo "The server answers as process ${pid} (was ${old_pid})."
+              exit 0
+            fi
+          done
+          echo "::error::No new server process answered ${HEALTH_URL} within 2 minutes"
+          exit 1
+
+      - name: Roll back
+        if: failure() && steps.update.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          cd "$CHECKOUT"
+          previous="${{ steps.update.outputs.previous }}"
+          echo "Rolling the mini back to ${previous:0:9}."
+          git reset --hard "$previous"
+          if [[ -d dist.prev ]]; then
+            rm -rf dist
+            mv dist.prev dist
+          fi
+          if [[ "${{ steps.update.outputs.deps }}" == "true" ]]; then
+            corepack pnpm install --frozen-lockfile
+          fi
+          rm -rf dist-deploy
+          launchctl kickstart -k "gui/$(id -u)/${SERVICE}"
+          for _ in $(seq 1 60); do
+            sleep 2
+            curl -fsS -m 3 "$HEALTH_URL" > /dev/null 2>&1 && { echo "The previous version answers again."; exit 0; }
+          done
+          echo "::error::The previous version does not answer either. Check ~/Library/Logs/openmausbot/server.err.log on the mini."
+          exit 1
+
+      - name: Report
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsS -m 5 "$HEALTH_URL"; echo
+          echo "Deployed ${{ steps.update.outputs.target }}" >> "$GITHUB_STEP_SUMMARY"
