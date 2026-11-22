@@ -400,6 +400,13 @@ To add a connector:
 No core file changes. The event form is defined in [omb-event-contract.md](omb-event-contract.md).
 **The hub must emit that contract.** Until it does, both connectors reject every hub event.
 
+A bot automation that watches GitHub Event or GitLab Event reads applied events
+forward from a saved cursor. The first cursor is the newest seq, so an event
+already in the ledger does not start a run. `reprocess` puts a failed row back
+to `pending` under that same seq. The seq stays behind the cursor, so the row
+starts no bot run. Reprocessing repairs the projection. It does not replay bot
+automations.
+
 ## Hub sinks
 
 Use two `omb` sinks in the hub config, one per app. Each has its own URL,

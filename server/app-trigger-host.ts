@@ -1,10 +1,14 @@
 // Wires app-event automations into the server: the manager over the managed connected-apps service, the routes the
 // app and the bot tools use, and the chat receipts. index.ts builds it once and hands it what it needs.
+import { readFileSync } from "node:fs";
 import type { ServerResponse } from "node:http";
+import { join } from "node:path";
 
 import { botMayWatchApp, type AppEventCatalog } from "../shared/app-triggers.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
 import { appEventCatalog, appLabel } from "./app-event-catalog.ts";
+import { eventSourceCatalog, eventSourceInstances, isEventSourceApp, type EventSourceFeed } from "./app-event-sources.ts";
+import { DATA_DIR } from "./config.ts";
 import { brokerClient, type AppTriggerBroker, type BrokerAccess } from "./app-trigger-broker.ts";
 import { AppTriggerRequestService, type AppTriggerRequestStore } from "./app-trigger-requests.ts";
 import { AppTriggerError, AppTriggerManager, type AppTriggerPatch } from "./app-triggers.ts";
@@ -40,6 +44,10 @@ export interface AppTriggerHostDeps {
   emit: (frame: Record<string, unknown>) => void;
   audit: (row: { threadId: string; requestId: string; botId: string; botName: string; tool: string; summary: string }) => void;
   broker?: AppTriggerBroker;
+  /** Applied PR events. The closure may run after the orchestrator host exists. */
+  eventFeed?: () => EventSourceFeed & { subscribe(listener: () => void): () => void };
+  /** Orchestrator config text. The server reads its data-folder file when this is omitted. */
+  eventSourceConfig?: () => string | null;
 }
 
 export interface InternalTriggerContext {
@@ -83,23 +91,40 @@ export function createAppTriggerHost(deps: AppTriggerHostDeps) {
       cancelQueued: (triggerId, message) => deps.routines().cancelQueuedWebhook(triggerId, message),
     },
     emit: deps.emit,
+    ...(deps.eventFeed ? { sourceFeed: deps.eventFeed } : {}),
   });
   const requests = new AppTriggerRequestService({ store: deps.store, triggers: manager, botName: (botId) => deps.store.bot(botId)?.name ?? "the bot" });
+  let sourceUnsub: (() => void) | null = null;
 
   const unavailableText = (reason: "self-hosted" | "unavailable" | "off") => reason === "self-hosted"
     ? "App events need OpenMausBot's connected apps. This server uses its own Composio key, so a bot cannot watch apps here yet: use a schedule that checks the app, or a webhook."
     : "Connected apps are not set up here, so a bot cannot watch apps yet.";
 
+  const mayWatch = (bot: Bot, app: string) => isEventSourceApp(app) || botMayWatchApp(bot, app);
+
+  function sourceCatalog(app?: string, search?: string) {
+    let text: string | null = null;
+    if (deps.eventSourceConfig) text = deps.eventSourceConfig();
+    else {
+      try { text = readFileSync(join(DATA_DIR, "pr-orchestrator.json"), "utf8"); } catch { text = null; }
+    }
+    return eventSourceCatalog(eventSourceInstances(text), { ...(app ? { app } : {}), ...(search ? { search } : {}) });
+  }
+
   async function catalog(bot: Bot, app?: string, search?: string): Promise<AppEventCatalog> {
+    const sources = sourceCatalog(app, search);
     const current = service();
-    if (!current.available) return { apps: [], notConnected: [], unavailable: unavailableText(current.reason) };
-    const connected = await deps.connectedApps();
-    const result = await appEventCatalog({ broker, connected, bot, app, search });
     const wanted = app?.trim().toLowerCase();
-    if (wanted && !result.apps.length && connected[wanted]?.connected && !botMayWatchApp(bot, wanted)) {
+    if (!current.available) {
+      if (wanted && !isEventSourceApp(wanted)) return { apps: [], notConnected: [], unavailable: unavailableText(current.reason) };
+      return sources;
+    }
+    const connected = await deps.connectedApps();
+    const result = await appEventCatalog({ broker, connected, bot, ...(app ? { app } : {}), ...(search ? { search } : {}) });
+    if (wanted && !isEventSourceApp(wanted) && !result.apps.length && connected[wanted]?.connected && !mayWatch(bot, wanted)) {
       return { ...result, unavailable: `${bot.name} has not been given access to ${appLabel(wanted)}. Ask the person to allow it under the bot's Access settings.` };
     }
-    return result;
+    return { apps: [...sources.apps, ...result.apps], notConnected: [...sources.notConnected, ...result.notConnected] };
   }
 
   /** The person's side: /api/app-triggers. Reads follow what this viewer may see; changes need the owner. */
@@ -126,7 +151,7 @@ export function createAppTriggerHost(deps: AppTriggerHostDeps) {
         const bot = deps.store.bot(typeof body.botId === "string" ? body.botId : "");
         if (!bot) return json(res, 404, { error: "no such bot" });
         const app = typeof body.app === "string" ? body.app.trim().toLowerCase() : "";
-        if (!botMayWatchApp(bot, app)) return json(res, 403, { error: `${bot.name} has not been given access to ${appLabel(app)}. Allow it in the bot's Access settings first.` });
+        if (!mayWatch(bot, app)) return json(res, 403, { error: `${bot.name} has not been given access to ${appLabel(app)}. Allow it in the bot's Access settings first.` });
         const trigger = await manager.create({
           botId: bot.id, name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), app, event: String(body.event ?? ""),
           ...(typeof body.account === "string" ? { account: body.account } : {}),
@@ -205,7 +230,7 @@ export function createAppTriggerHost(deps: AppTriggerHostDeps) {
     const owner = deps.store.bot(input.forBot?.botId ?? input.from.id);
     const app = input.operation.action === "create" && input.operation.trigger && typeof input.operation.trigger === "object"
       ? String((input.operation.trigger as { app?: unknown }).app ?? "").toLowerCase() : "";
-    if (owner && app && !botMayWatchApp(owner, app)) {
+    if (owner && app && !mayWatch(owner, app)) {
       return json(res, 403, { error: `${owner.name} has not been given access to ${appLabel(app)}. Ask the person to allow it under the bot's Access settings; do not retry until they have.` });
     }
     try {
@@ -225,8 +250,18 @@ export function createAppTriggerHost(deps: AppTriggerHostDeps) {
     submit,
     undo: (args: { botId: string; threadId: string; requestId: string }) => requests.undo(args),
     isApp: (id: string) => manager.get(id) !== null,
-    start: () => manager.start(),
-    stop: () => manager.stop(),
+    start: () => {
+      manager.start();
+      if (!deps.eventFeed || sourceUnsub) return;
+      const pump = () => manager.pumpSource();
+      sourceUnsub = deps.eventFeed().subscribe(pump);
+      pump();
+    },
+    stop: () => {
+      sourceUnsub?.();
+      sourceUnsub = null;
+      return manager.stop();
+    },
     /** Access to the service changed (the desktop handed its token over, or a Cloud registered). */
     wake: () => manager.wake(),
   };
