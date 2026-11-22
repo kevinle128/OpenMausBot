@@ -4,7 +4,7 @@ import { stubHandlers, type CommandContext, type CommandHandler, type CommandHan
 import { renderMessage } from "./messages.ts";
 import { ForgeNotReadyError, ForgeRefusedError, PortUnavailableError, type NoticeSubject } from "./ports.ts";
 import type {
-  AskKind, CommandPayload, CommandRecord, CommandResult, CommandWait, Owner, PrRecord, PrRef,
+  AskKind, CommandPayload, CommandRecord, CommandResult, CommandWait, NoticeKind, Owner, PrRecord, PrRef,
 } from "./types.ts";
 
 type Reply = CommandResult | CommandWait;
@@ -94,6 +94,18 @@ async function runInstruction(command: CommandRecord, payload: PayloadOf<"RunIns
   return { outcome: "succeeded" };
 }
 
+const CARD_LINES = {
+  decision: { title: "server.prOrchestrator.card.decision.title", body: "server.prOrchestrator.card.decision.body" },
+  command_failed: { title: "server.prOrchestrator.card.command_failed.title", body: "server.prOrchestrator.card.command_failed.body" },
+  approve_action: { title: "server.prOrchestrator.card.approve_action.title", body: "server.prOrchestrator.card.approve_action.body" },
+} as const satisfies Record<AskKind, Record<"title" | "body", ServerLineKey>>;
+
+const NOTICE_LINES = {
+  merged: "server.prOrchestrator.notice.merged",
+  ready_no_auto_merge: "server.prOrchestrator.notice.ready_no_auto_merge",
+  review_failed: "server.prOrchestrator.notice.review_failed",
+} as const satisfies Record<NoticeKind, ServerLineKey>;
+
 /** What a card shows. Pure: a restart rebuilds the same card from the command and the record. */
 export function askCardOf(command: CommandRecord, ctx: Pick<CommandContext, "record" | "config" | "subjectLabel">):
   { subject: NoticeSubject; title: string; body: string; answers: Array<{ id: string; label: string }> } {
@@ -102,7 +114,7 @@ export function askCardOf(command: CommandRecord, ctx: Pick<CommandContext, "rec
   const { record } = ctx;
   const subject: NoticeSubject = { key: command.subjectKey, pr: record ? prRef(record) : null, label: ctx.subjectLabel };
   const line = (part: "title" | "body", params: Record<string, string | number>) =>
-    serverLine(undefined, `server.prOrchestrator.card.${payload.kind}.${part}` as ServerLineKey, params);
+    serverLine(undefined, CARD_LINES[payload.kind][part], params);
   const base = { pr: ctx.subjectLabel, url: record?.url ?? "" };
   let params: Record<string, string | number>;
   let answers: Array<{ id: string; label: string }>;
@@ -158,7 +170,7 @@ const notifyHandler: CommandHandler = async (command, ctx) => {
   const early = guard(command, ctx, ctx.installed.notifier, ctx.record?.state === "merged" && kind === "merged");
   if (early) return early;
   const subject: NoticeSubject = { key: command.subjectKey, pr: ctx.record ? prRef(ctx.record) : null, label: ctx.subjectLabel };
-  const text = serverLine(undefined, `server.prOrchestrator.notice.${kind}` as ServerLineKey, {
+  const text = serverLine(undefined, NOTICE_LINES[kind], {
     pr: ctx.subjectLabel, url: ctx.record?.url ?? "", mergeSha: ctx.mergeSha,
   });
   await ctx.ports.notifier.notice(kind, text, subject);
