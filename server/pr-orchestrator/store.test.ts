@@ -191,6 +191,21 @@ describe.each([["memory", () => open()], ["file", () => open(tempFile())]])("orc
     expect(store.dueCommands(50, 10)).toEqual([]);
   });
 
+  it("counts a wait apart from the attempts, and lists the questions whose card is being shown", () => {
+    const store = make();
+    store.insertCommand(command("w1"));
+    store.markCommandRunning("w1", 20);
+    store.rescheduleWait("w1", 900, "the daemon is down", 30);
+    expect(store.getCommand("w1")).toMatchObject({ status: "pending", attempts: 0, waits: 1, nextAt: 900, lastError: "the daemon is down" });
+    store.insertCommand(command("ask", {
+      subjectKey: "subject:hook:issue:9", type: "AskPerson",
+      payload: { type: "AskPerson", kind: "decision", decisionId: "subject:hook:issue:9#4", gaps: [], gated: null },
+    }));
+    expect(store.runningQuestionIds()).toEqual([]);
+    store.markCommandRunning("ask", 40);
+    expect(store.runningQuestionIds()).toEqual(["subject:hook:issue:9#4"]);
+  });
+
   it("puts running commands back to pending on reset", () => {
     const store = make();
     store.insertCommand(command("r1"));

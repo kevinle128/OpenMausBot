@@ -94,8 +94,8 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
     try {
       const { commands } = deps.config();
       if (result.outcome === "waiting") {
-        if (attempts >= commands.maxWaits) pm.finishCommand(command, { outcome: "skipped", reason: `waited too long: ${result.reason}` });
-        else store.rescheduleCommand(command.id, deps.now() + result.retryAfterSeconds * MS, result.reason, deps.now());
+        if ((command.waits ?? 0) + 1 >= commands.maxWaits) pm.finishCommand(command, { outcome: "skipped", reason: `waited too long: ${result.reason}` });
+        else store.rescheduleWait(command.id, deps.now() + result.retryAfterSeconds * MS, result.reason, deps.now());
       } else if (result.outcome === "failed" && result.retryable && attempts < commands.maxAttempts) {
         const seconds = Math.min(commands.backoffSeconds.initial * 2 ** (attempts - 1), commands.backoffSeconds.max);
         store.rescheduleCommand(command.id, deps.now() + seconds * MS, result.reason, deps.now());

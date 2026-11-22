@@ -166,6 +166,18 @@ describe("command handlers", () => {
     expect(await run("TellOwner", command(tell()), s.ctx({}, ended))).toEqual({ outcome: "succeeded" });
   });
 
+  it("skips the other notices and owner messages of an ended PR, and the merge ones of a closed PR", async () => {
+    const s = setup();
+    const merged = { ...h.record(), state: "merged" as const, owner: FAKE_OWNER };
+    const closed = { ...h.record(), state: "closed" as const, owner: FAKE_OWNER };
+    const conflict: CommandPayload = { ...tell(), template: "conflict" } as CommandPayload;
+    expect(await run("TellOwner", command(conflict), s.ctx({}, merged))).toEqual({ outcome: "skipped", reason: "PR ended" });
+    expect(await run("Notify", command({ type: "Notify", kind: "ready_no_auto_merge" }), s.ctx({}, merged))).toEqual({ outcome: "skipped", reason: "PR ended" });
+    expect(await run("TellOwner", command(tell()), s.ctx({}, closed))).toEqual({ outcome: "skipped", reason: "PR ended" });
+    expect(await run("Notify", command({ type: "Notify", kind: "merged" }), s.ctx({}, closed))).toEqual({ outcome: "skipped", reason: "PR ended" });
+    expect(s.runtime.sent).toEqual([]);
+  });
+
   it("starts one new agent in the owner's folder, and in the configured folder without an owner", async () => {
     const s = setup({ agents: { newAgent: { cwd: "/work/default", harness: "codex" } } });
     const owned = { ...h.record(), owner: FAKE_OWNER };

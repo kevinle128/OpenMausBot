@@ -156,7 +156,10 @@ export interface CommandRecord {
   status: "awaiting_approval" | "pending" | "running" | "done"; outcome: CommandResult["outcome"] | null;
   /** The decision id of the ask-first card while status is awaiting_approval. */
   approvalId: string | null;
-  attempts: number; nextAt: number; createdAt: number; updatedAt: number;
+  attempts: number;
+  /** How many times the command waited for a forge fact or a port; a wait gives back its attempt. Absent on a command not stored yet. */
+  waits?: number;
+  nextAt: number; createdAt: number; updatedAt: number;
   payload: CommandPayload; result: CommandResult | null; lastError: string | null;
 }
 export interface TimerRecord {

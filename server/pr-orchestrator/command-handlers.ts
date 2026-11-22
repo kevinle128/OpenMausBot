@@ -132,9 +132,9 @@ export function askCardOf(command: CommandRecord, ctx: Pick<CommandContext, "rec
 }
 
 const tellOwnerHandler: CommandHandler = async (command, ctx) => {
-  const early = guard(command, ctx, ctx.installed.runtime, true);
-  if (early) return early;
   const payload = command.payload as PayloadOf<"TellOwner">;
+  const early = guard(command, ctx, ctx.installed.runtime, ctx.record?.state === "merged" && payload.template === "merged");
+  if (early) return early;
   const text = renderMessage(ctx.config.messages[payload.template], payload.vars, payload.untrusted);
   return tellOwner(command, ctx, text);
 };
@@ -154,9 +154,9 @@ const askPersonHandler: CommandHandler = async (command, ctx) => {
 };
 
 const notifyHandler: CommandHandler = async (command, ctx) => {
-  const early = guard(command, ctx, ctx.installed.notifier, true);
-  if (early) return early;
   const { kind } = command.payload as PayloadOf<"Notify">;
+  const early = guard(command, ctx, ctx.installed.notifier, ctx.record?.state === "merged" && kind === "merged");
+  if (early) return early;
   const subject: NoticeSubject = { key: command.subjectKey, pr: ctx.record ? prRef(ctx.record) : null, label: ctx.subjectLabel };
   const text = serverLine(undefined, `server.prOrchestrator.notice.${kind}` as ServerLineKey, {
     pr: ctx.subjectLabel, url: ctx.record?.url ?? "", mergeSha: ctx.mergeSha,

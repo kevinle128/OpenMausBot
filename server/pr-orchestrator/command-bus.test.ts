@@ -157,7 +157,7 @@ describe("command bus", () => {
     });
     await commands.runDue();
     await commands.idle();
-    expect(h.store.getCommand(command.id)).toMatchObject({ status: "pending", attempts: 1, nextAt: h.clock.now() + 45_000, lastError: "the forge is computing" });
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "pending", attempts: 0, waits: 1, nextAt: h.clock.now() + 45_000, lastError: "the forge is computing" });
     expect(h.entries("command.finished")).toEqual([]);
     expect(await commands.runDue()).toBe(0);
 
@@ -182,9 +182,31 @@ describe("command bus", () => {
       h.clock.advance(10_000);
     }
     expect(h.store.getCommand(command.id)).toMatchObject({
-      status: "done", outcome: "skipped", attempts: 3, result: { outcome: "skipped", reason: "waited too long: the daemon is down" },
+      status: "done", outcome: "skipped", attempts: 1, waits: 2, result: { outcome: "skipped", reason: "waited too long: the daemon is down" },
     });
     expect(h.entries("command.finished")).toHaveLength(1);
+  });
+
+  it("keeps the whole retry budget and the first backoff of a command that waited before it failed", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue();
+    let calls = 0;
+    const commands = bus(
+      {
+        Notify: async () => {
+          calls += 1;
+          return calls <= 4 ? { outcome: "waiting", reason: "the daemon is down", retryAfterSeconds: 10 } : { outcome: "failed", reason: "flaky", retryable: true };
+        },
+      },
+      { commands: { maxAttempts: 2, backoffSeconds: { initial: 7, max: 600 } } },
+    );
+    for (let round = 0; round < 5; round += 1) {
+      await commands.runDue();
+      await commands.idle();
+      if (round < 4) h.clock.advance(10_000);
+    }
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "pending", attempts: 1, waits: 4, nextAt: h.clock.now() + 7_000, lastError: "flaky" });
   });
 
   it("does not let a waiting command hold the other commands of its PR", async () => {

@@ -131,7 +131,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
         return;
       }
       attached = buildAdapters(parts, {
-        log, now: Date.now, config: () => fileConfig.current().config, secret,
+        log, now: Date.now, config: () => (core ? core.config().effective : fileConfig.current().config), secret,
         answer: (subjectKey, decisionId, answer) => onCore("answer", current => { current.inputs.answer(subjectKey, decisionId, answer); }),
       });
       core?.resumeCards();

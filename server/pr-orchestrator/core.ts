@@ -181,7 +181,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let unwatch: (() => void) | null = null;
   let unwatchCreations: (() => void) | null = null;
-  let resuming = false;
+  let resuming: Promise<void> | null = null;
   let stopping: Promise<void> | null = null;
   let schema: Record<string, unknown> | null = null;
 
@@ -210,10 +210,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   async function resumeOpenCards(): Promise<void> {
     const config = loaded().config;
     const { notifier } = parts.ports;
-    const open = store.openQuestions();
-    const decisionIds = new Set<string>();
-    for (const { subjectKey, decisionId, command } of open) {
-      decisionIds.add(decisionId);
+    for (const { subjectKey, decisionId, command } of store.openQuestions()) {
       if (command.payload.type !== "AskPerson") continue;
       const record = subjectKey.startsWith("subject:") ? null : store.getPr(subjectKey);
       const card = askCardOf(command, { record, config: configOfCommand(config, record), subjectLabel: subjectLabelOf(store, command, record) });
@@ -224,15 +221,16 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
       const opened = await notifier.card(kind, { subject: card.subject, title: card.title, body: card.body, decisionId }, card.answers);
       store.setCommandResult(command.id, { outcome: "succeeded", detail: { cardId: opened.cardId } });
     }
+    // Read again after the awaits above: a question asked meanwhile, or one whose card is being shown now, stays open.
+    const decisionIds = new Set([...store.openQuestions().map(open => open.decisionId), ...store.runningQuestionIds()]);
     notifier.reconcile?.(decisionIds);
   }
 
   function resumeCards(): void {
-    if (resuming || !loaded().config.adapters.notifier.enabled || !attached().notifier) return;
-    resuming = true;
-    resumeOpenCards().catch(error => {
+    if (resuming || stopping || !loaded().config.adapters.notifier.enabled || !attached().notifier) return;
+    resuming = resumeOpenCards().catch(error => {
       log(`pr-orchestrator: cards could not be resumed: ${error instanceof Error ? error.message : String(error)}`);
-    }).finally(() => { resuming = false; });
+    }).finally(() => { resuming = null; });
   }
 
   return {
@@ -260,7 +258,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
         parts.scheduler.stop();
         await supervisor.stop();
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([parts.bus.idle(), new Promise<void>(resolve => { timeout = setTimeout(resolve, STOP_WAIT_MS); })]);
+        await Promise.race([Promise.all([parts.bus.idle(), resuming]), new Promise<void>(resolve => { timeout = setTimeout(resolve, STOP_WAIT_MS); })]);
         clearTimeout(timeout);
         store.close();
       })();

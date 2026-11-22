@@ -270,8 +270,8 @@ returns the port to the stub.
   did before: `skipped` with the reason "not installed". This check comes first,
   before the owner and head checks.
 - **Ended PR and old head.** A command for a PR that is `merged` or `closed` is
-  `skipped` ("PR ended"). `Notify` and `TellOwner` still go out, so the merge
-  notice and the merge message arrive. A command built for an older head is
+  `skipped` ("PR ended"). Only the `merged` notice and the `merged` owner
+  message of a merged PR still go out. A command built for an older head is
   `skipped` ("head moved").
 - **Waiting commands.** Two cases make a command wait and run again, not finish:
   the forge has not computed a fact yet (mergeability, or a required check that

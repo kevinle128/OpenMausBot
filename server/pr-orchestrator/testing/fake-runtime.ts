@@ -1,4 +1,4 @@
-import type { AgentRuntimePort } from "../ports.ts";
+import { PortUnavailableError, type AgentRuntimePort } from "../ports.ts";
 import type { Owner, Provider } from "../types.ts";
 
 export const FAKE_OWNER: Owner = {
@@ -33,7 +33,7 @@ export function fakeRuntime(): FakeRuntime {
       runtime: "fake",
       watchCreations: callback => { watchers.add(callback); return () => { watchers.delete(callback); }; },
       async send(owner, message, opts) {
-        if (fake.answer === "down") throw new Error("the daemon is down");
+        if (fake.answer === "down") throw new PortUnavailableError("the daemon is down");
         fake.sent.push({ owner, message, messageId: opts.messageId });
         return fake.answer;
       },
