@@ -69,7 +69,12 @@ const readinessFields = { requiredChecks: z.array(z.string().min(1)), compareBas
 const quietHours = z.strictObject({ start: clock, end: clock, timeZone: z.string().refine(validZone, "is not a time zone") });
 const mergeFields = { auto: z.boolean(), method: z.enum(["squash", "merge", "rebase"]), deleteBranch: z.boolean(), quietHours: quietHours.nullable() };
 const ciFixFields = { workflow: z.string().max(200), connection: z.string().min(1).nullable(), message };
-const escalationFields = { decision: z.boolean(), notifier: z.literal("inbox"), digestMinutes: z.number().int().nonnegative() };
+const decisionChoices = z.array(z.string().trim().min(1).max(80)).min(1).max(6);
+const escalationFields = { decision: z.boolean(), notifier: z.literal("inbox"), digestMinutes: z.number().int().nonnegative(), decisionChoices };
+const agentFields = {
+  newAgent: z.strictObject({ cwd: z.string().min(1).nullable(), harness: z.string().min(1).nullable(), model: z.string().min(1).nullable() }),
+};
+const DEFAULT_DECISION_CHOICES = ["Fix it as the review proposes", "Leave it as it is", "Stop and wait for me"];
 const messageFields = { conflict: message, decisionAnswered: message, merged: message };
 
 const readinessSection = z.strictObject({
@@ -89,9 +94,41 @@ const workflowsSection = z.strictObject({
 }).prefault({});
 const escalationSection = z.strictObject({
   decision: escalationFields.decision.default(true), notifier: escalationFields.notifier.default("inbox"), digestMinutes: escalationFields.digestMinutes.default(0),
+  decisionChoices: escalationFields.decisionChoices.default(DEFAULT_DECISION_CHOICES),
+}).prefault({});
+const agentsSection = z.strictObject({
+  newAgent: z.strictObject({
+    cwd: agentFields.newAgent.shape.cwd.default(null), harness: agentFields.newAgent.shape.harness.default(null), model: agentFields.newAgent.shape.model.default(null),
+  }).prefault({}),
+}).prefault({});
+
+const secretName = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,99}$/, "must be a Vault secret name, not a value");
+/** https, or http on the loopback host (the fake forges of the end-to-end tests); a trailing slash is dropped. */
+const forgeUrl = z.string().refine(value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"));
+  } catch {
+    return false;
+  }
+}, "must be an https URL, or an http URL on 127.0.0.1 or localhost").transform(value => value.replace(/\/+$/, ""));
+const adaptersSection = z.strictObject({
+  forge: z.strictObject({
+    github: z.strictObject({
+      enabled: z.boolean().default(false), auth: z.enum(["app", "token"]).default("app"), apiUrl: forgeUrl.default("https://api.github.com"),
+      appIdSecret: secretName.default("GITHUB_APP_ID"), privateKeySecret: secretName.default("GITHUB_APP_PRIVATE_KEY"),
+      tokenSecret: secretName.default("GITHUB_TOKEN"),
+    }).prefault({}),
+    gitlab: z.strictObject({
+      enabled: z.boolean().default(false), baseUrl: forgeUrl.default("https://git.oceanlabs.dev"), tokenSecret: secretName.default("GITLAB_TOKEN"),
+    }).prefault({}),
+  }).prefault({}),
+  notifier: z.strictObject({ enabled: z.boolean().default(false) }).prefault({}),
+  runtime: z.strictObject({ enabled: z.boolean().default(false), bindOwners: z.boolean().default(true) }).prefault({}),
 }).prefault({});
 const commandsSection = z.strictObject({
   maxAttempts: count.default(6),
+  maxWaits: count.default(120),
   backoffSeconds: z.strictObject({ initial: count.default(30), max: count.default(1800) }).prefault({}),
   concurrency: count.default(4),
 }).prefault({});
@@ -112,6 +149,7 @@ const overrideSchema = z.strictObject({
     merge: z.strictObject(mergeFields).partial().optional(),
     workflows: z.strictObject({ ciFix: z.strictObject(ciFixFields).partial().optional() }).optional(),
     escalation: z.strictObject(escalationFields).partial().optional(),
+    agents: z.strictObject({ newAgent: agentFields.newAgent.partial().optional() }).optional(),
     messages: z.strictObject(messageFields).partial().optional(),
   }).optional(),
 });
@@ -201,6 +239,8 @@ function baseSchema(definitions: ReadonlyMap<string, ConnectorDefinition>) {
     merge: mergeSection,
     workflows: workflowsSection,
     escalation: escalationSection,
+    agents: agentsSection,
+    adapters: adaptersSection,
     commands: commandsSection,
     messages: messagesSection,
     retention: retentionSection,
@@ -290,7 +330,7 @@ function deepMerge(base: unknown, patch: unknown): unknown {
 /** The config for one repo: the tunables with the matching overrides applied in list order, and the resolved routines (their provider and repo filters are the evaluator's job). */
 export function resolveForRepo(config: OrchestratorConfig, provider: Provider, repo: string): RepoConfig {
   let tunable: unknown = {
-    readiness: config.readiness, merge: config.merge, workflows: config.workflows, escalation: config.escalation, messages: config.messages,
+    readiness: config.readiness, merge: config.merge, workflows: config.workflows, escalation: config.escalation, agents: config.agents, messages: config.messages,
   } satisfies RepoTunable;
   for (const override of config.overrides) {
     const { providers, repos } = override.match;
@@ -299,7 +339,7 @@ export function resolveForRepo(config: OrchestratorConfig, provider: Provider, r
     tunable = deepMerge(tunable, override.set ?? {});
   }
   return {
-    enabled: config.enabled, connectors: config.connectors, commands: config.commands, retention: config.retention,
+    enabled: config.enabled, connectors: config.connectors, adapters: config.adapters, commands: config.commands, retention: config.retention,
     ...(tunable as RepoTunable), routines: resolveRoutines(config),
   };
 }

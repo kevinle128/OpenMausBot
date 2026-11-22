@@ -40,12 +40,35 @@ describe("config document", () => {
     expect(config.enabled).toBe(false);
     expect(config.readiness).toEqual({ requiredChecks: [], compareBase: true, requireReview: true, requireReviewedHead: true, requireMergeable: true });
     expect(config.merge.quietHours).toBeNull();
-    expect(config.escalation).toEqual({ decision: true, notifier: "inbox", digestMinutes: 0 });
-    expect(config.commands).toEqual({ maxAttempts: 6, backoffSeconds: { initial: 30, max: 1800 }, concurrency: 4 });
+    expect(config.escalation).toEqual({
+      decision: true, notifier: "inbox", digestMinutes: 0, decisionChoices: ["Fix it as the review proposes", "Leave it as it is", "Stop and wait for me"],
+    });
+    expect(config.commands).toEqual({ maxAttempts: 6, maxWaits: 120, backoffSeconds: { initial: 30, max: 1800 }, concurrency: 4 });
+    expect(config.agents).toEqual({ newAgent: { cwd: null, harness: null, model: null } });
+    expect(config.adapters.forge.github).toMatchObject({ enabled: false, auth: "app", apiUrl: "https://api.github.com", appIdSecret: "GITHUB_APP_ID" });
+    expect(config.adapters.forge.gitlab).toMatchObject({ enabled: false, baseUrl: "https://git.oceanlabs.dev", tokenSecret: "GITLAB_TOKEN" });
+    expect(config.adapters.notifier).toEqual({ enabled: false });
+    expect(config.adapters.runtime).toEqual({ enabled: false, bindOwners: true });
     expect(config.retention).toEqual({ endedPrDays: 180, receivedEventDays: 90 });
     expect(config.messages).toEqual(DEFAULT_MESSAGES);
     expect(config.routines).toEqual({ useDefaults: true, custom: [], deactivate: [] });
     expect(config.overrides).toEqual([]);
+  });
+
+  it("accepts the adapter switches and rejects a secret name with a value-like shape", () => {
+    const config = parse({ adapters: { forge: { github: { enabled: true, apiUrl: "http://127.0.0.1:4010/", tokenSecret: "MY_TOKEN" } }, notifier: { enabled: true } } });
+    expect(config.adapters.forge.github).toMatchObject({ enabled: true, apiUrl: "http://127.0.0.1:4010", tokenSecret: "MY_TOKEN" });
+    expect(config.adapters.notifier.enabled).toBe(true);
+    expect(refusal({ adapters: { forge: { gitlab: { tokenSecret: "glpat-abc.def/ghi" } } } })).toContain("tokenSecret");
+    expect(refusal({ adapters: { forge: { github: { apiUrl: "http://example.com" } } } })).toContain("apiUrl");
+    expect(refusal({ adapters: { forge: { gitlab: { baseUrl: "not a url" } } } })).toContain("baseUrl");
+    expect(refusal({ escalation: { decisionChoices: [] } })).toContain("decisionChoices");
+  });
+
+  it("sets the new agent folder per repo through an override", () => {
+    const config = parse({ overrides: [{ match: { repos: ["acme/*"] }, set: { agents: { newAgent: { cwd: "/work/acme" } } } }] });
+    expect(resolveForRepo(config, "github", "acme/api").agents.newAgent).toEqual({ cwd: "/work/acme", harness: null, model: null });
+    expect(resolveForRepo(config, "github", "other/api").agents.newAgent.cwd).toBeNull();
   });
 
   it("keeps squash, auto-merge and an empty fix workflow as the defaults", () => {

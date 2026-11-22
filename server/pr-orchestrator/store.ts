@@ -142,6 +142,10 @@ export interface OrchestratorStore {
   /** Back to pending. */
   rescheduleCommand(id: string, nextAt: number, error: string, now: number): void;
   finishCommand(id: string, result: CommandResult, now: number): void;
+  /** Replaces the stored result of a finished command without touching the ledger or the status; used to keep a card id that a restart opened again. */
+  setCommandResult(id: string, result: CommandResult): void;
+  /** The questions that wait for the person: PRs with a pending decision, and other subjects whose card was shown and has no answer yet. */
+  openQuestions(): Array<{ subjectKey: SubjectKey; decisionId: string; command: CommandRecord }>;
   /** Boot: running becomes pending. Returns the number of rows changed. */
   resetRunningCommands(now: number): number;
   commandsFor(subjectKey: SubjectKey): CommandRecord[];
@@ -280,6 +284,13 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     reschedule: db.prepare("UPDATE commands SET status = 'pending', next_at = ?, last_error = ?, updated_at = ? WHERE id = ?"),
     finish: db.prepare(`UPDATE commands SET status = 'done', outcome = ?, result_json = ?,
       last_error = CASE WHEN ? = 'failed' THEN ? ELSE last_error END, updated_at = ? WHERE id = ?`),
+    setResult: db.prepare("UPDATE commands SET result_json = ? WHERE id = ? AND status = 'done'"),
+    openPrQuestions: db.prepare(`SELECT c.* FROM prs p JOIN commands c ON c.id = json_extract(p.json, '$.pendingDecision.commandId')`),
+    openSubjectQuestions: db.prepare(`SELECT c.* FROM commands c WHERE c.type = 'AskPerson' AND c.status = 'done' AND c.outcome = 'succeeded'
+      AND c.subject_key LIKE 'subject:%'
+      AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.subject_key = c.subject_key AND l.type = 'person.answered'
+        AND json_extract(l.json, '$.decisionId') = json_extract(c.payload_json, '$.decisionId'))
+      ORDER BY c.created_at, c.rowid`),
     resetRunning: db.prepare("UPDATE commands SET status = 'pending', updated_at = ? WHERE status = 'running'"),
     commandsFor: db.prepare("SELECT * FROM commands WHERE subject_key = ? ORDER BY created_at, rowid"),
     countCommands: db.prepare("SELECT status, outcome, COUNT(*) AS count FROM commands GROUP BY status, outcome"),
@@ -435,6 +446,9 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
       const reason = result.outcome === "failed" ? result.reason : null;
       q.finish.run(result.outcome, JSON.stringify(result), result.outcome, reason, now, id);
     },
+    setCommandResult: (id, result) => { q.setResult.run(JSON.stringify(result), id); },
+    openQuestions: () => [...all(q.openPrQuestions), ...all(q.openSubjectQuestions)].map(readCommand).flatMap(command =>
+      command.payload.type === "AskPerson" ? [{ subjectKey: command.subjectKey, decisionId: command.payload.decisionId, command }] : []),
     resetRunningCommands: (now) => Number(q.resetRunning.run(now).changes),
     commandsFor: (subjectKey) => all(q.commandsFor, subjectKey).map(readCommand),
     countCommands: () => all(q.countCommands).map((row) => ({

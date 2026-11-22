@@ -74,15 +74,24 @@ export interface PrRef {
 export interface Owner {
   runtime: string; hostId: string; agentId: string;
   workspaceId: string | null; projectId: string | null; harness: string | null; model: string | null;
+  /** The folder the session runs in; a new agent for the same PR starts there. Older ledger rows lack it. */
+  cwd?: string | null;
   boundBy: "provenance" | "claim" | "backfill" | "successor";
   boundAt: number;
 }
+
+/** The words a forge adapter uses for what blocks a merge. "conflict" sets the record's conflict flag. */
+export const FORGE_BLOCKERS = ["conflict", "approvals", "protected_branch", "behind", "checks", "discussions", "draft", "not_open", "blocked"] as const;
+export type ForgeBlocker = (typeof FORGE_BLOCKERS)[number];
+
+/** Not a finish: the bus runs the command again after retryAfterSeconds. Used only while a forge computes a fact or a port cannot be reached. */
+export interface CommandWait { outcome: "waiting"; reason: string; retryAfterSeconds: number }
 
 export interface ForgeDetails {
   headSha: string;
   /** null: the forge has not computed it yet. */
   mergeable: boolean | null;
-  blockers: string[];
+  blockers: ForgeBlocker[];
   /** Check keys `${source}/${name}`; null when the forge does not say. */
   requiredChecks: string[] | null;
   /** Job names or check keys that also fail on the base branch head. */
@@ -125,7 +134,9 @@ export type CommandPayload =
   /** The owner is resolved when the command runs (the ledger's owner.bound, then the resolver chain); not found → skipped. */
   | { type: "TellOwner"; template: TemplateId; headSha: string | null; vars: Record<string, string | number | boolean>; untrusted: Record<string, string> }
   /** gated: the held command of an ask-first action (kind approve_action). */
-  | { type: "AskPerson"; kind: AskKind; decisionId: string; gaps: ReadinessGap[]; gated: { commandId: string; command: CommandType; summary: string } | null }
+  | { type: "AskPerson"; kind: AskKind; decisionId: string; gaps: ReadinessGap[]; gated: { commandId: string; command: CommandType; summary: string } | null;
+      /** The command that failed, for a command_failed card. Rows written before this field existed read as null. */
+      about?: { command: CommandType; reason: string } | null }
   | { type: "Merge"; method: MergeMethod; expectedHeadSha: string; deleteBranch: boolean }
   | { type: "Notify"; kind: NoticeKind }
   | { type: "RefreshDetails"; headSha: string }
@@ -228,6 +239,16 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] 
 /** One connector instance in the config; settings are checked by its definition's settingsSchema. */
 export interface ConnectorInstanceConfig { use: string; enabled: boolean; secretName?: string; settings: Record<string, JsonValue> }
 
+/** The adapter switches. The secret fields hold Vault names, never values. */
+export interface AdapterSwitches {
+  forge: {
+    github: { enabled: boolean; auth: "app" | "token"; apiUrl: string; appIdSecret: string; privateKeySecret: string; tokenSecret: string };
+    gitlab: { enabled: boolean; baseUrl: string; tokenSecret: string };
+  };
+  notifier: { enabled: boolean };
+  runtime: { enabled: boolean; bindOwners: boolean };
+}
+
 export interface OrchestratorConfig {
   enabled: boolean;
   connectors: Record<string, ConnectorInstanceConfig>;
@@ -237,15 +258,20 @@ export interface OrchestratorConfig {
   merge: { auto: boolean; method: MergeMethod; deleteBranch: boolean; quietHours: { start: string; end: string; timeZone: string } | null };
   /** Workflows that routines run; ciFix.workflow empty means run-ci-fix-workflow does nothing. */
   workflows: { ciFix: { workflow: string; connection: string | null; message: string } };
-  escalation: { decision: boolean; notifier: "inbox"; digestMinutes: number };
-  commands: { maxAttempts: number; backoffSeconds: { initial: number; max: number }; concurrency: number };
+  escalation: { decision: boolean; notifier: "inbox"; digestMinutes: number; decisionChoices: string[] };
+  /** Where a new agent runs when the PR has no live owner, and with which harness and model. */
+  agents: { newAgent: { cwd: string | null; harness: string | null; model: string | null } };
+  /** Each adapter has its own switch; the config is read on every call, so a switch takes effect on the next command. */
+  adapters: AdapterSwitches;
+  /** maxWaits bounds the waits of a command whose forge has not computed a fact yet, or whose port cannot be reached. */
+  commands: { maxAttempts: number; maxWaits: number; backoffSeconds: { initial: number; max: number }; concurrency: number };
   messages: Record<TemplateId, string>;
   retention: { endedPrDays: number; receivedEventDays: number };
   /** The default routines first (custom ones with the same id replace them), then new custom ones; deactivate turns defaults off. */
   routines: { useDefaults: boolean; custom: Routine[]; deactivate: string[] };
   overrides: ConfigOverride[];
 }
-export type RepoTunable = Omit<OrchestratorConfig, "enabled" | "connectors" | "commands" | "retention" | "routines" | "overrides">;
+export type RepoTunable = Omit<OrchestratorConfig, "enabled" | "connectors" | "adapters" | "commands" | "retention" | "routines" | "overrides">;
 /** Tunables per repo; routines carry their own provider and repo filters. */
 export interface ConfigOverride {
   match: { providers?: Provider[]; repos?: string[] };

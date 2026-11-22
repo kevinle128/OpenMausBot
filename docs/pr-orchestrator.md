@@ -12,9 +12,10 @@ the data folder and says `"enabled": true`.
 - It receives events and records them. It keeps an append-only ledger for each PR.
 - It runs the state machine and your routines on each event.
 - It issues commands through a command bus and records the result of each one.
-- **Commands are not performed yet.** Every adapter is a stub. A stub records the
-  command as `skipped` ("not installed"). It never records success. Nothing
-  merges, messages or runs until real adapters are installed.
+- **Commands are not performed until you switch an adapter on.** Every adapter
+  switch is off by default. A command whose adapter is off is recorded as
+  `skipped` ("not installed"). It never records success. See
+  [Adapters](#adapters).
 
 Observe mode starts after the hub emits OMB event contract v1
 (see [omb-event-contract.md](omb-event-contract.md)). There is no
@@ -218,8 +219,19 @@ JSON Schema is `server/pr-orchestrator/config.schema.json`, and
     "ciFix": { "workflow": "", "connection": null,
                "message": "CI failed on {{repo}}#{{number}} at {{headSha}}: {{failedChecks}}. {{url}}" }
   },
-  "escalation": { "decision": true, "notifier": "inbox", "digestMinutes": 0 },
-  "commands": { "maxAttempts": 6, "backoffSeconds": { "initial": 30, "max": 1800 }, "concurrency": 4 },
+  "escalation": { "decision": true, "notifier": "inbox", "digestMinutes": 0,
+                  "decisionChoices": ["Fix it as the review proposes", "Leave it as it is", "Stop and wait for me"] },
+  "agents": { "newAgent": { "cwd": null, "harness": null, "model": null } },
+  "adapters": {
+    "forge": {
+      "github": { "enabled": false, "auth": "app", "apiUrl": "https://api.github.com",
+                  "appIdSecret": "GITHUB_APP_ID", "privateKeySecret": "GITHUB_APP_PRIVATE_KEY", "tokenSecret": "GITHUB_TOKEN" },
+      "gitlab": { "enabled": false, "baseUrl": "https://git.oceanlabs.dev", "tokenSecret": "GITLAB_TOKEN" }
+    },
+    "notifier": { "enabled": false },
+    "runtime": { "enabled": false, "bindOwners": true }
+  },
+  "commands": { "maxAttempts": 6, "maxWaits": 120, "backoffSeconds": { "initial": 30, "max": 1800 }, "concurrency": 4 },
   "retention": { "endedPrDays": 180, "receivedEventDays": 90 },
   "routines": { "useDefaults": true, "custom": [], "deactivate": [] },
   "overrides": []
@@ -229,6 +241,8 @@ JSON Schema is `server/pr-orchestrator/config.schema.json`, and
 - `quietHours` looks like `{ "start": "22:00", "end": "07:00", "timeZone": "Asia/Saigon" }`.
 - `overrides` change settings for some repos. Later entries win. Objects merge,
   arrays replace: `{ "match": { "providers": ["gitlab"], "repos": ["vtc/3q/**"] }, "set": { "merge": { "auto": false } } }`.
+- `escalation` and `agents` can also be set for one repo in `overrides`.
+  `adapters` and `commands` are global.
 - **Live reload.** OMB reads the file again when it changes. No restart is
   needed. An invalid file keeps the last valid config and shows `configError` in
   the status.
@@ -238,6 +252,48 @@ JSON Schema is `server/pr-orchestrator/config.schema.json`, and
 - A file added later takes effect on the next request.
 
 To try it, write `{"enabled": true, "connectors": {"github-event": {"use": "github-event", "enabled": true}}}`.
+
+## Adapters
+
+A command reaches the outside world through a port. Each port has its own
+switch in `adapters`, and the config is read on every call. A switch takes
+effect on the next command, with no restart. Setting it to `false` again
+returns the port to the stub.
+
+| Switch | Port | Commands |
+|---|---|---|
+| `adapters.forge.github.enabled`, `adapters.forge.gitlab.enabled` | forge | `RefreshDetails`, `Merge` |
+| `adapters.notifier.enabled` | Inbox | `AskPerson`, `Notify` |
+| `adapters.runtime.enabled` | agent runtime | `TellOwner`, `RunInstruction` |
+
+- **Off means not installed.** With every switch off, every command ends as it
+  did before: `skipped` with the reason "not installed". This check comes first,
+  before the owner and head checks.
+- **Ended PR and old head.** A command for a PR that is `merged` or `closed` is
+  `skipped` ("PR ended"). `Notify` and `TellOwner` still go out, so the merge
+  notice and the merge message arrive. A command built for an older head is
+  `skipped` ("head moved").
+- **Waiting commands.** Two cases make a command wait and run again, not finish:
+  the forge has not computed a fact yet (mergeability, or a required check that
+  still runs), and a switched-on port that cannot be reached (nothing attached
+  yet, or the Paseo daemon is down). A forge wait lasts 30 seconds, a port wait
+  60 seconds. After `commands.maxWaits` waits (120), the command is `skipped`
+  with "waited too long". A busy owner never makes a command wait: the message
+  goes at once, as a message typed in the Paseo app does.
+- **Secrets.** The secret fields hold Vault names, never values. The server reads
+  team secrets from the Vault. A secret name matches `^[A-Za-z][A-Za-z0-9_]{0,99}$`.
+  An adapter URL is `https`, or `http` on `127.0.0.1` or `localhost` for a fake
+  forge in a test.
+- **Cards.** The core keeps the cards of open questions answerable. At start and
+  every 15 seconds, it takes over the card of each open question, opens it again
+  when the card is gone, and closes the cards whose question ended.
+- **Rollout order.** Turn the adapters on one at a time: the notifier, then the
+  runtime, then the forge. Set `"merge": { "auto": false }` before the forge
+  switch goes on. A ready PR then only gives the "ready, auto-merge is off"
+  notice. Set `auto` back to `true` when you trust the result.
+
+An adapter that is not built into this install leaves its port waiting while its
+switch is on. Check the command list of a PR in `GET /api/pr-orchestrator/pr?key=...`.
 
 ## Vault secrets
 

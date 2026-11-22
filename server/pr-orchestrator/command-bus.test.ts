@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { stubPorts } from "./adapters/stub.ts";
+import { noneAttached, switchedPorts } from "./adapters/switched.ts";
+import { portHandlers } from "./command-handlers.ts";
 import { createCommandBus, type CommandBus } from "./command-bus.ts";
 import { orchestratorConfigSchema } from "./config.ts";
 import { stubHandlers, type CommandHandlers } from "./handlers.ts";
 import { DEFAULT_PR_KEY, ev } from "./testing/builders.ts";
 import { makeHarness, type Harness } from "./testing/pm-harness.ts";
 import { scriptedHandlers } from "./testing/recording-ports.ts";
-import type { CommandRecord, CommandResult, PrKey } from "./types.ts";
+import type { CommandRecord, CommandResult, CommandWait, PrKey } from "./types.ts";
 
 let h: Harness;
 afterEach(() => h.close());
@@ -140,5 +142,97 @@ describe("command bus", () => {
     await commands.idle();
     expect(called).toBe(false);
     expect(h.store.getCommand(command.id)).toMatchObject({ status: "done", outcome: "skipped", result: { outcome: "skipped", reason: "pr gone" } });
+  });
+
+  it("runs a waiting command again after its fixed delay", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue();
+    let calls = 0;
+    const commands = bus({
+      Notify: async () => {
+        calls += 1;
+        return calls === 1 ? { outcome: "waiting", reason: "the forge is computing", retryAfterSeconds: 45 } satisfies CommandWait : { outcome: "succeeded" };
+      },
+    });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "pending", attempts: 1, nextAt: h.clock.now() + 45_000, lastError: "the forge is computing" });
+    expect(h.entries("command.finished")).toEqual([]);
+    expect(await commands.runDue()).toBe(0);
+
+    h.clock.advance(45_000);
+    await commands.runDue();
+    await commands.idle();
+    expect(calls).toBe(2);
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "done", outcome: "succeeded" });
+  });
+
+  it("finishes a command that waited more times than the limit as skipped", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue();
+    const commands = bus(
+      { Notify: async () => ({ outcome: "waiting", reason: "the daemon is down", retryAfterSeconds: 10 }) },
+      { commands: { maxWaits: 3 } },
+    );
+    for (let round = 0; round < 3; round += 1) {
+      await commands.runDue();
+      await commands.idle();
+      h.clock.advance(10_000);
+    }
+    expect(h.store.getCommand(command.id)).toMatchObject({
+      status: "done", outcome: "skipped", attempts: 3, result: { outcome: "skipped", reason: "waited too long: the daemon is down" },
+    });
+    expect(h.entries("command.finished")).toHaveLength(1);
+  });
+
+  it("does not let a waiting command hold the other commands of its PR", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const waiting = queue();
+    const other = queue(DEFAULT_PR_KEY, "Merge");
+    const commands = bus({
+      Notify: async () => ({ outcome: "waiting", reason: "later", retryAfterSeconds: 60 }),
+      Merge: async () => ({ outcome: "succeeded" }),
+    });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(waiting.id)).toMatchObject({ status: "pending" });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(other.id)).toMatchObject({ status: "done", outcome: "succeeded" });
+  });
+
+  it("waits while a switched-on port has no adapter attached", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue(DEFAULT_PR_KEY, "Merge");
+    const config = orchestratorConfigSchema.parse({ enabled: true, adapters: { forge: { github: { enabled: true } } } });
+    const ports = switchedPorts(() => config, noneAttached);
+    const commands = createCommandBus({
+      store: h.store, pm: h.pm, handlers: portHandlers(), ports, installed: ports.installed,
+      config: () => config, now: h.clock.now, log: line => h.logs.push(line),
+    });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(command.id)).toMatchObject({
+      status: "pending", nextAt: h.clock.now() + 60_000, lastError: "the GitHub adapter is not attached yet",
+    });
+  });
+
+  it("records a command for a port that is switched off as not installed, before any other check", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue(DEFAULT_PR_KEY, "Merge");
+    const config = orchestratorConfigSchema.parse({ enabled: true });
+    const ports = switchedPorts(() => config, noneAttached);
+    const commands = createCommandBus({
+      store: h.store, pm: h.pm, handlers: portHandlers(), ports, installed: ports.installed,
+      config: () => config, now: h.clock.now, log: line => h.logs.push(line),
+    });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "done", result: { outcome: "skipped", reason: "not installed" } });
   });
 });

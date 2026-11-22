@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { removeTempDir } from "../testing/cleanup.ts";
 import { openOrchestratorStore, type OrchestratorStore } from "./store.ts";
-import type { CommandRecord, LedgerEntry, PrRecord, TimerRecord } from "./types.ts";
+import type { CommandRecord, CommandResult, LedgerEntry, PrRecord, TimerRecord } from "./types.ts";
 
 const stores: OrchestratorStore[] = [];
 const dirs: string[] = [];
@@ -315,5 +315,44 @@ describe("orchestrator store file", () => {
     expect(second.receivedByStatus("pending", 10)).toHaveLength(1);
     expect(second.ledger("github:acme/app#1")).toHaveLength(1);
     expect(second.path).toBe(path);
+  });
+
+  it("lists open questions of PRs and of other subjects and leaves answered ones out", () => {
+    const store = open();
+    const asked = (id: string, subjectKey: string, decisionId: string, result: CommandResult = { outcome: "succeeded", detail: { cardId: `card-${id}` } }) => {
+      store.insertCommand(command(id, {
+        subjectKey, type: "AskPerson", payload: { type: "AskPerson", kind: "decision", decisionId, gaps: [], gated: null },
+      }));
+      store.finishCommand(id, result, 20);
+    };
+    const answer = (decisionId: string): LedgerEntry => ({ type: "person.answered", decisionId, answer: "yes" });
+    const pending = (commandId: string, decisionId: string) => ({ decisionId, kind: "decision" as const, askedAt: 1, commandId, gatedCommandId: null });
+
+    // A PR whose pending decision names its card, and a PR with no pending decision.
+    store.putPr(pr("github:acme/app#1", { pendingDecision: pending("pr-open", "d-pr") }));
+    store.putPr(pr("github:acme/app#2"));
+    asked("pr-open", "github:acme/app#1", "d-pr");
+    asked("pr-answered", "github:acme/app#2", "d-old");
+    // Subjects that are not PRs: one card with no answer, one answered, one that never showed its card.
+    asked("sub-open", "subject:hook:thread:t1", "d-open");
+    asked("sub-answered", "subject:hook:thread:t2", "d-done");
+    store.append(ledgerRow("subject:hook:thread:t2", 5, answer("d-done")));
+    asked("sub-failed", "subject:hook:thread:t3", "d-failed", { outcome: "failed", reason: "x", retryable: false });
+
+    expect(store.openQuestions().map(({ subjectKey, decisionId, command: row }) => [subjectKey, decisionId, row.id])).toEqual([
+      ["github:acme/app#1", "d-pr", "pr-open"],
+      ["subject:hook:thread:t1", "d-open", "sub-open"],
+    ]);
+  });
+
+  it("replaces the stored result of a finished command and nothing else", () => {
+    const store = open();
+    store.insertCommand(command("c1"));
+    store.markCommandRunning("c1", 15);
+    store.setCommandResult("c1", { outcome: "succeeded", detail: { cardId: "late" } });
+    expect(store.getCommand("c1")).toMatchObject({ status: "running", result: null });
+    store.finishCommand("c1", { outcome: "succeeded", detail: { cardId: "first" } }, 20);
+    store.setCommandResult("c1", { outcome: "succeeded", detail: { cardId: "again" } });
+    expect(store.getCommand("c1")).toMatchObject({ status: "done", outcome: "succeeded", result: { outcome: "succeeded", detail: { cardId: "again" } } });
   });
 });

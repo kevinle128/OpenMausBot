@@ -91,7 +91,10 @@ export const PAYLOAD_BUILDERS: Readonly<Record<ActionType, PayloadBuilder>> = {
   AskPerson({ params, record, prKey, trigger, ctx }) {
     const kind = oneOf<AskKind>(params.kind, ASK_KINDS);
     if (kind === null) return skip(`unknown question kind ${String(params.kind)}`);
-    return { type: "AskPerson", kind, decisionId: `${prKey}#${trigger.seq}`, gaps: record === null ? [] : readiness(record, ctx).gaps, gated: null };
+    const about = trigger.entry.type === "command.finished" && trigger.entry.result.outcome !== "succeeded"
+      ? { command: trigger.entry.command, reason: trigger.entry.result.reason }
+      : null;
+    return { type: "AskPerson", kind, decisionId: `${prKey}#${trigger.seq}`, gaps: record === null ? [] : readiness(record, ctx).gaps, gated: null, about };
   },
 
   Instruct({ params, record, before, trigger, ctx }) {
