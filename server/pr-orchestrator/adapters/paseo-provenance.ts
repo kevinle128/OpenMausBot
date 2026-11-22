@@ -20,9 +20,13 @@ const MAX_HOPS = 10;
 
 const CREATE_COMMANDS = [/\bgh\s+pr\s+create\b/, /\bglab\s+mr\s+create\b/];
 // The endpoint must end at the collection: `/pulls/42/reviews` or `/merge_requests/7/notes` creates no PR.
-const API_COMMANDS = [/\bgh\s+api\b[^\n]*\/pulls(?=$|[\s"'?])/, /\bglab\s+api\b[^\n]*\/merge_requests(?=$|[\s"'?])/];
-const POST_SIGNS = /(?:-X\s*POST\b|--method[=\s]+POST\b|\s-[fF][\s=]|\s--(?:field|raw-field|input)[\s=])/i;
-const NON_POST_METHOD = /(?:-X\s*|--method[=\s]+)(?!POST\b)[A-Z]+\b/i;
+// Each API call is the rest of its own line, so the method and field flags of other commands in the script do not count.
+const API_CALLS = [/\bgh\s+api\b[^\n]*\/pulls(?=$|[\s"'?])[^\n]*/gm, /\bglab\s+api\b[^\n]*\/merge_requests(?=$|[\s"'?])[^\n]*/gm];
+// Flags are case-sensitive and start a word; only the method name is case-insensitive and may be quoted.
+const POST_SIGNS = /\s(?:-X\s*["']?[Pp][Oo][Ss][Tt]\b|--method(?:=|\s+)["']?[Pp][Oo][Ss][Tt]\b|-[fF][\s=]|--(?:field|raw-field|input)[\s=])/;
+const NON_POST_METHOD = /\s(?:-X\s*|--method(?:=|\s+))["']?(?![Pp][Oo][Ss][Tt]\b)[A-Za-z]+\b/;
+const postsToCollection = (command: string): boolean =>
+  API_CALLS.some(pattern => (command.match(pattern) ?? []).some(call => POST_SIGNS.test(call) && !NON_POST_METHOD.test(call)));
 const CREATE_TOOL = /create_?(?:pull_request|merge_request)/i;
 
 /** Every string in a tool detail, deep enough for an MCP result (`output.content[].text`). */
@@ -46,7 +50,7 @@ export function createdUrl(item: PaseoTimelineItem): string | null {
     const { command, output, exitCode } = detail;
     if (typeof command !== "string" || typeof output !== "string") return null;
     const creates = CREATE_COMMANDS.some(pattern => pattern.test(command))
-      || (API_COMMANDS.some(pattern => pattern.test(command)) && POST_SIGNS.test(command) && !NON_POST_METHOD.test(command));
+      || postsToCollection(command);
     if (!creates) return null;
     const url = lastChangeRequestUrl(output);
     if (exitCode === 0) return url;
@@ -118,6 +122,8 @@ export function createProvenance(deps: ProvenanceDeps) {
       log(`pr-orchestrator: the timeline of agent ${agentId} could not be read: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
+    // Binding may have been switched off or the last watcher gone while the timeline was read: mark nothing as seen.
+    if (stopped || listeners.size === 0 || deps.enabled?.() === false) return;
     for (const item of items) {
       const url = createdUrl(item);
       const pr = url ? parse(url) : null;

@@ -105,9 +105,35 @@ describe("PR provenance", () => {
       shell("glab api projects/1/merge_requests/7/notes -f body=x", `{"web_url":"${GL_URL}"}`, 0),
       shell("gh api -X PATCH repos/acme/widgets/pulls -f title=x", `{"html_url":"${GH_URL}"}`, 0),
       shell("gh api --method PUT repos/acme/widgets/pulls -f title=x", `{"html_url":"${GH_URL}"}`, 0),
+      shell(`gh api -X "PATCH" repos/acme/widgets/pulls -f title=x`, `{"html_url":"${GH_URL}"}`, 0),
+      shell("gh api repos/acme/blog-xpost/pulls", `[{"html_url":"${GH_URL}"}]`, 0),
+      shell("gh api repos/acme/widgets/issues/1/comments -f body=hi\ngh api repos/acme/widgets/pulls", `[{"html_url":"${GH_URL}"}]`, 0),
     ] });
     await t.turn("a");
     expect(t.reports).toEqual([]);
+  });
+
+  it("reads the method flags of the gh api line only, at word boundaries", async () => {
+    const t = setup({
+      a: [shell("gh api repos/acme/widgets/pulls -f title=Fix -f head=fix-xss -f base=main", `{"html_url":"${GH_URL}"}`, 0)],
+      b: [shell("curl -X DELETE https://example.test/x\ngh api --method post repos/acme/widgets/pulls -f title=x", `{"html_url":"https://github.com/acme/widgets/pull/9"}`, 0)],
+    });
+    await t.turn("a");
+    await t.turn("b");
+    expect(t.reports.map(report => report.pr.number)).toEqual([42, 9]);
+  });
+
+  it("marks nothing as seen when binding is switched off while the timeline is read", async () => {
+    let on = true;
+    const t = setup({ a: [created()] }, { enabled: () => on });
+    const read = t.connection.timelineTail;
+    t.connection.timelineTail = async (agentId: string) => { const items = await read(agentId); on = false; return items; };
+    await t.turn("a");
+    expect(t.reports).toEqual([]);
+    t.connection.timelineTail = read;
+    on = true;
+    await t.turn("a");
+    expect(t.reports).toHaveLength(1);
   });
 
   it("ignores a create tool that failed or that only had another PR in its input", async () => {
