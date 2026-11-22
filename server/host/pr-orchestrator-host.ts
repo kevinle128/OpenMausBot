@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { vaultNameKey } from "../../shared/vault.ts";
-import { createConfigSource } from "../pr-orchestrator/config.ts";
-import { createOrchestratorCore, inboundInstanceIn, type OrchestratorCore } from "../pr-orchestrator/core.ts";
+import { createConfigSource, orchestratorActive } from "../pr-orchestrator/config.ts";
+import { updateConnectorInstance } from "../pr-orchestrator/config-writer.ts";
+import { connectorViewsIn, createOrchestratorCore, EMPTY_CONNECTOR_STATUS, inboundInstanceIn, routinesIn, type OrchestratorCore } from "../pr-orchestrator/core.ts";
 import { BUILT_IN_CONNECTORS } from "../pr-orchestrator/connectors/index.ts";
 import { createConnectorRegistry } from "../pr-orchestrator/connectors/registry.ts";
 import { createEventsDoor } from "../pr-orchestrator/intake.ts";
@@ -16,6 +17,8 @@ export interface PrOrchestratorHostDeps {
   dataDir: string;
   vault: Pick<VaultStore, "listSecrets" | "secret">;
   claimRequest?: () => () => void;
+  /** The advertised base URL of the webhook listener. */
+  webhookBase?: () => string;
   log?: (line: string) => void;
 }
 
@@ -62,7 +65,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
   const door = createEventsDoor({
     enabled: () => {
       const current = ensureCore();
-      return current ? current.enabled() : configOnFile()?.enabled ?? false;
+      return current ? current.enabled() : orchestratorActive(configOnFile() ?? { enabled: false, connectors: {} });
     },
     instance: id => {
       const current = ensureCore();
@@ -86,6 +89,15 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
   const routes = createPrOrchestratorRoutes({
     core: ensureCore,
     secretPresent: name => key(name) !== null,
+    ...(deps.webhookBase ? { webhookBase: deps.webhookBase } : {}),
+    idle: () => {
+      const { config } = fileConfig.current();
+      return {
+        connectors: connectorViewsIn(config, registry, name => key(name) !== null, () => EMPTY_CONNECTOR_STATUS),
+        routines: routinesIn(config, registry),
+      };
+    },
+    updateConnector: (id, patch) => updateConnectorInstance(configPath, BUILT_IN_CONNECTORS, id, patch),
   });
 
   return {

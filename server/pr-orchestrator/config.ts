@@ -138,7 +138,7 @@ function checkRoutines(config: z.output<ReturnType<typeof baseSchema>>, definiti
     for (const id of routine.when.connectors ?? []) {
       if (!Object.hasOwn(config.connectors, id)) issue(at("when", "connectors"), `${id} is not a configured connector`);
     }
-    const declared = declaredTypes(config, definitions, routine.when.connectors ?? instanceIds);
+    const declared = declaredTypes(config, definitions, routine.when.connectors?.length ? routine.when.connectors : instanceIds);
     routine.when.on.forEach((name, position) => {
       if (name === "*" || (CORE_TRIGGERS as readonly string[]).includes(name) || declared.has(name)) return;
       issue(at("when", "on", position), `${name} is not an event type that the selected connectors declare`);
@@ -286,6 +286,10 @@ function deepMerge(base: unknown, patch: unknown): unknown {
   }
   return merged;
 }
+
+/** Whether the orchestrator receives events: the top-level flag, or any enabled connector instance. A connector is a gate that receives events, so turning one on opens intake without the top-level flag. */
+export const orchestratorActive = (config: Pick<OrchestratorConfig, "enabled" | "connectors">): boolean =>
+  config.enabled || Object.values(config.connectors).some(instance => instance.enabled);
 
 /** The config for one repo: the tunables with the matching overrides applied in list order, and the resolved routines (their provider and repo filters are the evaluator's job). */
 export function resolveForRepo(config: OrchestratorConfig, provider: Provider, repo: string): RepoConfig {
