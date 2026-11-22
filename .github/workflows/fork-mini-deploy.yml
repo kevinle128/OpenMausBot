@@ -144,4 +144,5 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsS -m 5 "$HEALTH_URL"; echo
+          rm -rf "$CHECKOUT/dist.prev"
           echo "Deployed ${{ steps.update.outputs.target }}" >> "$GITHUB_STEP_SUMMARY"
