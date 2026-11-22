@@ -135,7 +135,7 @@ describe("subjects that are not PRs", () => {
   });
 });
 
-const withAskFirst = (): Harness => start({ enabled: true, routines: { custom: [MERGE_ASK_FIRST] } });
+const withAskFirst = (): Harness => start({ enabled: true, routines: { useDefaults: true, custom: [MERGE_ASK_FIRST] } });
 
 describe("ask first", () => {
   it("holds an ask-first merge until the person approves, and enters merging only then", () => {
@@ -233,7 +233,7 @@ describe("held actions whose card is not shown yet", () => {
 
 describe("answers and cancellations", () => {
   it("forwards a decision answer to the owner but not an approval answer", () => {
-    start({ enabled: true, routines: { custom: [MERGE_ASK_FIRST] } });
+    start({ enabled: true, routines: { useDefaults: true, custom: [MERGE_ASK_FIRST] } });
     bringToReady();
     const [held] = h.commands("Merge");
     h.finish(h.commands("AskPerson")[0], { outcome: "succeeded" });
@@ -242,7 +242,7 @@ describe("answers and cancellations", () => {
     expect(h.record().lastAnswer?.kind).toBe("approve_action");
     h.close();
 
-    start();
+    start({ enabled: true, routines: { useDefaults: true } });
     h.send(ev.opened({ head: SHA_A }), ev.reviewFinished({ head: SHA_A, status: "needs-person", reviewedSha: SHA_A }));
     const card = h.commands("AskPerson")[0];
     h.finish(card, { outcome: "succeeded" });
@@ -251,7 +251,7 @@ describe("answers and cancellations", () => {
   });
 
   it("lists no cancel that found no timer and appends no routine run when nothing happened", () => {
-    start({ enabled: true, merge: { quietHours: { start: "22:00", end: "07:00", timeZone: "Asia/Saigon" } } });
+    start({ enabled: true, merge: { quietHours: { start: "22:00", end: "07:00", timeZone: "Asia/Saigon" } }, routines: { useDefaults: true } });
     h.clock.set(Date.UTC(2026, 10, 22, 16, 0));
     bringToReady();
     expect(h.store.armedTimers(DEFAULT_PR_KEY)).toHaveLength(1);
@@ -289,7 +289,7 @@ describe("routines in the step", () => {
   it("runs no star routine on a merged PR and runs the merged routines once", () => {
     start({
       enabled: true,
-      routines: { custom: [{ id: "on-anything", name: "On anything", active: true, when: { on: ["*"], all: [{ fact: "event.connector", op: "truthy" }] }, then: [NOTIFY("ready_no_auto_merge")], once: "per-trigger" }] },
+      routines: { useDefaults: true, custom: [{ id: "on-anything", name: "On anything", active: true, when: { on: ["*"], all: [{ fact: "event.connector", op: "truthy" }] }, then: [NOTIFY("ready_no_auto_merge")], once: "per-trigger" }] },
     });
     h.send(ev.opened({ head: SHA_A }));
     expect(h.commands("Notify")).toHaveLength(1);
@@ -302,7 +302,7 @@ describe("routines in the step", () => {
   });
 
   it("records a routine run with each action's result and leaves duplicates out", () => {
-    start();
+    start({ enabled: true, routines: { useDefaults: true } });
     h.send(ev.opened({ head: SHA_A }), ev.merged({ head: SHA_A }));
     h.send(ev.merged({ head: SHA_A }));
     const runs = h.entries("routine.matched").filter(entry => entry.routineId === "after-merge");
@@ -317,6 +317,7 @@ describe("routines in the step", () => {
     start({
       enabled: true,
       routines: {
+        useDefaults: true,
         custom: [{ id: "tell-owner-conflict", name: "Notify instead", active: true, when: { on: ["pr.conflict.detected"] }, then: [NOTIFY("ready_no_auto_merge")], once: "per-head" }],
         deactivate: ["notify-review-chain-failed"],
       },

@@ -358,6 +358,26 @@ describe("the Automations list switch", () => {
       expect(bots().value).toBe("all");
     });
   });
+
+  it("opens the app editor once for a named event app, and again only on a later visit", async () => {
+    fixture.api.mockImplementation(async (path: unknown) => String(path).startsWith("/api/app-triggers/events")
+      ? { apps: [{ app: "github-event", name: "GitHub Event", accounts: [{ id: "github-event" }], events: [{ event: "pull_request", name: "Pull request activity", description: "", delivery: "instant", configFields: [{ name: "types", type: "string", required: true, options: ["pr.ci.finished"] }, { name: "repos", type: "string", required: true }], filterFields: [] }] }], notConnected: [] }
+      : { triggers: [], attempts: [], service: { available: true } });
+    const focus = (nonce: number) => { fixture.state.routinesFocus = { view: "list", newApp: "github-event", nonce }; };
+    const editor = () => container.querySelector('[role="dialog"][aria-label="When something happens in an app"]');
+    focus(1);
+    mountPage();
+    await vi.waitFor(() => expect(editor()).not.toBeNull());
+    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>('select[aria-label="App"]')!.value).toBe("github-event"));
+    flushSync(() => button(container, "Cancel").click());
+    expect(editor()).toBeNull();
+    focus(1);
+    flushSync(() => root!.render(createElement(TriggersPage, { onBack: vi.fn(), onOpenRoom: vi.fn() })));
+    expect(editor()).toBeNull();
+    focus(2);
+    flushSync(() => root!.render(createElement(TriggersPage, { onBack: vi.fn(), onOpenRoom: vi.fn() })));
+    await vi.waitFor(() => expect(editor()).not.toBeNull());
+  });
 });
 
 describe("More, for another app's automation", () => {

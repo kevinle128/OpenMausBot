@@ -443,7 +443,7 @@
       "type": "object",
       "properties": {
         "useDefaults": {
-          "default": true,
+          "default": false,
           "type": "boolean"
         },
         "custom": {

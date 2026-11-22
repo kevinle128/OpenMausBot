@@ -11,19 +11,24 @@ import { t } from "@/lib/i18n";
 import { useStore, type Bot } from "@/state/store";
 import { Select } from "../Select";
 import { suggestedName } from "../WebhookTrigger";
+import { EventSourceFields, PR_EVENT_TYPES, settingList } from "./EventSourceFields";
 
 const FIELD = "w-full rounded-xl border border-hairline/60 bg-panel px-3.5 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent/70";
 const LABEL = "mb-1.5 block text-[12px] font-medium text-ink-secondary";
+const PULL_REQUEST = "pull_request";
 
-export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }: { trigger?: AppTrigger; bots: Bot[]; initialBotId?: string; onClose: () => void; onSaved?: (trigger: AppTrigger) => void }) {
+export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClose, onSaved }: { trigger?: AppTrigger; bots: Bot[]; initialBotId?: string; initialApp?: string; onClose: () => void; onSaved?: (trigger: AppTrigger) => void }) {
   const { dispatch } = useStore();
   const [botId, setBotId] = useState(trigger?.botId ?? (initialBotId && bots.some((bot) => bot.id === initialBotId) ? initialBotId : bots[0]?.id) ?? "");
   const [catalog, setCatalog] = useState<AppEventCatalog | null>(null);
-  const [app, setApp] = useState(trigger?.app ?? "");
+  const [app, setApp] = useState(trigger?.app ?? initialApp ?? "");
   const [event, setEvent] = useState(trigger?.event ?? "");
   const [account, setAccount] = useState(trigger?.accountId ?? "");
   const [filter, setFilter] = useState<AppTriggerFilter>(trigger?.filter ?? {});
   const [config, setConfig] = useState<Record<string, string>>({});
+  const [types, setTypes] = useState<string[]>(() => settingList(trigger?.config.types));
+  const [repos, setRepos] = useState(() => settingList(trigger?.config.repos).join("\n"));
+  const [authors, setAuthors] = useState(() => settingList(trigger?.config.authors).join(", "));
   const [prompt, setPrompt] = useState(trigger?.prompt ?? "");
   const [name, setName] = useState(trigger?.name ?? "");
   const [saving, setSaving] = useState(false);
@@ -52,22 +57,40 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
   useEffect(() => {
     if (!trigger && chosen && chosen.event !== event) setEvent(chosen.event);
   }, [chosen, event, trigger]);
-  const required = (chosen?.configFields ?? []).filter((field) => field.required);
+  const eventSource = (trigger ? trigger.event : chosen?.event) === PULL_REQUEST;
+  const listedTypes = chosen?.configFields.find((field) => field.name === "types")?.options;
+  const typeOptions = listedTypes?.length ? listedTypes : eventSource ? [...PR_EVENT_TYPES] : [];
+  const required = eventSource ? [] : (chosen?.configFields ?? []).filter((field) => field.required);
   const gmail = app === "gmail";
+  const gitlab = /gitlab/i.test(`${app} ${appEntry?.name ?? trigger?.appName ?? ""}`);
   const delivery = trigger?.delivery ?? chosen?.delivery;
+  const sourceReady = typeOptions.some((type) => types.includes(type)) && settingList(repos).length > 0;
+  const missing = eventSource ? !sourceReady : required.some((field) => !config[field.name]?.trim());
 
   const save = async () => {
     const bot = bots.find((candidate) => candidate.id === botId);
-    const cleanFilter = Object.fromEntries(Object.entries(filter).filter(([, value]) => typeof value === "string" && value.trim())) as AppTriggerFilter;
+    // On create, only the fields shown for this app are sent: a value typed for another app stays hidden here. On edit
+    // the app is fixed, so every stored field (a bot may set any of them) is kept.
+    const shownFilter: AppTriggerFilter = trigger ? filter : gmail ? { from: filter.from, subject: filter.subject, label: filter.label } : { text: filter.text };
+    const cleanFilter = Object.fromEntries(Object.entries(shownFilter).filter(([, value]) => typeof value === "string" && value.trim())) as AppTriggerFilter;
+    const shownAccount = appEntry && appEntry.accounts.length > 1 && appEntry.accounts.some((candidate) => candidate.id === account) ? account : "";
+    const sourceConfig = {
+      types: typeOptions.filter((type) => types.includes(type)),
+      repos: repos.trim(),
+      ...(authors.trim() ? { authors: authors.trim() } : {}),
+    };
     setSaving(true);
     setError("");
     try {
       const saved = trigger
-        ? await appTriggerApi.update(trigger.id, { name: name.trim() || trigger.name, prompt: prompt.trim(), filter: Object.keys(cleanFilter).length ? cleanFilter : null })
+        ? await appTriggerApi.update(trigger.id, {
+          name: name.trim() || trigger.name, prompt: prompt.trim(), filter: Object.keys(cleanFilter).length ? cleanFilter : null,
+          ...(eventSource ? { config: sourceConfig } : {}),
+        })
         : await appTriggerApi.create({
           botId, app, event: chosen?.event ?? event, prompt: prompt.trim(), name: name.trim() || suggestedName(prompt, bot),
-          ...(account ? { account } : {}), ...(Object.keys(cleanFilter).length ? { filter: cleanFilter } : {}),
-          ...(Object.keys(config).length ? { config } : {}),
+          ...(shownAccount ? { account: shownAccount } : {}), ...(Object.keys(cleanFilter).length ? { filter: cleanFilter } : {}),
+          ...(eventSource ? { config: sourceConfig } : Object.keys(config).length ? { config } : {}),
         });
       onSaved?.(saved);
       onClose();
@@ -83,6 +106,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
       <input value={filter[key] ?? ""} onChange={(input) => setFilter((current) => ({ ...current, [key]: input.target.value }))} placeholder={placeholder} className={FIELD} />
     </label>
   );
+  const clearApp = (next: string) => { setApp(next); setEvent(""); setAccount(""); setFilter({}); setConfig({}); setTypes([]); setRepos(""); setAuthors(""); };
   const title = trigger ? t("automations.editor.app.editTitle") : t("automations.editor.appEvent.title");
 
   return (
@@ -114,13 +138,13 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block">
                 <span className={LABEL}>{t("automations.editor.appEvent.app")}</span>
-                <Select value={app} onChange={(change) => { setApp(change.target.value); setEvent(""); setConfig({}); }} aria-label={t("automations.editor.appEvent.app")} className="w-full">
+                <Select value={app} onChange={(change) => clearApp(change.target.value)} aria-label={t("automations.editor.appEvent.app")} className="w-full">
                   {catalog.apps.filter((candidate) => candidate.events.length).map((candidate) => <option key={candidate.app} value={candidate.app}>{candidate.name}</option>)}
                 </Select>
               </label>
               <label className="block">
                 <span className={LABEL}>{t("automations.editor.appEvent.event")}</span>
-                <Select value={chosen?.event ?? ""} onChange={(change) => { setEvent(change.target.value); setConfig({}); }} aria-label={t("automations.editor.appEvent.event")} className="w-full">
+                <Select value={chosen?.event ?? ""} onChange={(change) => { setEvent(change.target.value); setConfig({}); setTypes([]); setRepos(""); setAuthors(""); }} aria-label={t("automations.editor.appEvent.event")} className="w-full">
                   {events.map((candidate) => <option key={candidate.event} value={candidate.event}>{candidate.name}</option>)}
                 </Select>
               </label>
@@ -133,12 +157,19 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
                   </Select>
                 </label>
               )}
-              {required.map((field) => (
-                <label className="block sm:col-span-2" key={field.name}>
-                  <span className={LABEL}>{field.name}</span>
-                  <input value={config[field.name] ?? ""} onChange={(input) => setConfig((current) => ({ ...current, [field.name]: input.target.value }))} placeholder={field.description} className={FIELD} />
-                </label>
-              ))}
+              {eventSource
+                ? <EventSourceFields options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
+                : required.map((field) => (
+                  <label className="block sm:col-span-2" key={field.name}>
+                    <span className={LABEL}>{field.name}</span>
+                    <input value={config[field.name] ?? ""} onChange={(input) => setConfig((current) => ({ ...current, [field.name]: input.target.value }))} placeholder={field.description} className={FIELD} />
+                  </label>
+                ))}
+            </div>
+          )}
+          {trigger && eventSource && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <EventSourceFields options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
             </div>
           )}
           {(trigger || appEntry) && (
@@ -154,7 +185,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
           {(trigger || appEntry) && (
             <label className="block">
               <span className="mb-2 block text-[13px] font-medium text-ink">{t("automations.editor.app.what")}</span>
-              <textarea value={prompt} onChange={(input) => setPrompt(input.target.value)} rows={3} placeholder={t("automations.editor.appEvent.whatPlaceholder")} className={cn(FIELD, "resize-y py-3 leading-relaxed")} />
+              <textarea value={prompt} onChange={(input) => setPrompt(input.target.value)} rows={eventSource ? 9 : 3} placeholder={eventSource ? t("automations.editor.eventSource.instructionPlaceholder") : t("automations.editor.appEvent.whatPlaceholder")} className={cn(FIELD, "resize-y py-3 leading-relaxed")} />
             </label>
           )}
           {(trigger || appEntry) && (
@@ -167,7 +198,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, onClose, onSaved }
         </div>
         <div className="flex justify-end gap-2 border-t border-hairline/40 px-5 py-4">
           <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink">{t("automations.newBox.cancel")}</button>
-          <button type="button" disabled={saving || !botId || (!trigger && !chosen) || required.some((field) => !config[field.name]?.trim())} onClick={() => void save()} className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:brightness-110 disabled:opacity-40">{saving && <Loader2 size={14} className="animate-spin" />}{trigger ? t("automations.editor.app.save") : t("automations.editor.app.create")}</button>
+          <button type="button" disabled={saving || !botId || (!trigger && !chosen) || missing} onClick={() => void save()} className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:brightness-110 disabled:opacity-40">{saving && <Loader2 size={14} className="animate-spin" />}{trigger ? t("automations.editor.app.save") : t("automations.editor.app.create")}</button>
         </div>
       </div>
     </div>

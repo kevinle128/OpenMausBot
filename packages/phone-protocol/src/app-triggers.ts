@@ -101,7 +101,7 @@ export interface AppEventType {
   name: string;
   description: string;
   delivery: AppTriggerDelivery;
-  configFields: Array<{ name: string; type: string; required: boolean; description?: string; default?: unknown }>;
+  configFields: Array<{ name: string; type: string; required: boolean; description?: string; default?: unknown; options?: string[] }>;
   filterFields: string[];
 }
 

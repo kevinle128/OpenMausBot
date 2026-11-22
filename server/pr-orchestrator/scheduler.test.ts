@@ -42,7 +42,7 @@ function pendingCommand(nextAt: number): CommandRecord {
 describe("scheduler", () => {
   it("drains pending events before it fires timers and runs commands", async () => {
     const { timer, order, scheduler } = setup();
-    h.setConfig({ enabled: true, workflows: { ciFix: { workflow: "ci-fix" } } });
+    h.setConfig({ enabled: true, workflows: { ciFix: { workflow: "ci-fix" } }, routines: { useDefaults: true } });
     h.send(ev.opened());
     h.store.setMeta("last_prune_at", String(h.clock.now()));
     h.pm.accept([{ event: ev.ciFinished({ status: "failed" }), raw: "{}" }], h.clock.now());
@@ -54,6 +54,26 @@ describe("scheduler", () => {
     expect(h.commands("RunWorkflow")[0]).toMatchObject({ status: "done", outcome: "succeeded" });
     scheduler.stop();
     expect(timer.stopped()).toBe(true);
+  });
+
+  it("tells the applied-event listener about rows that committed before a drain threw", async () => {
+    h = makeHarness();
+    const timer = manualTimer();
+    const config = orchestratorConfigSchema.parse({ enabled: true });
+    const bus = createCommandBus({ store: h.store, pm: h.pm, ports: stubPorts(), config: () => config, now: h.clock.now, log: () => {}, handlers: stubHandlers() });
+    const failingPm = { ...h.pm, drain: () => { h.pm.drain(); throw new Error("store unavailable"); } };
+    let notified = 0;
+    const scheduler = createScheduler({
+      store: h.store, pm: failingPm, bus, now: h.clock.now, config: () => config, startTimer: timer.startTimer, log: line => h.logs.push(line),
+      onApplied: () => { notified += 1; },
+    });
+    scheduler.start();
+    h.store.setMeta("last_prune_at", String(h.clock.now()));
+    h.pm.accept([{ event: ev.opened(), raw: "{}" }], h.clock.now());
+
+    await expect(timer.options().run()).rejects.toThrow("store unavailable");
+    expect(notified).toBe(1);
+    scheduler.stop();
   });
 
   it("fires a due timer exactly once", async () => {

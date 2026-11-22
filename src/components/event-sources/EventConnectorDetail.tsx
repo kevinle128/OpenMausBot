@@ -1,10 +1,12 @@
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Plus } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { useCopyFeedback } from "@/lib/copy-text";
 import { lastWhen } from "@/lib/automations";
+import { useAppTriggers } from "@/lib/app-triggers";
 import { t } from "@/lib/i18n";
 import type { EventConnector, EventConnectorPatch } from "@/lib/event-connectors";
+import { useStore } from "@/state/store";
 import { ConnectorSettingsForm } from "./ConnectorSettingsForm";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
@@ -43,6 +45,11 @@ export function EventConnectorDetail({ connector, busy, error, onSave, onOpenVau
   const { status } = connector;
   const snippet = connector.delivery === "inbound-http" && connector.intakePath ? hubSnippet(connector) : null;
   const [typeOpen, setTypeOpen] = useState<string | null>(null);
+  const { state, dispatch } = useStore();
+  const { loaded, triggers } = useAppTriggers();
+  const bots = (state.bots ?? []).filter((bot) => !bot.hidden);
+  const botName = (botId: string) => bots.find((bot) => bot.id === botId)?.name ?? t("routines.unavailableBot");
+  const routines = triggers.filter((trigger) => trigger.app === connector.id);
   return (
     <div data-event-source-detail={connector.id} className="mt-2 flex flex-col gap-5 rounded-xl bg-raised/40 px-4 py-4">
       {error && <p role="alert" className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-[12px] text-danger">{error}</p>}
@@ -116,14 +123,21 @@ export function EventConnectorDetail({ connector, busy, error, onSave, onOpenVau
       </Block>
 
       <Block title={t("eventSources.usedBy")}>
-        {connector.usedBy.length === 0
-          ? <p className="text-[13px] text-ink-secondary">{t("eventSources.usedByNone")}</p>
-          : <ul className="flex flex-col gap-1">{connector.usedBy.map((routine) => (
-            <li key={routine.routineId} data-routine={routine.routineId} className="flex items-baseline justify-between gap-3 text-[13px]">
-              <span className="min-w-0 text-ink">{routine.describe}</span>
-              <span className={cn("shrink-0 text-[12px]", routine.active ? "text-success" : "text-ink-tertiary")}>{routine.active ? t("eventSources.routineActive") : t("eventSources.routineInactive")}</span>
+        {loaded && routines.length === 0 && <p className="text-[13px] text-ink-secondary">{t("eventSources.usedByBotsNone")}</p>}
+        {routines.length > 0 && (
+          <ul className="flex flex-col gap-1">{routines.map((trigger) => (
+            <li key={trigger.id} data-app-trigger={trigger.id} className="flex items-baseline justify-between gap-3 text-[13px]">
+              <span className="min-w-0 text-ink"><span className="font-medium">{botName(trigger.botId)}</span> <span className="text-ink-secondary">{trigger.name}</span></span>
+              <span className={cn("shrink-0 text-[12px]", trigger.enabled ? "text-success" : "text-ink-tertiary")}>{trigger.enabled ? t("eventSources.routineActive") : t("eventSources.usedByPaused")}</span>
             </li>
-          ))}</ul>}
+          ))}</ul>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" disabled={!connector.enabled} onClick={() => { if (connector.enabled) dispatch({ type: "showRoutines", view: "list", newApp: connector.id }); }} className="inline-flex shrink-0 items-center gap-1 rounded-full bg-control px-2.5 py-1 text-[12px] font-medium text-ink transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100">
+            <Plus size={12} aria-hidden="true" />{t("eventSources.usedByAdd")}
+          </button>
+          {!connector.enabled && <span className="text-[12px] text-ink-secondary">{t("eventSources.usedByAddOff")}</span>}
+        </div>
       </Block>
 
       <Block title={t("eventSources.settings")}>

@@ -21,6 +21,7 @@ const CONFIG = {
   connectors: { "github-event": { use: "github-event", enabled: true } },
   adapters: { runtime: { enabled: true } },
   commands: { backoffSeconds: { initial: 1, max: 1 } },
+  routines: { useDefaults: true },
 };
 
 let dir: string;

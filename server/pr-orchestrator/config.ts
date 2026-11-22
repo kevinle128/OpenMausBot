@@ -139,7 +139,7 @@ const messagesSection = z.strictObject({
 }).prefault({});
 const retentionSection = z.strictObject({ endedPrDays: count.default(180), receivedEventDays: count.default(90) }).prefault({});
 const routinesSection = z.strictObject({
-  useDefaults: z.boolean().default(true), custom: z.array(routineSchema).default([]), deactivate: z.array(z.string().min(1)).default([]),
+  useDefaults: z.boolean().default(false), custom: z.array(routineSchema).default([]), deactivate: z.array(z.string().min(1)).default([]),
 }).prefault({});
 
 const overrideSchema = z.strictObject({

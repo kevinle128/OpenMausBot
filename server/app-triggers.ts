@@ -18,11 +18,16 @@ import {
   type AppTriggersSnapshot,
 } from "../shared/app-triggers.ts";
 import { appLabel } from "./app-event-catalog.ts";
+import {
+  EVENT_SOURCE_EVENT, EVENT_SOURCE_EVENT_NAME, eventBySeq, eventSourceFilterError, eventSourceTitle, isEventSourceApp,
+  matchEventSource, normalizeEventSourceConfig, parkHeld, prKeyOfEvent, sourceEventData, splitExpired, type EventSourceFeed, type HeldEvent,
+} from "./app-event-sources.ts";
 import { eventBlock, eventPreview, eventPrompt, matchesFilter, mergeEventBlock } from "./app-events.ts";
 import { BrokerError, type AppTriggerBroker, type BrokerEvent, type BrokerInventory, type BrokerTriggerType } from "./app-trigger-broker.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { instructionsUpdateRefusal } from "./automation-instructions.ts";
 import { DATA_DIR } from "./config.ts";
+import type { LedgerEventForBot } from "./pr-orchestrator/core.ts";
 import type { RoutineRunOn } from "./routines.ts";
 
 export const DEFAULT_MAX_PENDING_RUNS = 3;
@@ -69,6 +74,8 @@ export interface AppTriggerManagerOptions {
   emit?: (frame: Frame) => void;
   log?: (line: string) => void;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Applied PR events. Absent when this process has no orchestrator. */
+  sourceFeed?: () => EventSourceFeed;
 }
 
 const filterSchema = z.object({
@@ -109,6 +116,8 @@ const storedSchema = z.object({
   lastRunId: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /** Events kept while this automation already has its limit of waiting runs. */
+  held: z.array(z.object({ seq: z.number().int().nonnegative(), id: z.string().min(1), at: z.number() })).max(50).optional().catch(undefined),
   /** The service's cumulative drop counts as last seen, and as they stood when this UTC day began. */
   drops: z.object({ day: z.string(), base: dropCounts, last: dropCounts }).optional().catch(undefined),
 });
@@ -127,6 +136,7 @@ const fileSchema = z.object({
   version: z.literal(1),
   pollerId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
   cursor: z.number().int().nonnegative(),
+  sourceCursor: z.number().int().nonnegative().optional(),
   triggers: z.array(storedSchema),
   attempts: z.array(attemptSchema).default([]),
   deleted: z.array(z.object({ at: z.number(), trigger: storedSchema })).default([]),
@@ -190,7 +200,7 @@ function triggerConfig(type: BrokerTriggerType, config: Record<string, unknown>,
 }
 
 function publicTrigger(stored: StoredTrigger): AppTrigger {
-  const { drops: _drops, ...trigger } = stored;
+  const { drops: _drops, held: _held, ...trigger } = stored;
   return structuredClone(trigger);
 }
 
@@ -203,6 +213,7 @@ export class AppTriggerManager {
   private deleted: Array<{ at: number; trigger: StoredTrigger }> = [];
   private pollerId = randomBytes(16).toString("base64url");
   private cursor = 0;
+  private sourceCursor: number | undefined;
   private unreadable = false;
   private usage: { plan: "desktop" | "cloud"; eventsPerDay: number; eventsToday: number } | null = null;
   private serial: Promise<unknown> = Promise.resolve();
@@ -223,6 +234,7 @@ export class AppTriggerManager {
       if (!parsed.success) throw parsed.error;
       this.pollerId = parsed.data.pollerId;
       this.cursor = parsed.data.cursor;
+      this.sourceCursor = parsed.data.sourceCursor;
       this.triggers = parsed.data.triggers;
       this.attemptLog = parsed.data.attempts.slice(-MAX_ATTEMPTS);
       this.deleted = parsed.data.deleted.filter((entry) => entry.at >= this.now() - RESTORE_WINDOW_MS);
@@ -261,13 +273,14 @@ export class AppTriggerManager {
    *  service that cannot be reached leaves it pending; reconciliation finishes it. */
   async create(input: AppTriggerInput): Promise<AppTrigger> {
     this.assertWritable();
+    const app = input.app.trim().toLowerCase();
+    if (isEventSourceApp(app)) return this.createEventSource(input, app);
     this.assertAvailable();
     const name = input.name.trim().slice(0, NAME_MAX);
     const prompt = input.prompt.trim();
     if (!name) throw new AppTriggerError("An automation needs a name.");
     if (prompt.length > PROMPT_MAX) throw new AppTriggerError(`Instructions can be at most ${PROMPT_MAX} characters.`);
     if (this.options.botState(input.botId) === "missing") throw new AppTriggerError("That bot no longer exists.", 404);
-    const app = input.app.trim().toLowerCase();
     const type = await this.remote(() => this.options.broker.triggerType(input.event.trim()));
     if (!type) throw new AppTriggerError(`${input.event} is not an event OpenMausBot can watch. Call trigger_info action=events to see the events this app offers.`, 404);
     if (type.toolkit !== app) throw new AppTriggerError(`${type.slug} is a ${appLabel(type.toolkit)} event, not ${appLabel(app)}.`);
@@ -320,6 +333,7 @@ export class AppTriggerManager {
     this.assertWritable();
     const trigger = this.triggers.find((candidate) => candidate.id === id);
     if (!trigger) return null;
+    if (isEventSourceApp(trigger.app)) return this.updateEventSource(trigger, patch, options);
     const name = patch.name === undefined ? trigger.name : patch.name.trim().slice(0, NAME_MAX);
     if (!name) throw new AppTriggerError("An automation needs a name.");
     if (patch.prompt !== undefined && patch.prompt.trim().length > PROMPT_MAX) throw new AppTriggerError(`Instructions can be at most ${PROMPT_MAX} characters.`);
@@ -398,9 +412,10 @@ export class AppTriggerManager {
     const entry = this.deleted.find((candidate) => candidate.trigger.id === id && candidate.at >= this.now() - RESTORE_WINDOW_MS);
     if (!entry || this.triggers.some((trigger) => trigger.id === id)) return null;
     if (this.options.botState(entry.trigger.botId) === "missing") throw new AppTriggerError("The assigned bot no longer exists.", 410);
-    const trigger: StoredTrigger = { ...structuredClone(entry.trigger), remote: { state: "pending" }, updatedAt: this.now() };
+    const source = isEventSourceApp(entry.trigger.app);
+    const trigger: StoredTrigger = { ...structuredClone(entry.trigger), remote: source ? { state: "active" } : { state: "pending" }, runOn: source ? "maus" : entry.trigger.runOn, updatedAt: this.now() };
     await this.exclusive(async () => {
-      try { await this.bind(trigger); await this.applyEnabled(trigger.remote.triggerId); }
+      try { if (!source) { await this.bind(trigger); await this.applyEnabled(trigger.remote.triggerId); } }
       catch (error) { this.markRemoteFailure(trigger, error); }
       this.deleted = this.deleted.filter((candidate) => candidate !== entry);
       this.triggers.unshift(trigger);
@@ -415,6 +430,7 @@ export class AppTriggerManager {
   async runNow(id: string): Promise<{ via: "service" | "here"; runId?: string } | null> {
     const trigger = this.triggers.find((candidate) => candidate.id === id);
     if (!trigger) return null;
+    if (isEventSourceApp(trigger.app)) return this.runEventSourceNow(trigger);
     const data = { omb_test: true, note: "A test run started from OpenMausBot." };
     if (trigger.remote.triggerId && trigger.remote.state === "active" && this.options.service().available) {
       try {
@@ -498,46 +514,221 @@ export class AppTriggerManager {
       return;
     }
     const data = event.event.data ?? {};
-    for (const trigger of this.bound(event.triggerId)) {
-      if (!trigger.enabled) {
-        this.record(trigger, event, "skipped", { reason: "paused" });
-        continue;
-      }
-      if (this.options.botState(trigger.botId) === "missing") {
-        this.record(trigger, event, "rejected", { reason: "its bot was deleted" });
-        continue;
-      }
-      if (!matchesFilter(trigger.app, trigger.filter, data)) {
-        trigger.filtered += 1;
-        this.record(trigger, event, "filtered", { reason: "did not match the filter" });
-        continue;
-      }
-      const seen = this.options.runs.receipt(trigger.id, event.id);
-      if (seen) {
-        this.record(trigger, event, "duplicate", { runId: seen.id });
-        continue;
-      }
-      const block = eventBlock(trigger, { id: event.id, receivedAt: event.receivedAt, test: event.kind === "test", data });
-      const joined = this.options.runs.merge(trigger.id, event.id, trigger.sameConversation === true, (prompt) => mergeEventBlock(prompt, block));
-      let runId = joined?.id;
-      if (!runId) {
-        if (this.options.runs.pending(trigger.id) >= DEFAULT_MAX_PENDING_RUNS) {
-          this.countSkipped(trigger, "tooMany");
-          this.record(trigger, event, "skipped", { reason: `it already had ${DEFAULT_MAX_PENDING_RUNS} runs waiting` });
-          continue;
-        }
-        runId = this.options.runs.enqueue({
-          webhookId: trigger.id, webhookName: trigger.name, prompt: eventPrompt(trigger.prompt, block), botId: trigger.botId,
-          runOn: trigger.runOn, deliveryId: event.id, receivedAt: event.receivedAt, eventSource: "app",
-          sameConversation: trigger.sameConversation,
-        }).id;
-      }
-      trigger.received += 1;
-      trigger.lastEventAt = event.receivedAt;
-      trigger.lastRunId = runId;
-      if (trigger.problem?.kind === "reconnect" && event.kind === "message") delete trigger.problem;
-      this.record(trigger, event, joined ? "joined" : "started", { runId });
+    for (const trigger of this.bound(event.triggerId)) this.dispatch(trigger, event, data, "skip");
+  }
+
+  /** One event for one automation. `hold` keeps the event when the waiting-run cap is full. */
+  private dispatch(trigger: StoredTrigger, event: BrokerEvent, data: Record<string, unknown>, whenFull: "skip" | "hold", eventName?: string): "full" | "done" {
+    if (!trigger.enabled) {
+      this.record(trigger, event, "skipped", { reason: "paused" });
+      return "done";
     }
+    if (this.options.botState(trigger.botId) === "missing") {
+      this.record(trigger, event, "rejected", { reason: "its bot was deleted" });
+      return "done";
+    }
+    if (!matchesFilter(trigger.app, trigger.filter, data)) {
+      trigger.filtered += 1;
+      this.record(trigger, event, "filtered", { reason: "did not match the filter" });
+      return "done";
+    }
+    const seen = this.options.runs.receipt(trigger.id, event.id);
+    if (seen) {
+      this.record(trigger, event, "duplicate", { runId: seen.id });
+      return "done";
+    }
+    const block = eventBlock(eventName ? { ...trigger, eventName } : trigger, { id: event.id, receivedAt: event.receivedAt, test: event.kind === "test", data });
+    const joined = this.options.runs.merge(trigger.id, event.id, trigger.sameConversation === true, (prompt) => mergeEventBlock(prompt, block));
+    let runId = joined?.id;
+    if (!runId) {
+      if (this.options.runs.pending(trigger.id) >= DEFAULT_MAX_PENDING_RUNS) {
+        if (whenFull === "hold") return "full";
+        this.countSkipped(trigger, "tooMany");
+        this.record(trigger, event, "skipped", { reason: `it already had ${DEFAULT_MAX_PENDING_RUNS} runs waiting` });
+        return "done";
+      }
+      runId = this.options.runs.enqueue({
+        webhookId: trigger.id, webhookName: trigger.name, prompt: eventPrompt(trigger.prompt, block), botId: trigger.botId,
+        runOn: isEventSourceApp(trigger.app) ? "maus" : trigger.runOn, deliveryId: event.id, receivedAt: event.receivedAt, eventSource: "app",
+        sameConversation: trigger.sameConversation,
+      }).id;
+    }
+    trigger.received += 1;
+    trigger.lastEventAt = event.receivedAt;
+    trigger.lastRunId = runId;
+    if (trigger.problem?.kind === "reconnect" && event.kind === "message") delete trigger.problem;
+    this.record(trigger, event, joined ? "joined" : "started", { runId });
+    return "done";
+  }
+
+  private async createEventSource(input: AppTriggerInput, app: string): Promise<AppTrigger> {
+    const name = input.name.trim().slice(0, NAME_MAX);
+    const prompt = input.prompt.trim();
+    const title = eventSourceTitle(app);
+    if (!name) throw new AppTriggerError("An automation needs a name.");
+    if (prompt.length > PROMPT_MAX) throw new AppTriggerError(`Instructions can be at most ${PROMPT_MAX} characters.`);
+    if (this.options.botState(input.botId) === "missing") throw new AppTriggerError("That bot no longer exists.", 404);
+    if (input.event.trim() !== EVENT_SOURCE_EVENT) throw new AppTriggerError(`${input.event} is not an event OpenMausBot can watch. Call trigger_info action=events to see the events this app offers.`, 404);
+    const account = input.account?.trim();
+    if (account && account.toLowerCase() !== app) throw new AppTriggerError(`No ${title} account is called ${account}. This app has one account: ${app}.`);
+    const filter = cleanFilter(input.filter);
+    const filterError = eventSourceFilterError(filter, title);
+    if (filterError) throw new AppTriggerError(filterError);
+    const normalized = normalizeEventSourceConfig(input.config);
+    if (!normalized.ok) throw new AppTriggerError(normalized.message);
+    const config = normalized.config;
+    const now = this.now();
+    const trigger: StoredTrigger = {
+      id: input.id ?? randomUUID(), name, prompt, botId: input.botId, runOn: "maus", enabled: input.enabled ?? true,
+      app, appName: title, event: EVENT_SOURCE_EVENT, eventName: EVENT_SOURCE_EVENT_NAME, delivery: "instant", accountId: app, config,
+      ...(filter ? { filter } : {}), remote: { state: "active" }, ...(input.sourceThreadId ? { sourceThreadId: input.sourceThreadId } : {}),
+      ...(input.sameConversation ? { sameConversation: true } : {}), received: 0, filtered: 0, createdAt: now, updatedAt: now,
+    };
+    await this.exclusive(async () => {
+      const duplicate = this.triggers.find((candidate) => candidate.enabled && candidate.botId === input.botId && candidate.app === app && candidate.prompt === prompt && JSON.stringify(candidate.config) === JSON.stringify(config));
+      if (duplicate) throw new AppTriggerError(`The same automation already exists (${duplicate.id}). Use trigger_info to review it, then change that one instead.`, 409);
+      this.triggers.unshift(trigger);
+      this.save();
+    });
+    this.emitTrigger(trigger);
+    this.wake();
+    return publicTrigger(trigger);
+  }
+
+  private async updateEventSource(trigger: StoredTrigger, patch: AppTriggerPatch, options: { protectInstructions?: boolean }): Promise<AppTrigger> {
+    const name = patch.name === undefined ? trigger.name : patch.name.trim().slice(0, NAME_MAX);
+    if (!name) throw new AppTriggerError("An automation needs a name.");
+    if (patch.prompt !== undefined && patch.prompt.trim().length > PROMPT_MAX) throw new AppTriggerError(`Instructions can be at most ${PROMPT_MAX} characters.`);
+    const filter = patch.filter === undefined ? trigger.filter : cleanFilter(patch.filter);
+    const filterError = eventSourceFilterError(filter, trigger.appName);
+    if (filterError) throw new AppTriggerError(filterError);
+    let config = trigger.config;
+    if (patch.filter !== undefined || patch.config !== undefined || patch.restoreConfig !== undefined) {
+      const normalized = normalizeEventSourceConfig(patch.restoreConfig ?? patch.config ?? trigger.config);
+      if (!normalized.ok) throw new AppTriggerError(normalized.message);
+      config = normalized.config;
+    }
+    await this.exclusive(async () => {
+      if (options.protectInstructions) {
+        const refusal = instructionsUpdateRefusal(trigger.prompt, patch.prompt);
+        if (refusal) throw new AppTriggerError(refusal, 409);
+      }
+      Object.assign(trigger, { name, prompt: patch.prompt === undefined ? trigger.prompt : patch.prompt.trim(), runOn: "maus" as const, enabled: patch.enabled ?? trigger.enabled, config, updatedAt: this.now() });
+      if (filter) trigger.filter = filter;
+      else delete trigger.filter;
+      if (patch.sameConversation === true) trigger.sameConversation = true;
+      else if (patch.sameConversation === false) delete trigger.sameConversation;
+      if (patch.enabled === false) this.options.runs.cancelQueued(trigger.id, "The automation was paused before this event's run started");
+      this.save();
+    });
+    this.emitTrigger(trigger);
+    this.wake();
+    return publicTrigger(trigger);
+  }
+
+  private runEventSourceNow(trigger: StoredTrigger): { via: "here"; runId: string } {
+    const feed = this.options.sourceFeed?.();
+    const found = feed?.latestEvents(500).find((item) => this.sourceVerdict(trigger, item, feed, false) === "yes");
+    if (!feed || !found) throw new AppTriggerError("No stored event matches this automation yet. It runs on the next matching event.", 409);
+    const eventId = `test_${randomUUID()}`;
+    const data = sourceEventData(found.event, this.statusFor(feed, found));
+    const run = this.options.runs.enqueue({
+      webhookId: trigger.id, webhookName: trigger.name, botId: trigger.botId, runOn: "maus", deliveryId: eventId, receivedAt: this.now(),
+      eventSource: "app", sameConversation: trigger.sameConversation,
+      prompt: eventPrompt(trigger.prompt, eventBlock({ ...trigger, eventName: found.event.type }, { id: eventId, receivedAt: this.now(), test: true, data })),
+    });
+    return { via: "here", runId: run.id };
+  }
+
+  /** A failed pump is logged: the ledger listener and the poll loop both call it. */
+  pumpSource(): void { try { this.movePumpCursor(); } catch (error) { this.log(`event source pump failed: ${error instanceof Error ? error.message : String(error)}`); } }
+
+  /** Moves the shared cursor. The first call, and a cursor past a recreated ledger, stay at the head and start nothing. */
+  private movePumpCursor(): void {
+    const feed = this.options.sourceFeed?.();
+    if (!feed) return;
+    const head = feed.headSeq();
+    const reset = this.sourceCursor !== undefined && this.sourceCursor > head;
+    if (this.sourceCursor === undefined || reset) {
+      this.sourceCursor = head;
+      if (reset) for (const trigger of this.triggers) delete trigger.held;
+      this.save();
+      return;
+    }
+    this.retryHeld(feed);
+    const events = feed.eventsAfter(this.sourceCursor, 100);
+    this.receiveSourceEvents(events);
+    if (events.length) this.sourceCursor = events[events.length - 1]!.seq;
+    this.save();
+  }
+
+  /** Handles one feed batch. The caller moves the shared cursor after this returns. */
+  receiveSourceEvents(items: readonly LedgerEventForBot[]): void {
+    const feed = this.options.sourceFeed?.();
+    if (!feed) return;
+    for (const item of items) this.deliverSource(item, feed);
+    this.save();
+  }
+
+  private retryHeld(feed: EventSourceFeed): void {
+    for (const trigger of this.triggers) {
+      if (!trigger.held?.length) continue;
+      const { keep, dropped } = splitExpired(trigger.held, this.now());
+      for (const entry of dropped) this.dropHeld(trigger, entry);
+      const still: HeldEvent[] = [];
+      for (const entry of keep) {
+        const item = eventBySeq(feed, entry.seq);
+        if (!item || this.deliverOne(trigger, item, feed) === "full") still.push(entry);
+      }
+      if (still.length) trigger.held = still;
+      else delete trigger.held;
+    }
+  }
+
+  private deliverSource(item: LedgerEventForBot, feed: EventSourceFeed): void {
+    for (const trigger of this.triggers) {
+      if (isEventSourceApp(trigger.app) && this.deliverOne(trigger, item, feed) === "full") this.rememberHeld(trigger, item);
+    }
+  }
+
+  private deliverOne(trigger: StoredTrigger, item: LedgerEventForBot, feed: EventSourceFeed): "full" | "done" | "ignore" {
+    if (trigger.app !== item.connector) return "ignore";
+    const data = sourceEventData(item.event, this.statusFor(feed, item));
+    const verdict = this.sourceVerdict(trigger, item, feed, true);
+    if (verdict === "early") return "ignore";
+    const event: BrokerEvent = { seq: item.seq, id: item.event.id, kind: "message", triggerId: null, receivedAt: item.receivedAt, event: { data } };
+    if (verdict === "no") {
+      if (!trigger.enabled) { this.record(trigger, event, "skipped", { reason: "paused" }); return "done"; }
+      if (this.options.botState(trigger.botId) === "missing") { this.record(trigger, event, "rejected", { reason: "its bot was deleted" }); return "done"; }
+      trigger.filtered += 1;
+      this.record(trigger, event, "filtered", { reason: "did not match the filter" });
+      return "done";
+    }
+    return this.dispatch(trigger, event, data, "hold", item.event.type);
+  }
+
+  private sourceVerdict(trigger: StoredTrigger, item: LedgerEventForBot, feed: EventSourceFeed, live: boolean) {
+    const data = sourceEventData(item.event, this.statusFor(feed, item));
+    return matchEventSource({
+      app: trigger.app, config: trigger.config, ...(trigger.filter ? { filter: trigger.filter } : {}), createdAt: trigger.createdAt,
+      connector: item.connector, event: item.event, receivedAt: item.receivedAt, live, data,
+    });
+  }
+
+  private statusFor(feed: EventSourceFeed, item: LedgerEventForBot) {
+    const key = prKeyOfEvent(item.event);
+    return key ? feed.prStatus(key) : null;
+  }
+
+  private rememberHeld(trigger: StoredTrigger, item: LedgerEventForBot): void {
+    const parked = parkHeld(trigger.held ?? [], { seq: item.seq, id: item.event.id, at: this.now() });
+    trigger.held = parked.held;
+    for (const entry of parked.dropped) this.dropHeld(trigger, entry);
+  }
+
+  private dropHeld(trigger: StoredTrigger, entry: HeldEvent): void {
+    this.countSkipped(trigger, "tooMany");
+    this.record(trigger, { seq: entry.seq, id: entry.id, kind: "message", triggerId: null, receivedAt: this.now(), event: {} }, "skipped", { reason: `it already had ${DEFAULT_MAX_PENDING_RUNS} runs waiting for 6 hours` });
   }
 
   private async run(): Promise<void> {
@@ -545,6 +736,7 @@ export class AppTriggerManager {
     while (!this.stopped) {
       const signal = this.abort.signal;
       try {
+        this.pumpSource();
         if (this.options.service().available && this.now() >= this.nextReconcileAt && (this.triggers.length > 0 || this.releasePending)) {
           this.nextReconcileAt = this.now() + (this.pollable() ? RECONCILE_ACTIVE_MS : RECONCILE_IDLE_MS);
           await this.reconcile().catch((error) => {
@@ -620,6 +812,7 @@ export class AppTriggerManager {
   }
 
   private async reconcileOne(trigger: StoredTrigger, bindings: Map<string, BrokerInventory["triggers"][number]>, accounts: ConnectedApps | null): Promise<void> {
+    if (isEventSourceApp(trigger.app)) return;
     // Its bot is gone: paused here, so Composio stops sending what no one would run.
     if (trigger.enabled && this.options.botState(trigger.botId) === "missing") trigger.enabled = false;
     const account = accounts?.[trigger.app]?.accounts.find((candidate) => candidate.id === trigger.accountId);
@@ -797,7 +990,9 @@ export class AppTriggerManager {
     if (this.unreadable) return;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(this.file, JSON.stringify({
-      version: 1, pollerId: this.pollerId, cursor: overrides.cursor ?? this.cursor, triggers: this.triggers, attempts: this.attemptLog, deleted: this.deleted,
+      version: 1, pollerId: this.pollerId, cursor: overrides.cursor ?? this.cursor,
+      ...(this.sourceCursor !== undefined ? { sourceCursor: this.sourceCursor } : {}),
+      triggers: this.triggers, attempts: this.attemptLog, deleted: this.deleted,
     } satisfies z.input<typeof fileSchema>, null, 2), { mode: 0o600 });
   }
 }

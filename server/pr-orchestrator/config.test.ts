@@ -51,7 +51,7 @@ describe("config document", () => {
     expect(config.adapters.runtime).toEqual({ enabled: false, bindOwners: true });
     expect(config.retention).toEqual({ endedPrDays: 180, receivedEventDays: 90 });
     expect(config.messages).toEqual(DEFAULT_MESSAGES);
-    expect(config.routines).toEqual({ useDefaults: true, custom: [], deactivate: [] });
+    expect(config.routines).toEqual({ useDefaults: false, custom: [], deactivate: [] });
     expect(config.overrides).toEqual([]);
   });
 
@@ -107,7 +107,7 @@ describe("config document", () => {
     const many = (n: number) => Array.from({ length: n }, (_, i) => routine(`custom-${i}`));
     expect(parse({ routines: { useDefaults: false, custom: many(50) } }).routines.custom).toHaveLength(50);
     expect(refusal({ routines: { useDefaults: false, custom: many(51) } })).toContain("at most 50 routines");
-    expect(refusal({ routines: { custom: many(50) } })).toContain("at most 50 routines");
+    expect(refusal({ routines: { useDefaults: true, custom: many(50) } })).toContain("at most 50 routines");
   });
 
   it("gives the same version for the same document with keys in another order", () => {
@@ -145,7 +145,7 @@ describe("config document", () => {
 
   it("replaces a default routine by a custom one with the same id and appends new ones", () => {
     const replacement = routine("merge-when-ready", { name: "Mine" });
-    const config = parse({ routines: { custom: [routine("brand-new"), replacement] } });
+    const config = parse({ routines: { useDefaults: true, custom: [routine("brand-new"), replacement] } });
     const resolved = resolveRoutines(config);
     expect(resolved).toHaveLength(DEFAULT_ROUTINES.length + 1);
     const at = DEFAULT_ROUTINES.findIndex(r => r.id === "merge-when-ready");
@@ -157,11 +157,22 @@ describe("config document", () => {
   });
 
   it("keeps a deactivated default routine in the list as inactive", () => {
-    const resolved = resolveRoutines(parse({ routines: { deactivate: ["merge-when-ready"] } }));
+    const resolved = resolveRoutines(parse({ routines: { useDefaults: true, deactivate: ["merge-when-ready"] } }));
     expect(resolved).toHaveLength(DEFAULT_ROUTINES.length);
     expect(resolved.find(r => r.id === "merge-when-ready")).toMatchObject({ active: false, source: "default" });
     expect(resolved.find(r => r.id === "after-merge")?.active).toBe(true);
     expect(DEFAULT_ROUTINES.find(r => r.id === "merge-when-ready")?.active).toBe(true);
+  });
+
+  it("a config with no routines key resolves no active routine", () => {
+    expect(resolveRoutines(parse({})).filter(routine => routine.active)).toEqual([]);
+  });
+
+  it("useDefaults true brings back the built-in routines", () => {
+    const resolved = resolveRoutines(parse({ routines: { useDefaults: true } }));
+    expect(resolved.map(routine => [routine.id, routine.source, routine.active])).toEqual(
+      DEFAULT_ROUTINES.map(routine => [routine.id, "default", routine.active]),
+    );
   });
 
   it("ships the default routines exactly as listed", () => {
