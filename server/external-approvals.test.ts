@@ -45,6 +45,16 @@ describe("external approvals", () => {
     expect(f.approvals.has("k1")).toBe(false);
   });
 
+  it("forgets an open card whose message is gone, so the key can open again", () => {
+    const f = setup();
+    const first = f.approvals.openCard(question())!;
+    f.threads.delete("t1");
+    expect(f.approvals.has("k1")).toBe(false);
+    expect(f.approvals.adopt(question({ threadId: "t2" }), first)).toBe(false);
+    expect(f.approvals.openCard(question({ threadId: "t2" }))).not.toBeNull();
+    expect(f.threads.get("t2")).toHaveLength(1);
+  });
+
   it("adopts a card that an earlier run opened, so a tap reaches the new owner", async () => {
     const f = setup();
     const earlier = f.approvals.openCard(question({ onAnswer: vi.fn() }))!;

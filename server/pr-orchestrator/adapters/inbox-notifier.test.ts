@@ -141,6 +141,35 @@ describe("inbox notifier", () => {
     expect(notifier.adopt("no-colon", { kind: "decision", decisionId: "d9", subject: SUBJECT, answers: ANSWERS })).toBe(false);
   });
 
+  it("keeps the tapped decision choice after a restart even when the configured choices changed", async () => {
+    const w = world();
+    const choices = [{ id: "Yes", label: "Yes" }, { id: "No", label: "No" }, { id: "Wait", label: "Wait" }];
+    const { cardId } = await w.make().card("decision", decision("d1"), choices);
+    const restarted = createExternalApprovals({ store: w.store as never });
+    const today = [{ id: "No", label: "No" }, { id: "Yes", label: "Yes" }];
+    expect(w.make({ approvals: restarted }).adopt(cardId, { kind: "decision", decisionId: "d1", subject: SUBJECT, answers: today })).toBe(true);
+    expect(restarted.answer(w.requestIdOf(cardId), "answer", "Wait")).toBe("answered");
+    await Promise.resolve();
+    expect(w.answered).toEqual([[SUBJECT.key, "d1", "Wait"]]);
+  });
+
+  it("does not adopt a positional card whose number of buttons differs from today's answers", async () => {
+    const w = world();
+    const { cardId } = await w.make().card("approve_action", decision("d2"), APPROVAL);
+    const restarted = createExternalApprovals({ store: w.store as never });
+    expect(w.make({ approvals: restarted }).adopt(cardId, { kind: "approve_action", decisionId: "d2", subject: SUBJECT, answers: APPROVAL.slice(0, 1) })).toBe(false);
+    expect(restarted.has("pr-orchestrator:d2")).toBe(false);
+  });
+
+  it("redacts secrets in card text and notifications", async () => {
+    const w = world();
+    const secret = "ghp_" + "a".repeat(36);
+    await w.make().card("command_failed", { ...decision("d3"), title: `Merge failed ${secret}`, body: `https://x:${secret}@example.com` }, [{ id: "understood", label: "Understood" }]);
+    const [message] = w.threads.get("pr-orchestrator-thread")!;
+    expect(JSON.stringify(message!.card)).not.toContain(secret);
+    expect(JSON.stringify(w.sent)).not.toContain(secret);
+  });
+
   it("puts a notice in the Inbox as one unread line and posts nothing in the card thread", async () => {
     const w = world();
     const notifier = w.make();
