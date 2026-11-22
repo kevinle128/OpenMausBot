@@ -138,7 +138,7 @@ function checkRoutines(config: z.output<ReturnType<typeof baseSchema>>, definiti
     for (const id of routine.when.connectors ?? []) {
       if (!Object.hasOwn(config.connectors, id)) issue(at("when", "connectors"), `${id} is not a configured connector`);
     }
-    const declared = declaredTypes(config, definitions, routine.when.connectors ?? instanceIds);
+    const declared = declaredTypes(config, definitions, routine.when.connectors?.length ? routine.when.connectors : instanceIds);
     routine.when.on.forEach((name, position) => {
       if (name === "*" || (CORE_TRIGGERS as readonly string[]).includes(name) || declared.has(name)) return;
       issue(at("when", "on", position), `${name} is not an event type that the selected connectors declare`);

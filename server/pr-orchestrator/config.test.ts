@@ -183,6 +183,7 @@ describe("connectors in the config document", () => {
     expect(refusal({ routines: { custom: [routine("scoped", { when: { connectors: ["nobody"], on: ["pr.opened"] } })] } })).toContain("nobody is not a configured connector");
     const listening = [routine("a"), routine("b", { when: { on: ["*", "timer.fired", "command.finished"] } }), routine("c", { when: { connectors: ["fake-event"], on: ["pr.ci.finished"] } })];
     expect(parse({ routines: { custom: listening } }).routines.custom).toHaveLength(3);
+    expect(parse({ routines: { custom: [routine("any", { when: { connectors: [], on: ["pr.opened"] } })] } }).routines.custom).toHaveLength(1);
     expect(refusal({ routines: { custom: [routine("a")] } }, [])).toContain("pr.opened is not an event type");
   });
 });
