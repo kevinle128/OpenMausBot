@@ -158,12 +158,6 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   let stopping: Promise<void> | null = null;
   let schema: Record<string, unknown> | null = null;
 
-  const instanceOf = (id: string) => {
-    const instance = loaded().config.connectors[id];
-    const definition = instance ? registry.get(instance.use) : undefined;
-    return instance && definition ? { instance, definition } : null;
-  };
-
   function onWorkflowDone(done: { runRef: string; outcome: "completed" | "failed" | "cancelled" }): void {
     const command = store.commandByRunRef(done.runRef);
     if (!command || command.payload.type !== "RunWorkflow") {
