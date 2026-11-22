@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  allowedServerOrigin as cliAllowedOrigin, checkEnvVar, configDir, createScrubber, EXIT, findAgent, main, parseArgs, pinProgram, readPairingCode,
+  allowedServerOrigin as cliAllowedOrigin, checkEnvVar, configDir, createScrubber, EXIT, findAgent, HARNESSES, main, parseArgs, pinProgram, readPairingCode,
   readPairingTarget, sha256File, valueForms, type Deps,
 } from "../../bin/omb.mjs";
 import { allowedServerOrigin } from "../../electron/server-address.mjs";
@@ -158,6 +158,69 @@ describe.skipIf(!posix)("identity walk", () => {
     }
     expect(await findAgent({ platform: "darwin", startPid: 999, ps })).toBeNull();
     expect(await findAgent({ platform: "win32", startPid: 7, ps })).toBeNull();
+  });
+
+  it("names every harness that has a skill folder by its binary, each with its own label", async () => {
+    const named = HARNESSES.filter((harness) => harness.base !== null);
+    const labels = new Set<string>();
+    for (const harness of named) {
+      expect(harness.recognised).toBe(true);
+      const binary = join(home, `${harness.id}-bin`, harness.agent!.name === "cursor" ? "cursor-agent.js" : harness.agent!.name === "kiro" ? "kiro-cli" : harness.agent!.name === "antigravity" ? "agy" : harness.agent!.name);
+      mkdirSync(join(home, `${harness.id}-bin`), { recursive: true });
+      writeFileSync(binary, harness.id);
+      const comm = harness.agent!.name === "cursor" ? "/usr/local/bin/node" : binary;
+      const found = await findAgent({ platform: "darwin", startPid: 7, ps: fakePs({ 7: { ppid: 6, comm: "/bin/zsh" }, 6: { ppid: 1, comm, args: `node ${binary}` } }) });
+      expect(found, harness.id).toMatchObject({ name: harness.agent!.name, fingerprint: await sha256File(binary) });
+      labels.add(found!.name);
+    }
+    expect(labels.size).toBe(named.length);
+    const deepseek = HARNESSES.find((harness) => harness.id === "deepseekAgent")!;
+    expect(deepseek.recognised).toBe(false);
+    expect(deepseek.agent).toBeUndefined();
+  });
+
+  it("hashes the script the Cursor launcher's Node hosts, never the launcher or the bundled Node", async () => {
+    const versions = join(home, ".local", "share", "cursor-agent", "versions", "2026.11.22-e9042b2");
+    mkdirSync(versions, { recursive: true });
+    const script = join(versions, "index.js");
+    writeFileSync(script, "cursor");
+    writeFileSync(join(versions, "node"), "bundled node");
+    const launcher = join(home, ".local", "bin", "cursor-agent");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(launcher, "#!/usr/bin/env bash");
+    for (const comm of [launcher, join(home, ".local", "bin", "agent")]) {
+      const ps = fakePs({ 9: { ppid: 8, comm: "/bin/zsh" }, 8: { ppid: 1, comm, args: `${comm} --disable-sigusr1 --use-system-ca ${script} acp` } });
+      expect(await findAgent({ platform: "darwin", startPid: 9, ps })).toMatchObject({ name: "cursor", fingerprint: await sha256File(script), path: realpathSync(script) });
+    }
+    const linux = fakePs({ 8: { ppid: 1, comm: join(versions, "node"), args: `cursor-agent --use-system-ca ${script} acp` } });
+    expect(await findAgent({ platform: "darwin", startPid: 8, ps: linux })).toMatchObject({ name: "cursor", fingerprint: await sha256File(script) });
+    const bare = fakePs({ 8: { ppid: 1, comm: launcher, args: `${launcher} --use-system-ca` } });
+    expect(await findAgent({ platform: "darwin", startPid: 8, ps: bare })).toBeNull();
+    const other = join(home, "agent.js");
+    writeFileSync(other, "x");
+    expect(await findAgent({ platform: "darwin", startPid: 8, ps: fakePs({ 8: { ppid: 1, comm: "/opt/bin/agent", args: `agent ${other}` } }) })).toBeNull();
+  });
+
+  it("names a Python-hosted agent by its script and keeps pi and omp apart", async () => {
+    const hermes = join(home, "venv", "bin", "hermes");
+    mkdirSync(join(home, "venv", "bin"), { recursive: true });
+    writeFileSync(hermes, "from hermes_cli.main import main");
+    for (const python of [join(home, "venv", "bin", "python3.12"), "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"]) {
+      const found = await findAgent({ platform: "darwin", startPid: 7, ps: fakePs({ 7: { ppid: 1, comm: python, args: `${python} ${hermes} acp` } }) });
+      expect(found).toMatchObject({ name: "hermes", fingerprint: await sha256File(hermes) });
+    }
+    const plain = join(home, "tool.py");
+    writeFileSync(plain, "print(1)");
+    for (const args of [`python3 ${plain} hermes`, "python3 -m hermes_cli.main"]) {
+      expect(await findAgent({ platform: "darwin", startPid: 7, ps: fakePs({ 7: { ppid: 1, comm: "/usr/bin/python3", args } }) })).toBeNull();
+    }
+    for (const [scope, name] of [["@oh-my-pi", "omp"], ["@earendil-works", "pi"]] as const) {
+      const dir = join(home, "node_modules", scope, "pi-coding-agent", "dist");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "cli.js"), scope);
+      const hosted = await findAgent({ platform: "darwin", startPid: 7, ps: fakePs({ 7: { ppid: 1, comm: "/usr/local/bin/bun", args: `bun ${join(dir, "cli.js")}` } }) });
+      expect(hosted?.name).toBe(name);
+    }
   });
 
   it("stops on a loop in the table", async () => {

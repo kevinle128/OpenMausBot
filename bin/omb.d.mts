@@ -35,6 +35,8 @@ export interface Harness {
   env?: string;
   sub?: string;
   reason?: string;
+  /** How the parent-process walk names this harness: `bin` tests the file name, `path` the file path or a hosted script path. Absent for a harness omb cannot name. */
+  agent?: { name: string; bin: RegExp; path?: RegExp };
 }
 export declare const HARNESSES: readonly Harness[];
 export declare const SKILL_TEXT: string;

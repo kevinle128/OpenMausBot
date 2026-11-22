@@ -59,8 +59,8 @@ describe("skill list", () => {
     expect(rows.map((row) => row.harness)).toEqual(HARNESSES.map((harness) => harness.id));
     expect(rowFor(rows, "claudeAgent")).toEqual({ harness: "claudeAgent", label: "Claude", folder: join(home, ".claude", "skills"), status: "missing", recognised: true });
     expect(rowFor(rows, "codex")).toMatchObject({ folder: join(home, ".agents", "skills"), recognised: true });
-    expect(rows.filter((row) => row.recognised).map((row) => row.harness)).toEqual(["claudeAgent", "codex", "opencodeGo", "piAgent"]);
-    expect(rowFor(rows, "geminiAgent")).toMatchObject({ recognised: false, note: expect.stringContaining("omb cannot tell this agent apart yet") });
+    expect(rows.filter((row) => !row.recognised).map((row) => row.harness)).toEqual(["deepseekAgent"]);
+    expect(rows.filter((row) => row.folder !== null).every((row) => row.recognised && row.note === undefined)).toBe(true);
     expect(rowFor(rows, "deepseekAgent")).toMatchObject({ folder: null, status: "unsupported", recognised: false, note: expect.stringContaining("no literal skill folder") });
     expect(rows.every((row) => row.status === "missing" || row.status === "unsupported")).toBe(true);
   });
@@ -110,7 +110,7 @@ describe("skill install", () => {
       expect(["installed", "unchanged"]).toContain(row.status);
       expect(readFileSync(skillAt(row.folder!), "utf8")).toBe(SKILL_TEXT);
     }
-    expect(rowFor(rows, "geminiAgent").note).toContain("omb cannot tell this agent apart yet; its omb secrets calls exit 6 until that is added");
+    expect(rowFor(rows, "geminiAgent").note).toBeUndefined();
     expect(rowFor(rows, "codex").note).toBeUndefined();
   });
 
