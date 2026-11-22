@@ -1,7 +1,7 @@
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import formats from "ajv-formats";
-import { DOMAIN_SUBJECT, OMB_EVENT_SCHEMA, payloadSchemaOf, type OmbEventV1 } from "./omb-event.v1.ts";
+import { DOMAIN_SUBJECT, CONTRACT_EVENT_SCHEMA, payloadSchemaOf, type OmbEventV1 } from "./omb-event.v1.ts";
 
 export type ConformanceResult = { ok: true; event: OmbEventV1 } | { ok: false; id: string | null; reason: string };
 
@@ -11,7 +11,7 @@ export interface ConnectorDeclaration {
   subjectRule?: Record<string, string>;
 }
 
-const SCHEMA_ID = String(OMB_EVENT_SCHEMA.$id);
+const SCHEMA_ID = String(CONTRACT_EVENT_SCHEMA.$id);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,7 +43,7 @@ export function createOmbEventValidator(): {
     useDefaults: false, removeAdditional: false, validateFormats: true, ownProperties: true,
   });
   formats.default(ajv);
-  const envelope = ajv.compile(OMB_EVENT_SCHEMA);
+  const envelope = ajv.compile(CONTRACT_EVENT_SCHEMA);
   const payloadValidators = new Map<string, ValidateFunction>();
 
   /** Caches known types only: an unknown type string from a sender must not grow the map. */

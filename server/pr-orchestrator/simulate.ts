@@ -242,20 +242,22 @@ export function describeRoutineWith(routine: Routine, registry: ConnectorRegistr
 
 /** The first evaluation of one stored input is what the routine would have decided on it; the ledger of the replay says what each action did. */
 export async function testRoutine(input: {
-  config: OrchestratorConfig; inputs: SimInput[]; routine: Routine; inputIndex: number; registry?: ConnectorRegistry; validator?: Validator;
+  config: OrchestratorConfig; inputs: SimInput[]; routine: object; inputIndex: number; registry?: ConnectorRegistry; validator?: Validator;
 }): Promise<RoutineTestResult> {
   const registry = input.registry ?? defaultRegistry();
-  const draft: Routine = { ...input.routine, active: true };
-  const custom = [...input.config.routines.custom];
-  const at = custom.findIndex(routine => routine.id === draft.id);
+  const draftId = (input.routine as { id?: unknown }).id;
+  const draft = { ...input.routine, active: true };
+  const custom: object[] = [...input.config.routines.custom];
+  const at = custom.findIndex(routine => (routine as Routine).id === draftId);
   if (at >= 0) custom[at] = draft;
   else custom.push(draft);
-  const config: OrchestratorConfig = {
+  const checked = createConfigSchema(registry.list() as ConnectorDefinition[]).safeParse({
     ...input.config,
-    routines: { ...input.config.routines, custom, deactivate: input.config.routines.deactivate.filter(id => id !== draft.id) },
-  };
-  const checked = createConfigSchema(registry.list() as ConnectorDefinition[]).safeParse(config);
+    routines: { ...input.config.routines, custom, deactivate: input.config.routines.deactivate.filter(id => id !== draftId) },
+  });
   if (!checked.success) throw new InvalidRoutineError(schemaIssue(checked.error, "the routine is not valid"));
+  const config = checked.data;
+  const validDraft = config.routines.custom.find(routine => routine.id === draftId) as Routine;
 
   let first: EvaluationInfo | null = null;
   const result = replayRecorded({
@@ -264,8 +266,8 @@ export async function testRoutine(input: {
   });
   const evaluation = first as EvaluationInfo | null;
   const lines = result.ledger.flatMap(row =>
-    row.entry.type === "routine.matched" && row.entry.routineId === draft.id && row.entry.triggerSeq === evaluation?.triggerSeq ? row.entry.actions : []);
-  const actions = (evaluation?.intents ?? []).filter(intent => intent.routineId === draft.id).map(intent => {
+    row.entry.type === "routine.matched" && row.entry.routineId === validDraft.id && row.entry.triggerSeq === evaluation?.triggerSeq ? row.entry.actions : []);
+  const actions = (evaluation?.intents ?? []).filter(intent => intent.routineId === validDraft.id).map(intent => {
     const label = actionLabel(intent.action);
     const line = lines.find(candidate => (intent.idemKey === null ? candidate.action === label : candidate.idemKey === intent.idemKey));
     const command = line?.commandId ? result.commands.find(candidate => candidate.id === line.commandId) : undefined;
@@ -276,8 +278,8 @@ export async function testRoutine(input: {
     };
   });
   return {
-    matched: evaluation?.matched.includes(draft.id) ?? false, facts: evaluation?.facts ?? null, actions,
-    describe: describeRoutineWith(draft, registry, config),
+    matched: evaluation?.matched.includes(validDraft.id) ?? false, facts: evaluation?.facts ?? null, actions,
+    describe: describeRoutineWith(validDraft, registry, config),
   };
 }
 

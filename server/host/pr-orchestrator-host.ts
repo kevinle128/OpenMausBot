@@ -23,6 +23,7 @@ export interface PrOrchestratorHost {
   door: IngressDoor;
   routes: RouteHandler;
   start(): void;
+  /** Closes pr-orchestrator.db and its WAL. Safe to call twice: the shutdown starts it and a later step awaits it, so the exit (and the data-dir lease) waits for the close. A backup flush calls it too so the copy holds a settled file; resume opens it again. */
   stop(): Promise<void>;
 }
 

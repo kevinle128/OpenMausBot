@@ -1,7 +1,7 @@
 // Read-only admin view of the PR orchestrator. The one POST is a dry run of a routine and changes nothing.
 import { InvalidRoutineError } from "../pr-orchestrator/simulate.ts";
 import type { OrchestratorCore } from "../pr-orchestrator/core.ts";
-import { PR_STATES, type PrState, type Routine } from "../pr-orchestrator/types.ts";
+import { PR_STATES, type PrState } from "../pr-orchestrator/types.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface PrOrchestratorRouteDeps {
@@ -71,7 +71,7 @@ export function createPrOrchestratorRoutes(deps: PrOrchestratorRouteDeps): Route
     if (!core.pr(prKey)) return json(res, 404, { error: "No such PR" });
     try {
       const result = await core.testRoutine({
-        ...(routine !== undefined ? { routine: routine as Routine } : {}),
+        ...(routine !== undefined ? { routine } : {}),
         ...(typeof routineId === "string" ? { routineId } : {}),
         prKey, inputSeq,
       });
