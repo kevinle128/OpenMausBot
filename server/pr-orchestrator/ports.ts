@@ -100,7 +100,7 @@ export interface ConnectorDefinition<S = unknown> {
   title: string;
   description: string;
   icon: { glyph: string } | { image: string };
-  /** The contract event types this connector emits; each must exist in OMB_EVENT_TYPES. */
+  /** The contract event types this connector emits; each must exist in CONTRACT_EVENT_TYPES. */
   emits: string[];
   /** Extra subject checks as data, for example { forge: "github" }: every event's subject must have these values. */
   subjectRule?: Record<string, string>;

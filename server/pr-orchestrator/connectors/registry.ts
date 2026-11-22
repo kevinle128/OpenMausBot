@@ -1,5 +1,5 @@
 import type { ConnectorDefinition } from "../ports.ts";
-import { OMB_EVENT_TYPES, payloadSchemaOf } from "../contract/omb-event.v1.ts";
+import { CONTRACT_EVENT_TYPES, payloadSchemaOf } from "../contract/omb-event.v1.ts";
 
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -23,7 +23,7 @@ export interface ConnectorRegistry {
   eventTypes(definitionId?: string): ConnectorEventType[];
 }
 
-const SHIPPED_CONTRACT: ContractView = { types: OMB_EVENT_TYPES, payloadSchemaOf };
+const SHIPPED_CONTRACT: ContractView = { types: CONTRACT_EVENT_TYPES, payloadSchemaOf };
 
 export function createConnectorRegistry(definitions: readonly ConnectorDefinition[], contract: ContractView = SHIPPED_CONTRACT): ConnectorRegistry {
   const byId = new Map<string, ConnectorDefinition>();

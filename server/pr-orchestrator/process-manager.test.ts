@@ -135,9 +135,9 @@ describe("subjects that are not PRs", () => {
   });
 });
 
-describe("ask first", () => {
-  const withAskFirst = (): Harness => start({ enabled: true, routines: { custom: [MERGE_ASK_FIRST] } });
+const withAskFirst = (): Harness => start({ enabled: true, routines: { custom: [MERGE_ASK_FIRST] } });
 
+describe("ask first", () => {
   it("holds an ask-first merge until the person approves, and enters merging only then", () => {
     withAskFirst();
     bringToReady();

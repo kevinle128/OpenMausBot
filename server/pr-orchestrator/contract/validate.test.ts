@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { PR_EVENT_TRIGGERS } from "../types.ts";
 import { invalidFixtures, validFixtures } from "./conformance/index.ts";
-import { OMB_EVENT_SCHEMA, OMB_EVENT_TYPES, TYPE_PATTERN, payloadSchemaOf } from "./omb-event.v1.ts";
+import { CONTRACT_EVENT_SCHEMA, CONTRACT_EVENT_TYPES, TYPE_PATTERN, payloadSchemaOf } from "./omb-event.v1.ts";
 import { checkBatch, createOmbEventValidator } from "./validate.ts";
 
 const validator = createOmbEventValidator();
-const github = { id: "github-event", emits: Object.keys(OMB_EVENT_TYPES), subjectRule: { forge: "github" } };
+const github = { id: "github-event", emits: Object.keys(CONTRACT_EVENT_TYPES), subjectRule: { forge: "github" } };
 
 function fixture(type: string): Record<string, any> {
   const found = validFixtures().find(item => item.type === type);
@@ -71,8 +71,8 @@ describe("OMB event validator", () => {
   });
 
   it("lists the same types in the schema, the TypeScript table and the trigger list", () => {
-    const schemaTypes = Object.keys((OMB_EVENT_SCHEMA.$defs as { payloads: object }).payloads).sort();
-    expect(schemaTypes).toEqual(Object.keys(OMB_EVENT_TYPES).sort());
+    const schemaTypes = Object.keys((CONTRACT_EVENT_SCHEMA.$defs as { payloads: object }).payloads).sort();
+    expect(schemaTypes).toEqual(Object.keys(CONTRACT_EVENT_TYPES).sort());
     expect([...PR_EVENT_TRIGGERS].sort()).toEqual(schemaTypes);
     for (const type of schemaTypes) {
       expect(TYPE_PATTERN.test(type)).toBe(true);

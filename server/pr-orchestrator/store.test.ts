@@ -269,7 +269,9 @@ describe.each([["memory", () => open()], ["file", () => open(tempFile())]])("orc
     store.append(ledgerRow("subject:hook:issue:3", old));
     store.append(ledgerRow("subject:hook:issue:3", now));
     store.append(ledgerRow("subject:hook:issue:4", old));
-    store.insertCommand(command("c3", { subjectKey: "subject:hook:issue:1", status: "done" }));
+    // A command enters the store pending; only finishCommand makes it done.
+    store.insertCommand(command("c3", { subjectKey: "subject:hook:issue:1" }));
+    store.finishCommand("c3", { outcome: "skipped", reason: "test" }, old);
     store.insertCommand(command("c4", { subjectKey: "subject:hook:issue:4" }));
     store.insertCommand(command("c1", { subjectKey: "github:acme/app#1" }));
     store.insertCommand(command("c2", { subjectKey: "github:acme/app#3" }));
