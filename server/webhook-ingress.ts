@@ -95,6 +95,14 @@ function eventName(req: IncomingMessage): string | undefined {
 /** Another public door on this receiver (a bot's API): true when it answered the request. */
 export type IngressDoor = (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
 
+/** Doors tried in order; the first that answers wins. */
+export function chainDoors(...doors: IngressDoor[]): IngressDoor {
+  return async (req, res, url) => {
+    for (const door of doors) if (await door(req, res, url)) return true;
+    return false;
+  };
+}
+
 export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void, door?: IngressDoor) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     let url: URL;
