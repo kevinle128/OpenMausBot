@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ConnectorDefinition } from "../../ports.ts";
 import type { ContractView } from "../../connectors/registry.ts";
-import { OMB_EVENT_TYPES } from "../omb-event.v1.ts";
+import { CONTRACT_EVENT_TYPES } from "../omb-event.v1.ts";
 import { createOmbEventValidator, type ConformanceResult, type ConnectorDeclaration } from "../validate.ts";
 
 const FIXTURES = new URL("./fixtures/", import.meta.url);
@@ -67,7 +67,7 @@ export function describeConnectorConformance(
   const declaration: ConnectorDeclaration = { id: definition.id, emits: definition.emits, subjectRule: definition.subjectRule };
   describe(`connector ${definition.id} conforms to the MausBot event contract`, () => {
     it("emits only types that the contract defines", () => {
-      const types = opts.contract?.contract.types ?? OMB_EVENT_TYPES;
+      const types = opts.contract?.contract.types ?? CONTRACT_EVENT_TYPES;
       expect(definition.emits.filter(type => !Object.hasOwn(types, type))).toEqual([]);
     });
 

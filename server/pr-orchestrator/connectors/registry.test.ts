@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OMB_EVENT_TYPES, payloadSchemaOf } from "../contract/omb-event.v1.ts";
+import { CONTRACT_EVENT_TYPES, payloadSchemaOf } from "../contract/omb-event.v1.ts";
 import type { ConnectorDefinition } from "../ports.ts";
 import { TEST_TYPE, createTestFeed, testHook, withTestTypes } from "../testing/fake-connectors.ts";
 import { BUILT_IN_CONNECTORS } from "./index.ts";
@@ -39,10 +39,10 @@ describe("connector registry", () => {
   it("lists the GitHub Event types with the contract's payload schemas", () => {
     const registry = createConnectorRegistry(BUILT_IN_CONNECTORS as unknown as ConnectorDefinition[]);
     const types = registry.eventTypes("github-event");
-    expect(types.map(entry => entry.type)).toEqual(Object.keys(OMB_EVENT_TYPES));
+    expect(types.map(entry => entry.type)).toEqual(Object.keys(CONTRACT_EVENT_TYPES));
     for (const entry of types) {
       expect(entry.payloadSchema).toEqual(payloadSchemaOf(entry.type));
-      expect(entry.title).toBe(OMB_EVENT_TYPES[entry.type as keyof typeof OMB_EVENT_TYPES].title);
+      expect(entry.title).toBe(CONTRACT_EVENT_TYPES[entry.type as keyof typeof CONTRACT_EVENT_TYPES].title);
       expect(entry.subjectKind).toBe("pr");
     }
     expect(registry.eventTypes()).toHaveLength(16);

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { OMB_EVENT_TYPES } from "../omb-event.v1.ts";
+import { CONTRACT_EVENT_TYPES } from "../omb-event.v1.ts";
 import { checkConformance, describeConnectorConformance, invalidFixtures, validFixtures, type DeliverResult } from "./index.ts";
 
 describe("conformance fixtures", () => {
   it("gives every contract type a valid fixture", () => {
-    expect(validFixtures().map(item => item.type).sort()).toEqual(Object.keys(OMB_EVENT_TYPES).sort());
+    expect(validFixtures().map(item => item.type).sort()).toEqual(Object.keys(CONTRACT_EVENT_TYPES).sort());
   });
 
   it("labels every invalid fixture with a reason that the validator gives", () => {
@@ -45,7 +45,7 @@ describe("connector conformance with an injected contract", () => {
         return checkConformance(value, declaration);
       },
     },
-    contract: { types: { ...OMB_EVENT_TYPES, "chat.message.posted": { subjectKind: "thread", title: "Posted", description: "A message." } } },
+    contract: { types: { ...CONTRACT_EVENT_TYPES, "chat.message.posted": { subjectKind: "thread", title: "Posted", description: "A message." } } },
   };
   const chat = { id: "fake-chat", emits: ["chat.message.posted"] };
   const sample = { v: 1, id: "m1", source: { connector: "fake-chat" }, type: "chat.message.posted", occurredAt: "2026-11-22T03:00:00Z", subject: { kind: "thread", id: "t" }, data: {} };

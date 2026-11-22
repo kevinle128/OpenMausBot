@@ -100,7 +100,7 @@ export interface OrchestratorCore {
   /** The last ROUTINE_HISTORY_SHOWN runs of one routine, each action with its command's current status and outcome. */
   routineRuns(routineId: string): RoutineRun[];
   /** Dry run of one routine on one stored input of a PR; touches no table of the live store. Throws InvalidRoutineError for a draft that the config schema refuses. */
-  testRoutine(req: { routine?: Routine; routineId?: string; prKey: PrKey; inputSeq: number }): Promise<RoutineTestResult>;
+  testRoutine(req: { routine?: object; routineId?: string; prKey: PrKey; inputSeq: number }): Promise<RoutineTestResult>;
   verifyProjection(): PrKey[];
   reprocess(status: "failed"): number;
 }

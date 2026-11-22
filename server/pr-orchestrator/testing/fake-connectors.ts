@@ -3,7 +3,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import type { ConnectorDefinition } from "../ports.ts";
 import type { ContractView } from "../connectors/registry.ts";
-import { OMB_EVENT_TYPES, payloadSchemaOf, type OmbEventV1 } from "../contract/omb-event.v1.ts";
+import { CONTRACT_EVENT_TYPES, payloadSchemaOf, type OmbEventV1 } from "../contract/omb-event.v1.ts";
 import { createOmbEventValidator, type ConformanceResult, type ConnectorDeclaration } from "../contract/validate.ts";
 import { parseJson } from "../../schema.ts";
 
@@ -37,7 +37,7 @@ export function withTestTypes(): {
   return {
     validator: { check: value => run(value), checkFor: (value, declaration) => run(value, declaration) },
     contract: {
-      types: { ...OMB_EVENT_TYPES, [TEST_TYPE]: { subjectKind: "thread", title: "Message posted", description: "A message was posted in a thread." } },
+      types: { ...CONTRACT_EVENT_TYPES, [TEST_TYPE]: { subjectKind: "thread", title: "Message posted", description: "A message was posted in a thread." } },
       payloadSchemaOf: type => (type === TEST_TYPE ? { ...TEST_PAYLOAD } : payloadSchemaOf(type)),
     },
   };

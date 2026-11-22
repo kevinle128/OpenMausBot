@@ -92,7 +92,7 @@ export interface PrPayloadByType {
 }
 
 /** The event types of version 1. A new type is one entry here and one schema under `$defs.payloads`. */
-export const OMB_EVENT_TYPES = {
+export const CONTRACT_EVENT_TYPES = {
   "pr.opened": { domain: "pr", subjectKind: "pr", title: "PR opened", description: "A pull request or merge request was opened or opened again." },
   "pr.pushed": { domain: "pr", subjectKind: "pr", title: "PR pushed", description: "New commits were pushed to the head branch of a pull request." },
   "pr.ci.finished": { domain: "pr", subjectKind: "pr", title: "CI finished", description: "A check, workflow, suite, job or pipeline of a pull request ended." },
@@ -102,14 +102,14 @@ export const OMB_EVENT_TYPES = {
   "pr.merged": { domain: "pr", subjectKind: "pr", title: "PR merged", description: "A pull request was merged." },
   "pr.closed": { domain: "pr", subjectKind: "pr", title: "PR closed", description: "A pull request was closed without a merge." },
 } as const;
-export type OmbEventType = keyof typeof OMB_EVENT_TYPES;
+export type OmbEventType = keyof typeof CONTRACT_EVENT_TYPES;
 
 export const TYPE_PATTERN = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$/;
 
 /** The subject kind that each domain needs. A new domain adds its subject kind here. */
 export const DOMAIN_SUBJECT: Record<string, string> = { pr: "pr" };
 
-export const OMB_EVENT_SCHEMA: Record<string, unknown> = schema;
+export const CONTRACT_EVENT_SCHEMA: Record<string, unknown> = schema;
 
 export function payloadSchemaOf(type: string): Record<string, unknown> | null {
   const payloads = schema.$defs.payloads as Record<string, Record<string, unknown>>;

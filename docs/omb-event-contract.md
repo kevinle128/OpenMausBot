@@ -12,7 +12,7 @@ The files are in `server/pr-orchestrator/contract/`:
 
 - `omb-event.v1.json`: the JSON Schema (2020-12), the envelope plus one payload
   schema per event type under `$defs.payloads`.
-- `omb-event.v1.ts`: the TypeScript types, `OMB_EVENT_TYPES` and
+- `omb-event.v1.ts`: the TypeScript types, `CONTRACT_EVENT_TYPES` and
   `payloadSchemaOf`.
 - `validate.ts`: `createOmbEventValidator()`, `checkBatch()`.
 - `conformance/`: the conformance kit (fixtures, `checkConformance`,
@@ -33,7 +33,7 @@ The files are in `server/pr-orchestrator/contract/`:
 
 The envelope schema does not branch on `type`. The validator picks the payload
 schema by `type`, so a new type is one entry under `$defs.payloads` and one row
-in `OMB_EVENT_TYPES`.
+in `CONTRACT_EVENT_TYPES`.
 
 ### Subjects
 
@@ -116,7 +116,8 @@ pr-event v1 items is mechanical:
 | `kind`: `opened`, `pushed`, `ci.finished`, `review.finished`, `comment`, `conflict`, `merged`, `closed` | `type`: `pr.opened`, `pr.pushed`, `pr.ci.finished`, `pr.review.finished`, `pr.comment.created`, `pr.conflict.detected`, `pr.merged`, `pr.closed` |
 | `headSha`, `baseRef`, `branch`, `author` | `data.headSha`, `data.baseRef`, `data.branch`, `data.author` |
 | `occurredAt` | `occurredAt` |
-| `data.url` (every kind) | `data.url`; also `correlation.prUrl` |
+| `data.url` for `opened`, `pushed`, `conflict`, `merged`, `closed` | `data.url` (the web address of the pull request, or `null`); also `correlation.prUrl` |
+| The URL of `ci.finished`, `review.finished`, `comment` | `data.check.url`, `data.review.commentUrl`, `data.comment.url`. For these kinds, `data.url` is the web address of the pull request when it is known, else `null`. Do not put the check, review or comment URL in `data.url`. |
 | `headSha` (when not null) | also `correlation.headSha` |
 | `opened.title`, `.draft`, `.reopened` | `data.title`, `data.draft`, `data.reopened` |
 | `pushed.before`, `.after` | `data.before`, `data.after` |

@@ -179,7 +179,7 @@ Answers:
 
 | Status | Meaning |
 |---|---|
-| `200` | `{ "acked": [ids], "rejected": [{ "id", "reason" }] }`. A repeat of a batch gives the same answer and adds no row. |
+| `200` | `{ "acked": [ids], "rejected": [ids] }`. A rejected item that has no `id` is not listed; its reason shows in the connector status. A repeat of a batch gives the same answer and adds no row. |
 | `401` | Bad signature or a timestamp outside the tolerance. Nothing is stored. |
 | `404` | The core is off, or this connector is not enabled. |
 | `405` | The method is not POST. |
