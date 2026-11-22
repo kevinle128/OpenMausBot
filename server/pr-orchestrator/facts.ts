@@ -63,7 +63,12 @@ function triggerFacts(entry: LedgerEntry, record: PrRecord, facts: FactMap): voi
     const headSha = (event.data as Partial<PrCommon>).headSha ?? null;
     facts["trigger.isHead"] = headBound ? headSha !== null && headSha === record.headSha : true;
     if (event.type === "pr.ci.finished") facts["trigger.ci.status"] = payloadOf(event, "pr.ci.finished").check.status;
-    if (event.type === "pr.review.finished") facts["trigger.review.status"] = payloadOf(event, "pr.review.finished").review.status;
+    if (event.type === "pr.review.finished") {
+      const review = payloadOf(event, "pr.review.finished").review;
+      facts["trigger.review.status"] = review.status;
+      // A late review of an older commit is not about the head, even when it arrives while that head is current.
+      if (review.reviewedSha !== record.headSha) facts["trigger.isHead"] = false;
+    }
     return;
   }
   facts["trigger.isHead"] = true;

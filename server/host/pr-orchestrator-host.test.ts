@@ -59,6 +59,16 @@ async function post(base: string, key: string, events: unknown[] = [validFixture
   return { status: answer.status, body: await answer.json().catch(() => null) as { acked?: string[] } | null };
 }
 
+/** Runs the status route; its handler reads the core before its first await, so the answer is set synchronously. */
+function statusNow(host: PrOrchestratorHost): unknown {
+  let body: unknown;
+  void host.routes({
+    path: "/api/pr-orchestrator/status", method: "GET", auth: { scopes: ["admin"] },
+    json: (_res: unknown, _status: number, value: unknown) => { body = value; },
+  } as unknown as Parameters<PrOrchestratorHost["routes"]>[0]);
+  return body;
+}
+
 describe("PR orchestrator host", () => {
   it("opens no database until a config file exists", async () => {
     const { host, base } = await serve();
@@ -90,13 +100,13 @@ describe("PR orchestrator host", () => {
     expect(existsSync(dbPath())).toBe(true);
   });
 
-  it("reports the door off and reopens nothing while stopped", async () => {
+  it("answers 503 and reopens nothing while stopped", async () => {
     const { host, base } = await serve();
     host.start();
     await host.stop();
     writeConfig();
     vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
-    expect((await post(base, HUB_KEY)).status).toBe(404);
+    expect((await post(base, HUB_KEY)).status).toBe(503);
     expect(existsSync(dbPath())).toBe(false);
   });
 
@@ -108,7 +118,7 @@ describe("PR orchestrator host", () => {
     const first = await post(base, HUB_KEY);
     expect(first.status).toBe(200);
     await host.stop();
-    expect((await post(base, HUB_KEY)).status).toBe(404);
+    expect((await post(base, HUB_KEY)).status).toBe(503);
     host.start();
     const again = await post(base, HUB_KEY);
     expect(again.status).toBe(200);
@@ -134,8 +144,11 @@ describe("PR orchestrator host", () => {
     expect((await post(base, HUB_KEY)).status).toBe(200);
     const stopped = host.stop();
     host.start();
+    // Still in the same tick: the stopping core has not closed, so no next core may exist yet.
+    expect(statusNow(host)).toEqual({ enabled: false, configured: false });
     await stopped;
     expect((await post(base, HUB_KEY)).status).toBe(200);
+    expect(statusNow(host)).toMatchObject({ configured: true });
   });
 
   it("stops at once when no core was ever opened", async () => {

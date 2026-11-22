@@ -121,6 +121,19 @@ export interface CoreOptions {
 
 const withoutSource = ({ source: _source, ...routine }: Routine & { source: string }): Routine => routine;
 
+const secretNameOf = (instance: { secretName?: string }, definition: ConnectorDefinition): string | null =>
+  instance.secretName ?? (definition.secret.defaultName || null);
+
+/** An enabled inbound-http instance of a config, or null. */
+export function inboundInstanceIn(
+  config: OrchestratorConfig, registry: ConnectorRegistry, id: string,
+): { definition: ConnectorDefinition; settings: unknown; secretName: string | null } | null {
+  const instance = config.connectors[id];
+  const definition = instance ? registry.get(instance.use) : undefined;
+  if (!instance || !definition || !instance.enabled || definition.delivery !== "inbound-http") return null;
+  return { definition, settings: instance.settings, secretName: secretNameOf(instance, definition) };
+}
+
 export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   const definitions = (deps.connectors ?? BUILT_IN_CONNECTORS) as readonly ConnectorDefinition[];
   const registry = createConnectorRegistry(definitions);
@@ -150,8 +163,6 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     const definition = instance ? registry.get(instance.use) : undefined;
     return instance && definition ? { instance, definition } : null;
   };
-  const secretNameOf = (instance: { secretName?: string }, definition: ConnectorDefinition): string | null =>
-    instance.secretName ?? (definition.secret.defaultName || null);
 
   function onWorkflowDone(done: { runRef: string; outcome: "completed" | "failed" | "cancelled" }): void {
     const command = store.commandByRunRef(done.runRef);
@@ -223,11 +234,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
       });
     },
 
-    inboundInstance(id) {
-      const found = instanceOf(id);
-      if (!found || !found.instance.enabled || found.definition.delivery !== "inbound-http") return null;
-      return { definition: found.definition, settings: found.instance.settings, secretName: secretNameOf(found.instance, found.definition) };
-    },
+    inboundInstance: id => inboundInstanceIn(loaded().config, registry, id),
 
     logConnector: entry => store.logConnector(entry),
     listPrs: filter => store.listPrs({ ...filter, limit: Math.min(filter.limit, LIST_LIMIT) }),

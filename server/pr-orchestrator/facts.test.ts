@@ -36,7 +36,13 @@ describe("factsOf", () => {
     expect(facts([ev.opened({ head: SHA_A }), ev.ciFinished({ head: null })])["trigger.isHead"]).toBe(false);
     expect(facts([ev.opened({ head: SHA_A }), ev.comment({ head: SHA_B })])["trigger.isHead"]).toBe(true);
     const stale = facts([ev.opened({ head: SHA_A }), ev.reviewFinished({ head: SHA_A, status: "needs-person", reviewedSha: SHA_B })]);
-    expect(stale).toMatchObject({ "trigger.review.status": "needs-person", "trigger.isHead": true, "review.staleForHead": true, "event.check.source": null });
+    expect(stale).toMatchObject({ "trigger.review.status": "needs-person", "trigger.isHead": false, "review.staleForHead": true, "event.check.source": null });
+    // The head already passed review; a late review of an older commit keeps that review and is not about the head.
+    const late = facts([
+      ev.opened({ head: SHA_A }), ev.reviewFinished({ head: SHA_A, status: "success", reviewedSha: SHA_A }),
+      ev.reviewFinished({ head: SHA_A, status: "needs-person", reviewedSha: SHA_B }),
+    ]);
+    expect(late).toMatchObject({ "trigger.review.status": "needs-person", "trigger.isHead": false, "review.staleForHead": false });
   });
 
   it("counts the active runs and reads the run target and outcome of a run finished trigger", () => {

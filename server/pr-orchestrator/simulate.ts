@@ -123,7 +123,9 @@ function comparablePayload(payload: CommandPayload): unknown {
   return copy;
 }
 
-function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, { type: "timer.fired" | "command.finished" }>): void {
+function applyRecordedResult(
+  sim: Sim, prKey: PrKey, input: Extract<CoreInput, { type: "timer.fired" | "command.finished" }>, decisionIds: Map<string, string>,
+): void {
   const { store, pm } = sim.parts;
   const applyAsStored = () => { if (!prKey.startsWith(SUBJECT_PREFIX)) pm.apply(prKey, input); };
   if (input.type === "timer.fired") {
@@ -136,8 +138,11 @@ function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, {
   const wanted = comparablePayload(input.payload);
   const twins = store.commandsFor(prKey).filter(candidate => candidate.type === input.command && isDeepStrictEqual(comparablePayload(candidate.payload), wanted));
   const open = twins.find(candidate => candidate.status !== "done");
-  if (open) pm.finishCommand(open, input.result);
-  else if (twins.length === 0) applyAsStored();
+  if (open) {
+    // The replayed AskPerson got a decision id from this store's row numbers; later answers carry the recorded one.
+    if (open.payload.type === "AskPerson" && input.payload.type === "AskPerson") decisionIds.set(input.payload.decisionId, open.payload.decisionId);
+    pm.finishCommand(open, input.result);
+  } else if (twins.length === 0) applyAsStored();
 }
 
 /**
@@ -147,13 +152,16 @@ function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, {
 export function replayRecorded(input: SimOptions & { inputs: SimInput[]; onEvaluate?: (info: EvaluationInfo, inputIndex: number) => void }): SimResult {
   let index = 0;
   const sim = createSim({ ...input, onEvaluate: info => input.onEvaluate?.(info, index) });
+  const decisionIds = new Map<string, string>();
   try {
     input.inputs.forEach((item, position) => {
       index = position;
       sim.setNow(item.at);
       if ("event" in item) sim.applyEvent(item.connector, item.event);
-      else if (item.input.type === "timer.fired" || item.input.type === "command.finished") applyRecordedResult(sim, item.prKey, item.input);
-      else applyExternal(sim, item.prKey, item.input);
+      else if (item.input.type === "timer.fired" || item.input.type === "command.finished") applyRecordedResult(sim, item.prKey, item.input, decisionIds);
+      else if (item.input.type === "person.answered") {
+        applyExternal(sim, item.prKey, { ...item.input, decisionId: decisionIds.get(item.input.decisionId) ?? item.input.decisionId });
+      } else applyExternal(sim, item.prKey, item.input);
     });
     return withoutReceived(snapshot(sim));
   } finally {

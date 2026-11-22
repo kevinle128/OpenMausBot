@@ -2,8 +2,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { vaultNameKey } from "../../shared/vault.ts";
-import { createOrchestratorCore, type OrchestratorCore } from "../pr-orchestrator/core.ts";
+import { createConfigSource } from "../pr-orchestrator/config.ts";
+import { createOrchestratorCore, inboundInstanceIn, type OrchestratorCore } from "../pr-orchestrator/core.ts";
 import { BUILT_IN_CONNECTORS } from "../pr-orchestrator/connectors/index.ts";
+import { createConnectorRegistry } from "../pr-orchestrator/connectors/registry.ts";
 import { createEventsDoor } from "../pr-orchestrator/intake.ts";
 import { createPrOrchestratorRoutes } from "../routes/pr-orchestrator.ts";
 import type { RouteHandler } from "../routes/table.ts";
@@ -50,9 +52,23 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     return core;
   };
 
+  // While no core is open (stopped for a backup or a shutdown, or a stop still closing), the door reads the file
+  // without opening the database, so a configured connector answers 503 (retry) instead of 404 (no such endpoint).
+  const registry = createConnectorRegistry(BUILT_IN_CONNECTORS);
+  const fileConfig = createConfigSource({ path: () => configPath, connectors: BUILT_IN_CONNECTORS, log, onVersion: () => {} });
+  const configOnFile = () => (existsSync(configPath) ? fileConfig.current().config : null);
+
   const door = createEventsDoor({
-    enabled: () => ensureCore()?.enabled() ?? false,
-    instance: id => ensureCore()?.inboundInstance(id) ?? null,
+    enabled: () => {
+      const current = ensureCore();
+      return current ? current.enabled() : configOnFile()?.enabled ?? false;
+    },
+    instance: id => {
+      const current = ensureCore();
+      if (current) return current.inboundInstance(id);
+      const config = configOnFile();
+      return config ? inboundInstanceIn(config, registry, id) : null;
+    },
     key,
     sink: {
       accept(items, now) {

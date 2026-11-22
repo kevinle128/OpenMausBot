@@ -56,7 +56,8 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
   const instances = new Map<string, Running>();
   let stopped = false;
   /** Runs that sync() replaced and that are still unwinding; stop() waits for them before the store closes. */
-  const draining = new Set<Promise<void>>();
+  // Keyed by instance: a run re-enabled by a later sync() still waits for the aborted one to unwind.
+  const draining = new Map<string, Promise<void>>();
 
   function emitter(id: string, definition: ConnectorDefinition) {
     return (events: unknown[]) => {
@@ -135,19 +136,18 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
     sync() {
       if (stopped) return;
       const wanted = desired();
-      const previous = new Map<string, Promise<void>>();
       for (const [id, running] of instances) {
         if (wanted.get(id)?.fingerprint === running.fingerprint) continue;
         running.abort.abort();
         instances.delete(id);
-        previous.set(id, running.done);
-        draining.add(running.done);
-        void running.done.finally(() => draining.delete(running.done));
+        // running.done already waited for any earlier run of this id, so it replaces that entry.
+        draining.set(id, running.done);
+        void running.done.finally(() => { if (draining.get(id) === running.done) draining.delete(id); });
       }
       for (const [id, { definition, fingerprint }] of wanted) {
         if (instances.has(id)) continue;
         const abort = new AbortController();
-        const done = loop(id, definition, abort.signal, previous.get(id)).catch(error => deps.log(`pr-orchestrator: ${id} failed: ${messageOf(error)}`));
+        const done = loop(id, definition, abort.signal, draining.get(id)).catch(error => deps.log(`pr-orchestrator: ${id} failed: ${messageOf(error)}`));
         instances.set(id, { fingerprint, abort, done });
       }
     },
@@ -157,7 +157,7 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
       const all = [...instances.values()];
       for (const running of all) running.abort.abort();
       instances.clear();
-      await Promise.all([...all.map(running => running.done), ...draining]);
+      await Promise.all([...all.map(running => running.done), ...draining.values()]);
     },
   };
 }
