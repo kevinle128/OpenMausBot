@@ -19,14 +19,16 @@ const REPORTED_MAX = 2_000;
 const MAX_HOPS = 10;
 
 const CREATE_COMMANDS = [/\bgh\s+pr\s+create\b/, /\bglab\s+mr\s+create\b/];
-const API_COMMANDS = [/\bgh\s+api\b[^\n]*\/pulls\b/, /\bglab\s+api\b[^\n]*merge_requests\b/];
-const POST_SIGNS = /(?:-X\s*POST\b|--method[=\s]+POST\b|\s-[fF][\s=]|\s--(?:field|raw-field)[\s=])/i;
+// The endpoint must end at the collection: `/pulls/42/reviews` or `/merge_requests/7/notes` creates no PR.
+const API_COMMANDS = [/\bgh\s+api\b[^\n]*\/pulls(?=$|[\s"'?])/, /\bglab\s+api\b[^\n]*\/merge_requests(?=$|[\s"'?])/];
+const POST_SIGNS = /(?:-X\s*POST\b|--method[=\s]+POST\b|\s-[fF][\s=]|\s--(?:field|raw-field|input)[\s=])/i;
+const NON_POST_METHOD = /(?:-X\s*|--method[=\s]+)(?!POST\b)[A-Z]+\b/i;
 const CREATE_TOOL = /create_?(?:pull_request|merge_request)/i;
 
-/** Every string in a tool detail, to a shallow depth. */
+/** Every string in a tool detail, deep enough for an MCP result (`output.content[].text`). */
 function stringsOf(value: unknown, depth = 0): string[] {
   if (typeof value === "string") return [value];
-  if (depth >= 3 || typeof value !== "object" || value === null) return [];
+  if (depth >= 6 || typeof value !== "object" || value === null) return [];
   return Object.values(value).flatMap(inner => stringsOf(inner, depth + 1));
 }
 
@@ -44,7 +46,7 @@ export function createdUrl(item: PaseoTimelineItem): string | null {
     const { command, output, exitCode } = detail;
     if (typeof command !== "string" || typeof output !== "string") return null;
     const creates = CREATE_COMMANDS.some(pattern => pattern.test(command))
-      || (API_COMMANDS.some(pattern => pattern.test(command)) && POST_SIGNS.test(command));
+      || (API_COMMANDS.some(pattern => pattern.test(command)) && POST_SIGNS.test(command) && !NON_POST_METHOD.test(command));
     if (!creates) return null;
     const url = lastChangeRequestUrl(output);
     if (exitCode === 0) return url;
@@ -62,6 +64,8 @@ export interface ProvenanceDeps {
   log(line: string): void;
   now(): number;
   gitlabHosts(): string[];
+  /** False while owner binding is switched off: no timeline is read and no PR is marked as seen. Always on when absent. */
+  enabled?(): boolean;
   /** Replaced by tests. */
   scanDelayMs?: number;
 }
@@ -106,7 +110,7 @@ export function createProvenance(deps: ProvenanceDeps) {
   };
 
   async function scan(agentId: string, boundBy: "provenance" | "backfill"): Promise<void> {
-    if (stopped || listeners.size === 0) return;
+    if (stopped || listeners.size === 0 || deps.enabled?.() === false) return;
     let items: PaseoTimelineItem[];
     try {
       items = await connection.timelineTail(agentId, 100);
@@ -147,12 +151,14 @@ export function createProvenance(deps: ProvenanceDeps) {
     if (timer) { clearTimeout(timer); timers.delete(agentId); }
     void scan(agentId, "provenance");
   };
-  const onSynced = ({ complete }: { complete: boolean }) => {
-    if (!complete) return;
+  const backfill = () => {
     const since = deps.now() - BACKFILL_WINDOW_MS;
     void (async () => {
       for (const { info, changedAt } of book.all()) if (changedAt >= since) await scan(info.id, "backfill");
     })();
+  };
+  const onSynced = ({ complete }: { complete: boolean }) => {
+    if (complete) backfill();
   };
   const onDisconnected = () => lastStatus.clear();
   connection.on("agentUpdate", onUpdate as never);
@@ -178,7 +184,11 @@ export function createProvenance(deps: ProvenanceDeps) {
         let items: PaseoTimelineItem[];
         try {
           items = await connection.timelineTail(info.id, 200);
-        } catch {
+        } catch (error) {
+          // A daemon that went away mid-scan says nothing about the PR: wait for it instead of remembering a miss.
+          if (!connection.connected || !book.synced || /not connected/i.test(error instanceof Error ? error.message : "")) {
+            throw new PortUnavailableError("the Paseo daemon is not connected or has not listed its agents yet");
+          }
           continue;
         }
         const found = items.some(item => {
@@ -197,7 +207,10 @@ export function createProvenance(deps: ProvenanceDeps) {
   return {
     resolver,
     watch(listener: (created: Created) => void): () => void {
+      const first = listeners.size === 0;
       listeners.add(listener);
+      // The connect snapshot may have come before anyone watched; scan what changed lately now.
+      if (first && book.synced && connection.connected) backfill();
       return () => { listeners.delete(listener); };
     },
     stop(): void {

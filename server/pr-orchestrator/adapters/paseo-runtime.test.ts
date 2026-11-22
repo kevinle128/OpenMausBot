@@ -52,10 +52,13 @@ describe("Paseo runtime", () => {
     const { client, runtime } = await setup();
     client.lose();
     await expect(runtime.send(OWNER, "x", { messageId: "m" })).rejects.toMatchObject({ name: "PortUnavailableError" });
+    await expect(runtime.isAlive(OWNER)).rejects.toMatchObject({ name: "PortUnavailableError" });
     client.regain();
     await expect(runtime.send(OWNER, "x", { messageId: "m" })).rejects.toMatchObject({ name: "PortUnavailableError" });
+    await expect(runtime.isAlive(OWNER)).rejects.toMatchObject({ name: "PortUnavailableError" });
     client.snapshot([agentSnapshot("a1")]);
     await expect(runtime.send(OWNER, "x", { messageId: "m" })).resolves.toBe("delivered");
+    await expect(runtime.isAlive(OWNER)).resolves.toBe(true);
     expect(client.sent).toHaveLength(1);
   });
 

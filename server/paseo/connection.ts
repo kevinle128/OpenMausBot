@@ -206,8 +206,7 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   async sendAgentMessageAsUser(agentId: string, text: string, options: { messageId: string }): Promise<void> {
     const client = this.client;
     if (!client?.sendAgentMessage || !this.isUp) throw new Error("The Paseo daemon is not connected");
-    if (this.sentByUs.size > 500) this.sentByUs.clear();
-    this.sentByUs.add(text);
+    this.rememberSent(text);
     await client.sendAgentMessage(agentId, text, { messageId: options.messageId, activeTurnBehavior: "steer" });
   }
 
@@ -220,7 +219,16 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
   async createAgent(options: PaseoCreateAgentOptions): Promise<PaseoAgent> {
     const client = this.client;
     if (!client?.createAgent || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    // The brief becomes the new agent's first user message; it is ours, not the person's, so the permission guard must not read it as theirs.
+    this.rememberSent(options.initialPrompt);
     return client.createAgent(options);
+  }
+
+  /** Keeps the last 500 texts OpenMausBot sent, dropping the oldest first. */
+  private rememberSent(text: string): void {
+    this.sentByUs.delete(text);
+    if (this.sentByUs.size >= 500) this.sentByUs.delete(this.sentByUs.values().next().value as string);
+    this.sentByUs.add(text);
   }
 
   /** The last `limit` timeline items of an agent, projected. */

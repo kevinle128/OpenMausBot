@@ -258,6 +258,16 @@ describe("PaseoConnection messages and agents", () => {
     await connection.stop();
   });
 
+  it("never takes the brief of an agent it created for the first prompt of the person", async () => {
+    const client = new MessagingClient();
+    Object.assign(client, { createAgent: async () => ({ id: "n1" }) });
+    const { connection } = await connected(client);
+    await connection.createAgent({ provider: "claude", cwd: "/w", initialPrompt: "fix the CI of PR 42", labels: {}, idempotencyKey: "k" });
+    client.userMessages = ["fix the CI of PR 42"];
+    expect((await connection.agentContext("n1")).firstPrompt).toBeUndefined();
+    await connection.stop();
+  });
+
   it("refuses the new calls while the daemon is not connected", async () => {
     const connection = new PaseoConnection({ createClient: () => new MessagingClient() });
     await expect(connection.sendAgentMessageAsUser("a1", "x", { messageId: "m" })).rejects.toThrow("not connected");

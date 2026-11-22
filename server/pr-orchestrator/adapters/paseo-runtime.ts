@@ -12,6 +12,8 @@ export interface PaseoRuntimeDeps {
   log(line: string): void;
   now(): number;
   gitlabHosts(): string[];
+  /** False while owner binding is switched off: no timeline is read and no PR is reported. Always on when absent. */
+  enabled?(): boolean;
   /** Replaced by tests. */
   scanDelayMs?: number;
 }
@@ -25,7 +27,7 @@ const gone = (info: AgentInfo | undefined): boolean => !info || info.archivedAt 
 export function createPaseoRuntime(deps: PaseoRuntimeDeps): AgentRuntimePort & { resolver: OwnerResolver; stop(): void } {
   const { connection } = deps;
   const book = createAgentBook(connection, deps.now);
-  const provenance = createProvenance({ connection, book, log: deps.log, now: deps.now, gitlabHosts: deps.gitlabHosts, scanDelayMs: deps.scanDelayMs });
+  const provenance = createProvenance({ connection, book, log: deps.log, now: deps.now, gitlabHosts: deps.gitlabHosts, enabled: deps.enabled, scanDelayMs: deps.scanDelayMs });
 
   return {
     runtime: "paseo",
@@ -48,7 +50,9 @@ export function createPaseoRuntime(deps: PaseoRuntimeDeps): AgentRuntimePort & {
     },
 
     async isAlive(owner) {
-      return owner.runtime === "paseo" && !gone(book.live(owner.agentId));
+      if (owner.runtime !== "paseo") return false;
+      if (!connection.connected || !book.synced) throw new PortUnavailableError("the Paseo daemon is not connected or has not listed its agents yet");
+      return !gone(book.live(owner.agentId));
     },
 
     async spawn(req) {

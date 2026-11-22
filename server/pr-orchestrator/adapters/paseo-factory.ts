@@ -9,6 +9,7 @@ export function paseoRuntime(connection: PaseoConnection | null, ctx: AdapterCon
   const runtime = createPaseoRuntime({
     connection, log: ctx.log, now: ctx.now,
     gitlabHosts: () => [new URL(ctx.config().adapters.forge.gitlab.baseUrl).host],
+    enabled: () => { const { enabled, bindOwners } = ctx.config().adapters.runtime; return enabled && bindOwners; },
   });
   return { runtime, resolvers: [runtime.resolver], stop: () => runtime.stop() };
 }

@@ -14,7 +14,7 @@ const shell = (command: string, output: string, exitCode?: number): PaseoTimelin
   ({ type: "tool_call", name: "Bash", detail: { type: "shell", command, output, ...(exitCode === undefined ? {} : { exitCode }) } });
 const created = (url = GH_URL) => shell(`gh pr create --title x`, `${url}\n`, 0);
 
-function setup(timelines: Record<string, PaseoTimelineItem[]> = {}) {
+function setup(timelines: Record<string, PaseoTimelineItem[]> = {}, opts: { enabled?: () => boolean; watch?: boolean } = {}) {
   let clock = T0;
   const now = () => clock;
   const reads: string[] = [];
@@ -29,15 +29,16 @@ function setup(timelines: Record<string, PaseoTimelineItem[]> = {}) {
     },
   });
   const book = createAgentBook(connection as never, now);
-  const provenance = createProvenance({ connection: connection as never, book, log: line => logs.push(line), now, gitlabHosts: () => ["git.oceanlabs.dev"], scanDelayMs: 1 });
+  const provenance = createProvenance({ connection: connection as never, book, log: line => logs.push(line), now, gitlabHosts: () => ["git.oceanlabs.dev"], enabled: opts.enabled, scanDelayMs: 1 });
   const reports: Created[] = [];
-  provenance.watch(report => reports.push(report));
+  const watch = () => provenance.watch(report => reports.push(report));
+  if (opts.watch !== false) watch();
   const snapshot = (id: string, over: { status?: string; parent?: string; updatedAt?: number } = {}) => ({
     id, provider: "claude", model: "opus", workspaceId: `ws-${id}`, cwd: `/work/${id}`, status: over.status ?? "idle",
     labels: over.parent ? { [PARENT]: over.parent } : {}, archivedAt: null, updatedAt: new Date(over.updatedAt ?? clock).toISOString(),
   });
   return {
-    connection, book, provenance, reports, reads, logs, timelines,
+    connection, book, provenance, reports, reads, logs, timelines, watch,
     advance: (ms: number) => { clock += ms; },
     see: (id: string, over?: Parameters<typeof snapshot>[1]) => connection.emit("agentUpdate", snapshot(id, over)),
     /** An agent whose turn runs and then ends. */
@@ -86,6 +87,24 @@ describe("PR provenance", () => {
       shell(`gh pr create --body "see ${GH_URL}"`, "", 0),
       shell("gh api repos/acme/widgets/pulls/42", `{"html_url":"${GH_URL}"}`, 0),
       shell("gh pr view 42 --json url", GH_URL, 0),
+    ] });
+    await t.turn("a");
+    expect(t.reports).toEqual([]);
+  });
+
+  it("binds a PR that an MCP create tool returned in a text content block", async () => {
+    const t = setup({ a: [{ type: "tool_call", name: "mcp__github__create_pull_request", detail: { type: "unknown", output: { content: [{ type: "text", text: `{"html_url":"${GH_URL}"}` }] } } }] });
+    await t.turn("a");
+    expect(t.reports.map(report => report.pr.number)).toEqual([42]);
+  });
+
+  it("ignores gh api and glab api calls to a PR's sub-resources or with a non-POST method", async () => {
+    const t = setup({ a: [
+      shell("gh api repos/acme/widgets/pulls/42/reviews -f event=APPROVE", `{"html_url":"${GH_URL}#pullrequestreview-1"}`, 0),
+      shell("gh api repos/acme/widgets/pulls/42/comments -f body=x", `{"html_url":"${GH_URL}#discussion_r1"}`, 0),
+      shell("glab api projects/1/merge_requests/7/notes -f body=x", `{"web_url":"${GL_URL}"}`, 0),
+      shell("gh api -X PATCH repos/acme/widgets/pulls -f title=x", `{"html_url":"${GH_URL}"}`, 0),
+      shell("gh api --method PUT repos/acme/widgets/pulls -f title=x", `{"html_url":"${GH_URL}"}`, 0),
     ] });
     await t.turn("a");
     expect(t.reports).toEqual([]);
@@ -169,6 +188,28 @@ describe("PR provenance", () => {
     expect(t.reports[0]!.owner).toMatchObject({ agentId: "recent", boundBy: "backfill" });
   });
 
+  it("reads no timeline and marks nothing as seen while binding is off, then reports once it is on", async () => {
+    let on = false;
+    const t = setup({ a: [created()] }, { enabled: () => on });
+    await t.turn("a");
+    await t.syncComplete();
+    expect(t.reads).toEqual([]);
+    on = true;
+    await t.turn("a");
+    expect(t.reports).toHaveLength(1);
+  });
+
+  it("backfills when the first watcher comes after the connect snapshot", async () => {
+    const t = setup({ a: [created()] }, { watch: false });
+    t.see("a");
+    await t.syncComplete();
+    expect(t.reads).toEqual([]);
+    t.watch();
+    await settle();
+    expect(t.reports).toHaveLength(1);
+    expect(t.reports[0]!.owner).toMatchObject({ agentId: "a", boundBy: "backfill" });
+  });
+
   it("does not scan after a connect whose list is incomplete", async () => {
     const t = setup({ a: [created()] });
     t.see("a");
@@ -223,6 +264,17 @@ describe("PR provenance", () => {
     t.connection.emit("permissionsSynced", { pending: [], complete: true });
     t.connection.connected = false;
     await expect(t.provenance.resolver.resolve(prRef(GH_URL))).rejects.toMatchObject({ name: "PortUnavailableError" });
+  });
+
+  it("makes the resolver wait, and remembers no miss, when the daemon goes away mid-scan", async () => {
+    const t = setup({ a: [] });
+    t.connection.emit("permissionsSynced", { pending: [], complete: true });
+    t.see("a");
+    t.connection.timelineTail = async () => { t.connection.connected = false; throw new Error("The Paseo daemon is not connected"); };
+    await expect(t.provenance.resolver.resolve(prRef(GH_URL))).rejects.toMatchObject({ name: "PortUnavailableError" });
+    t.connection.connected = true;
+    t.connection.timelineTail = async () => [created()];
+    expect(await t.provenance.resolver.resolve(prRef(GH_URL))).toMatchObject({ agentId: "a" });
   });
 
   it("makes the resolver wait until the agent list is complete", async () => {
