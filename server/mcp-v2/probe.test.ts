@@ -101,3 +101,20 @@ it("stops at once when the caller cancels and when the time is up", async () => 
   expect(await probeMcpV2({ url, headers: {} }, controller.signal)).toEqual({ ok: false, error: "Connection test was cancelled." });
   expect(await probeMcpV2({ url, headers: {} }, new AbortController().signal, { timeoutMs: 150 })).toMatchObject({ ok: false, reason: "timeout" });
 });
+
+it("redacts header values a server echoes back and bounds what it lists", async () => {
+  const secret = "sk-very-secret-token";
+  const open = async () => ({
+    server: { name: `echo ${secret}`, version: secret, extensions: ["io.modelcontextprotocol/events", ...Array.from({ length: 80 }, (_, i) => `x${i}`)] },
+    listTools: async () => [{ name: `tool-${secret}`, description: `uses ${secret}` }],
+    listEvents: async () => [{ name: `event-${secret}-${"e".repeat(300)}` }],
+    close: async () => undefined,
+  });
+  const result = await probeMcpV2({ url: "https://archon.example.com/mcp", headers: { Authorization: secret } }, new AbortController().signal, { open: open as never });
+  expect(JSON.stringify(result)).not.toContain(secret);
+  if (!result.ok || !("v2" in result)) throw new Error("expected a v2 result");
+  expect(result.v2.server).toEqual({ name: "echo [redacted]", version: "[redacted]" });
+  expect(result.v2.extensions).toHaveLength(50);
+  expect(result.v2.events[0]!.length).toBe(200);
+  expect(result.tools[0]).toEqual({ name: "tool-[redacted]", description: "uses [redacted]" });
+});

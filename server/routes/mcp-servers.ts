@@ -2,7 +2,7 @@ import { userError, userErrorFields } from "../user-errors.ts";
 import { hostedWorkspaceConfiguration } from "../enterprise.ts";
 import { runsElsewhere, type McpConfig, type McpConfigDeps, type McpConfigResult } from "../host/mcp-config.ts";
 import { McpOAuthError, McpSignInError, mcpCallbackOrigin } from "../mcp-oauth.ts";
-import { isRemoteMcpServer, mcpServerBody, mcpServerNotFound, mcpServerServes, parseMcpServerMutation, parseMcpServersImport, parseStoredMcpServer, type StoredMcpServer } from "../mcp-registry.ts";
+import { isRemoteMcpServer, isV2Connection, mcpServerBody, mcpServerNotFound, mcpServerServes, parseMcpServerMutation, parseMcpServersImport, parseStoredMcpServer, type StoredMcpServer } from "../mcp-registry.ts";
 import type { McpProbeResult } from "../mcp-probe.ts";
 import { isVaultItemId } from "../vault/mcp-keys.ts";
 import { personKey } from "../person-key.ts";
@@ -127,6 +127,7 @@ export function createMcpServerRoutes(deps: McpServerRouteDeps): RouteHandler {
       if (!parsed?.ok) return json(res, 404, { error: mcpServerNotFound(name!) });
       if (!isRemoteMcpServer(parsed.server)) return json(res, 400, { error: "Only servers reached by URL can be signed in to." });
       if (parsed.server.runsOn) return json(res, 409, { error: runsElsewhere(parsed.server.runsOn) });
+      if (action === "sign-in" && isV2Connection(parsed.server)) return json(res, 409, { error: "An MCP v2 connection signs in with a header such as Authorization; OAuth is not available for it yet." });
       const url = parsed.server.url;
       if (action === "sign-out" && method === "POST" && !flowId) {
         await mcpOAuth.signOut(name!, url);
@@ -182,7 +183,8 @@ export function createMcpServerRoutes(deps: McpServerRouteDeps): RouteHandler {
       const name = typeof body?.name === "string" ? body.name : "";
       const parsed = parseMcpServerMutation(name, mcpServerBody(body));
       if (!parsed.ok) return json(res, 400, { error: parsed.error });
-      const placed = deps.place ? await deps.place(parsed.server, auth) : { ok: true as const, server: parsed.server };
+      // A v2 connection is reached from this computer only, never placed on a lent one.
+      const placed = deps.place && !isV2Connection(parsed.server) ? await deps.place(parsed.server, auth) : { ok: true as const, server: parsed.server };
       if (!placed.ok) return json(res, 409, { error: placed.error });
       const added = config.add(name, placed.server, vaultKeysOf(body, ownsVault()));
       if (added.status < 300) deps.connectionHealth?.added("mcp", name, auth.kind === "session" ? auth.session.email ?? null : null);
@@ -205,7 +207,7 @@ export function createMcpServerRoutes(deps: McpServerRouteDeps): RouteHandler {
         if (!parsed.ok) return { status: 400, error: parsed.error };
         const servers: Record<string, StoredMcpServer> = {};
         for (const [name, server] of Object.entries(parsed.servers)) {
-          const placed = deps.place ? await deps.place(server, auth) : { ok: true as const, server };
+          const placed = deps.place && !isV2Connection(server) ? await deps.place(server, auth) : { ok: true as const, server };
           if (!placed.ok) return { status: 409, error: placed.error };
           servers[name] = placed.server;
         }

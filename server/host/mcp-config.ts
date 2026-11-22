@@ -171,6 +171,7 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
       if (limit) return { status: 400, error: limit };
       const personalRefusal = names.map((name) => personalHeaderRefusal(name, servers[name]!)).find(Boolean);
       if (personalRefusal) return { status: 400, ...personalRefusal };
+      if (names.some((name) => isV2Connection(servers[name]!) && deps.teamConnections.personMcp().includes(name))) return { status: 400, error: V2_PER_PERSON_REFUSAL };
       const blocked = names.filter((name) => mcpPolicyRefusal(name, servers[name] as object));
       if (blocked.length) return { status: 403, error: `${mcpPolicyRefusal(blocked[0]!, servers[blocked[0]!] as object)} Not approved: ${blocked.join(", ")}.`, code: "managed_policy" };
       persistMcpServers({ ...current, ...servers });
@@ -223,6 +224,7 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
     setApps: (name, apps) => write(() => {
       const found = stored(name);
       if (!found.existing) return found.result!;
+      if (isV2Connection(found.existing)) return { status: 400, error: "An MCP v2 connection has no apps to show in chat." };
       const { apps: _apps, ...rest } = found.existing;
       persistMcpServers({ ...found.current, [name]: { ...rest, ...(apps ? {} : { apps: false }) } });
       if (apps) appCatalog?.serverChanged(name);

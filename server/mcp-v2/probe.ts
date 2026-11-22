@@ -1,10 +1,12 @@
-import { REMOTE_PROBE_TIMEOUT_MS, type McpProbeResult } from "../mcp-probe.ts";
+import { REMOTE_PROBE_TIMEOUT_MS, redactConfiguredValues, type McpProbeResult } from "../mcp-probe.ts";
 import { openMcpV2 } from "./client.ts";
 import { EVENTS_EXTENSION } from "./rpc.ts";
 import { McpV2ProtocolError, McpV2RpcError, type McpV2Spec } from "./types.ts";
 
 const MAX_TOOLS = 100;
 const MAX_DESCRIPTION = 200;
+const MAX_NAME = 200;
+const MAX_LISTED = 50;
 const SHAPE_FIELDS = ["resultType", "ttlMs", "cacheScope"] as const;
 
 export interface McpV2ProbeDetails {
@@ -75,14 +77,17 @@ export async function probeMcpV2(spec: McpV2Spec, signal: AbortSignal, options: 
     connection = await (options.open ?? openMcpV2)(spec, { signal: combined, fetch: bound });
     const tools = await connection.listTools();
     const events = connection.server.extensions.includes(EVENTS_EXTENSION) ? await connection.listEvents().catch(() => []) : [];
+    // Security: bounded and redacted, as for a legacy test: a careless server may echo a header value back.
+    const shown = (value: string, max = MAX_NAME) => redactConfiguredValues(value, spec.headers ?? {}).slice(0, max);
+    const { name: serverName, version } = connection.server;
     return {
       ok: true,
-      tools: tools.slice(0, MAX_TOOLS).map((tool) => ({ name: tool.name, ...(tool.description ? { description: tool.description.slice(0, MAX_DESCRIPTION) } : {}) })),
+      tools: tools.slice(0, MAX_TOOLS).map((tool) => ({ name: shown(tool.name), ...(tool.description ? { description: shown(tool.description, MAX_DESCRIPTION) } : {}) })),
       total: tools.length,
       v2: {
-        server: { name: connection.server.name, version: connection.server.version },
-        extensions: connection.server.extensions,
-        events: events.map((event) => event.name),
+        server: { name: shown(serverName), version: version === null ? null : shown(version) },
+        extensions: connection.server.extensions.slice(0, MAX_LISTED).map((extension) => shown(extension)),
+        events: events.slice(0, MAX_LISTED).map((event) => shown(event.name)),
       },
     };
   } catch (error) {

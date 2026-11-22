@@ -14,4 +14,11 @@ describe("the protocol of a pasted entry", () => {
     expect(plain).toMatchObject({ ok: true });
     if (plain?.ok) expect(plain.servers[0]).not.toHaveProperty("protocol");
   });
+
+  it("accepts protocol legacy as the standard one and refuses v2 on a command", () => {
+    const legacy = paste({ url: "https://archon.example.com/mcp", protocol: "legacy" });
+    expect(legacy).toMatchObject({ ok: true });
+    if (legacy?.ok) expect(legacy.servers[0]).not.toHaveProperty("protocol");
+    expect(paste({ command: "npx", args: ["archon"], protocol: "v2" })).toEqual({ ok: false, error: "mcp.paste.badProtocol" });
+  });
 });

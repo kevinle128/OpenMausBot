@@ -13,12 +13,12 @@ export async function* readSseFrames(body: ReadableStream<Uint8Array>): AsyncGen
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) return;
-      pending += decoder.decode(value, { stream: true });
+      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
       let newline = pending.search(/\r\n|\n|\r/);
       while (newline !== -1) {
+        // A lone CR at the end of a chunk may be the first half of a CRLF: wait for the next chunk unless the stream ended.
+        if (!done && pending[newline] === "\r" && newline + 1 === pending.length) break;
         const lineEnd = pending[newline] === "\r" && pending[newline + 1] === "\n" ? newline + 2 : newline + 1;
-        if (pending[newline] === "\r" && lineEnd === pending.length) break;
         const line = pending.slice(0, newline);
         pending = pending.slice(lineEnd);
         if (line === "") {
@@ -35,6 +35,7 @@ export async function* readSseFrames(body: ReadableStream<Uint8Array>): AsyncGen
         }
         newline = pending.search(/\r\n|\n|\r/);
       }
+      if (done) return;
     }
   } finally {
     await reader.cancel().catch(() => undefined);

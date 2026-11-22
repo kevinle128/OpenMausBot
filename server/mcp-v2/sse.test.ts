@@ -39,3 +39,19 @@ it("splits a multi-byte character that spans two chunks", async () => {
   for await (const frame of readSseFrames(stream)) frames.push(frame);
   expect(frames).toEqual([{ event: null, data: "xin chào" }]);
 });
+
+it("delivers a CRLF frame whose chunk ends on the blank line, and one whose stream ends on a lone CR", async () => {
+  expect(await collect(["data: {\"a\":1}\r\n\r\n"])).toEqual([{ event: null, data: '{"a":1}' }]);
+  expect(await collect(["data: one\r\r"])).toEqual([{ event: null, data: "one" }]);
+});
+
+it("yields a CRLF frame before the next chunk arrives", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("data: now\r\n\r\n"));
+    },
+  });
+  const frames = readSseFrames(stream);
+  expect((await frames.next()).value).toEqual({ event: null, data: "now" });
+  await frames.return(undefined);
+});

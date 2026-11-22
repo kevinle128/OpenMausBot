@@ -277,9 +277,10 @@ function entryServer(name: string | undefined, entry: unknown): PastedMcpServer 
   if (!isRecord(entry)) return null;
   const url = typeof entry.url === "string" ? entry.url : typeof entry.serverUrl === "string" ? entry.serverUrl : undefined;
   const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  // "legacy" is the standard protocol; "v2" only exists for a URL server.
+  if (entry.protocol !== undefined && entry.protocol !== "legacy" && (entry.protocol !== "v2" || url === undefined)) throw new PasteError("mcp.paste.badProtocol");
   if (url !== undefined) {
     const headers = strings(entry.headers).map(([key, value]) => secret(key, value));
-    if (entry.protocol !== undefined && entry.protocol !== "v2") throw new PasteError("mcp.paste.badProtocol");
     if (entry.protocol === "v2" && type === "sse") throw new PasteError("mcp.paste.badProtocol");
     return { ...remoteServer(name, url, type === "sse" ? "sse" : type ? "http" : undefined, headers), ...(entry.protocol === "v2" ? { type: "http" as const, protocol: "v2" as const } : {}) };
   }

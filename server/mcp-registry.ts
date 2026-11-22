@@ -98,6 +98,7 @@ export function mcpServerServes(server: object & { bot?: string }, botId: string
 export function mcpServerProblemFor(servers: Record<string, unknown> | undefined, name: string, botId: string): string | null {
   const server = servers && Object.hasOwn(servers, name) ? servers[name] : undefined;
   if (!server || typeof server !== "object") return "no such server";
+  if ((server as { protocol?: unknown }).protocol === "v2") return "that connection is used by MausBot itself";
   return mcpServerServes(server, botId) ? null : "that server belongs to another bot";
 }
 
@@ -111,6 +112,8 @@ function countMcpServers(values: readonly unknown[]): { total: number; shared: n
   const own = new Map<string, number>();
   let shared = 0;
   for (const value of values) {
+    // No bot uses a v2 connection, so it counts toward the install's total only.
+    if (value && typeof value === "object" && (value as { protocol?: unknown }).protocol === "v2") continue;
     const bot = value && typeof value === "object" ? (value as { bot?: unknown }).bot : undefined;
     if (typeof bot === "string" && bot) own.set(bot, (own.get(bot) ?? 0) + 1);
     else shared++;
@@ -393,7 +396,8 @@ function parseRemote(raw: unknown, mutation: boolean, existing?: StoredMcpServer
       ...runsOn,
       // A v2 connection has no chat apps: the app catalog reads servers with the legacy client.
       ...(protocol === "v2" ? { apps: false as const } : appsFor(parsed.data.apps, mutation, existing)),
-      ...botFor(parsed.data.bot, mutation, existing),
+      // A v2 connection is MausBot's own, never one bot's.
+      ...(protocol === "v2" ? {} : botFor(parsed.data.bot, mutation, existing)),
     },
   };
 }
@@ -571,7 +575,7 @@ export function parseMcpServersImport(
     if (Object.hasOwn(servers, name)) return { ok: false, error: `"${rawName}" appears twice.` };
     // `enabled` from the paste is dropped so nothing runs before it was tested.
     const result = parseMcpServerMutation(name, looksRemote(record)
-      ? pickEntry(record, ["type", "url", "headers", "resultBudget"])
+      ? pickEntry(record, ["type", "protocol", "url", "headers", "resultBudget"])
       : pickEntry(record, ["command", "args", "env", "resultBudget"]));
     if (!result.ok) return { ok: false, error: `"${rawName}": ${result.error}` };
     servers[name] = result.server;
