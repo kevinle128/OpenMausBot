@@ -38,7 +38,7 @@ export function TriggersPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
   const [botFilter, setBotFilter] = useState(focus?.botId ?? "all");
   const [department, setDepartment] = useState("all");
   const [newText, setNewText] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ kind: SetUpKind; id?: string; botId?: string; app?: string } | null>(null);
+  const [editing, setEditing] = useState<{ kind: SetUpKind; id?: string; botId?: string; app?: string; nonce?: number } | null>(null);
   const openedAppFocus = useRef<number | null>(null);
   const routinesOnly = window.ogb?.remoteClient?.active === true;
   const visibleBots = state.bots.filter((bot) => !bot.hidden);
@@ -51,7 +51,7 @@ export function TriggersPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
     if (focus?.routineId && focus.section !== "logs") setOpenId(focus.routineId);
     if (!focus?.newApp || openedAppFocus.current === focus.nonce) return;
     openedAppFocus.current = focus.nonce;
-    setEditing({ kind: "app", app: focus.newApp });
+    setEditing({ kind: "app", app: focus.newApp, nonce: focus.nonce });
   }, [focus]);
   useEffect(() => { backButtonRef.current?.focus({ preventScroll: true }); }, []);
 
@@ -167,7 +167,7 @@ export function TriggersPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
       {editing?.kind === "webhook" && (editWebhook || !editing.id) && (
         <WebhookEditor webhook={editWebhook} bots={visibleBots} initialBotId={editing.botId} onClose={() => setEditing(null)} onCredential={(credential, id) => { saveWebhookCredential(webhookCredentialStore(), id, credential); setOpenId(id); }} />
       )}
-      {editing?.kind === "app" && (editApp || !editing.id) && <AppEventEditor trigger={editApp} bots={visibleBots} initialBotId={editing.botId} initialApp={editing.app} onClose={() => setEditing(null)} onSaved={(trigger) => setOpenId(trigger.id)} />}
+      {editing?.kind === "app" && (editApp || !editing.id) && <AppEventEditor key={editing.id ?? `new:${editing.app ?? ""}:${editing.nonce ?? 0}`} trigger={editApp} bots={visibleBots} initialBotId={editing.botId} initialApp={editing.app} onClose={() => setEditing(null)} onSaved={(trigger) => setOpenId(trigger.id)} />}
     </ToolPage>
   );
 }

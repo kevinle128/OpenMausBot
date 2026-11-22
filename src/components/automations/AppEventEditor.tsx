@@ -69,7 +69,10 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
 
   const save = async () => {
     const bot = bots.find((candidate) => candidate.id === botId);
-    const cleanFilter = Object.fromEntries(Object.entries(filter).filter(([, value]) => typeof value === "string" && value.trim())) as AppTriggerFilter;
+    // Only the fields shown for this app are sent: a value typed for another app stays hidden here.
+    const shownFilter: AppTriggerFilter = gmail ? { from: filter.from, subject: filter.subject, label: filter.label } : { text: filter.text };
+    const cleanFilter = Object.fromEntries(Object.entries(shownFilter).filter(([, value]) => typeof value === "string" && value.trim())) as AppTriggerFilter;
+    const shownAccount = appEntry && appEntry.accounts.length > 1 && appEntry.accounts.some((candidate) => candidate.id === account) ? account : "";
     const sourceConfig = {
       types: typeOptions.filter((type) => types.includes(type)),
       repos: repos.trim(),
@@ -85,7 +88,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
         })
         : await appTriggerApi.create({
           botId, app, event: chosen?.event ?? event, prompt: prompt.trim(), name: name.trim() || suggestedName(prompt, bot),
-          ...(account ? { account } : {}), ...(Object.keys(cleanFilter).length ? { filter: cleanFilter } : {}),
+          ...(shownAccount ? { account: shownAccount } : {}), ...(Object.keys(cleanFilter).length ? { filter: cleanFilter } : {}),
           ...(eventSource ? { config: sourceConfig } : Object.keys(config).length ? { config } : {}),
         });
       onSaved?.(saved);
@@ -102,7 +105,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
       <input value={filter[key] ?? ""} onChange={(input) => setFilter((current) => ({ ...current, [key]: input.target.value }))} placeholder={placeholder} className={FIELD} />
     </label>
   );
-  const clearApp = (next: string) => { setApp(next); setEvent(""); setConfig({}); setTypes([]); setRepos(""); setAuthors(""); };
+  const clearApp = (next: string) => { setApp(next); setEvent(""); setAccount(""); setFilter({}); setConfig({}); setTypes([]); setRepos(""); setAuthors(""); };
   const title = trigger ? t("automations.editor.app.editTitle") : t("automations.editor.appEvent.title");
 
   return (

@@ -38,6 +38,7 @@ export function prStatusForBot(record: PrRecord, ctx: StepContext, now: number):
   const ci = ciStatus(record, ctx);
   const review = record.review;
   const owner = record.owner;
+  const mergeable = mergeableOnHead(record);
   return {
     key: record.key, provider: record.provider, repo: record.repo, number: record.number,
     url: record.url, title: record.title, author: record.author, branch: record.branch, baseRef: record.baseRef,
@@ -54,10 +55,10 @@ export function prStatusForBot(record: PrRecord, ctx: StepContext, now: number):
       rounds: review.rounds, commentUrl: review.commentUrl,
     },
     conflict: record.conflict,
-    mergeable: mergeableOnHead(record),
+    mergeable,
     owner: owner === null ? null : { runtime: owner.runtime, agentId: owner.agentId, cwd: owner.cwd ?? null },
-    // A missing forge read is mergeable null. These two gaps repeat that fact, so they are left out.
-    gaps: readiness(record, ctx).gaps.filter(gap => !FORGE_READ_GAPS.has(gap)),
+    // A missing forge read is mergeable null. These two gaps repeat that fact, so they are left out only then.
+    gaps: readiness(record, ctx).gaps.filter(gap => !(mergeable === null && FORGE_READ_GAPS.has(gap))),
     asOf: new Date(now).toISOString(),
   };
 }

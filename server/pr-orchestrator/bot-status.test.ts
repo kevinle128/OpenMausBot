@@ -46,6 +46,17 @@ describe("PR status for a bot", () => {
     expect(status.conflict).toBe(false);
   });
 
+  it("a fresh forge read that refuses the merge keeps not_mergeable in gaps", () => {
+    const forge = { headSha: SHA_A, mergeable: false, blockers: [], requiredChecks: null, baseFailing: [], failedJobs: [] };
+    const refreshed: LedgerEntry = { type: "command.finished", commandId: "rf", command: "RefreshDetails", payload: { type: "RefreshDetails", headSha: SHA_A }, result: { outcome: "succeeded", detail: { forge } } };
+    const status = prStatusForBot(
+      record(ev.opened({ head: SHA_A }), ev.ciFinished({ head: SHA_A }), ev.reviewFinished({ head: SHA_A }), refreshed),
+      ctxFor(), at,
+    );
+    expect(status.mergeable).toBe(false);
+    expect(status.gaps).toEqual(["not_mergeable"]);
+  });
+
   it("a PR with no owner shows owner null", () => {
     const status = prStatusForBot(record(ev.opened({ head: SHA_A })), ctxFor(), at);
     expect(status.owner).toBeNull();
