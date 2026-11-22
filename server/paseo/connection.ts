@@ -63,13 +63,29 @@ export interface PaseoClientPort {
   /** Absent from a client that predates the daemon request `fs.path.inspect.request`. */
   inspectPath?(cwd: string, path: string, options?: { timeout?: number }): Promise<PaseoPathInspection>;
   /** Tests that do not need them leave these out. */
-  sendAgentMessage?(agentId: string, text: string, options?: { activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
+  sendAgentMessage?(agentId: string, text: string, options?: { messageId?: string; activeTurnBehavior?: "steer" | "interrupt" }): Promise<unknown>;
+  updateAgent?(agentId: string, updates: { name?: string; labels?: Record<string, string> }): Promise<void>;
+  createAgent?(options: PaseoCreateAgentOptions): Promise<PaseoAgent>;
   fetchAgentTimeline?(agentId: string, options?: { direction?: "tail" | "after"; limit?: number; projection?: "projected" }): Promise<{
-    entries: Array<{ item: { type: string; text?: unknown; name?: unknown; detail?: { type?: string; command?: unknown; filePath?: unknown } } }>;
+    entries: Array<{ item: { type: string; text?: unknown; name?: unknown; status?: unknown; detail?: { type?: string; command?: unknown; filePath?: unknown; [field: string]: unknown } } }>;
   }>;
 }
 
 export type PaseoPermissionResponse = PaseoAgentPermissionResponse;
+
+/** What a new agent needs. The daemon returns the same agent for a repeated `idempotencyKey`. */
+export interface PaseoCreateAgentOptions {
+  provider: string;
+  cwd: string;
+  workspaceId?: string;
+  model?: string;
+  initialPrompt: string;
+  labels: Record<string, string>;
+  idempotencyKey: string;
+}
+
+/** One projected timeline item. `detail` is untrusted data: a shell call carries `command`, `output` and `exitCode`. */
+export interface PaseoTimelineItem { type: string; name?: unknown; /** A tool call: running, completed, failed or canceled. */ status?: unknown; detail?: Record<string, unknown> }
 
 /** What the daemon reports about a path on its machine, from `lstat` on the path itself: a link is a `symlink`, never its target. */
 export interface PaseoPathInspection {
@@ -180,6 +196,39 @@ export class PaseoConnection extends EventEmitter<PaseoConnectionEvents> {
     if (this.sentByUs.size > 500) this.sentByUs.clear();
     this.sentByUs.add(text);
     await client.sendAgentMessage(agentId, text);
+  }
+
+  /**
+   * Sends text the way the Paseo app sends a typed message, with the app's default
+   * send behaviour, `activeTurnBehavior: "steer"`: a running turn gets the text, an idle agent starts a turn. No `sourceAgentId`.
+   * The daemon keeps a receipt per message id, so a repeat of the same id and text sends nothing.
+   */
+  async sendAgentMessageAsUser(agentId: string, text: string, options: { messageId: string }): Promise<void> {
+    const client = this.client;
+    if (!client?.sendAgentMessage || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    if (this.sentByUs.size > 500) this.sentByUs.clear();
+    this.sentByUs.add(text);
+    await client.sendAgentMessage(agentId, text, { messageId: options.messageId, activeTurnBehavior: "steer" });
+  }
+
+  async setAgentLabels(agentId: string, labels: Record<string, string>): Promise<void> {
+    const client = this.client;
+    if (!client?.updateAgent || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    await client.updateAgent(agentId, { labels });
+  }
+
+  async createAgent(options: PaseoCreateAgentOptions): Promise<PaseoAgent> {
+    const client = this.client;
+    if (!client?.createAgent || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    return client.createAgent(options);
+  }
+
+  /** The last `limit` timeline items of an agent, projected. */
+  async timelineTail(agentId: string, limit: number): Promise<PaseoTimelineItem[]> {
+    const client = this.client;
+    if (!client?.fetchAgentTimeline || !this.isUp) throw new Error("The Paseo daemon is not connected");
+    const page = await client.fetchAgentTimeline(agentId, { direction: "tail", limit, projection: "projected" });
+    return page.entries.map(({ item }) => ({ type: item.type, ...(item.name === undefined ? {} : { name: item.name }), ...(item.status === undefined ? {} : { status: item.status }), ...(item.detail ? { detail: item.detail } : {}) }));
   }
 
   /** What the daemon, on the machine the agent works on, says is at `path` (relative to `cwd`). Rejects when the daemon is not

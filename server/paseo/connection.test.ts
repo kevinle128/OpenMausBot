@@ -231,3 +231,61 @@ describe("PaseoConnection.agentContext", () => {
     });
   });
 });
+
+describe("PaseoConnection messages and agents", () => {
+  class MessagingClient extends FakeClient {
+    sent: Array<{ agentId: string; text: string; options: unknown }> = [];
+    userMessages: string[] = [];
+    async sendAgentMessage(agentId: string, text: string, options?: unknown) {
+      this.sent.push({ agentId, text, options });
+    }
+    async fetchAgentTimeline() {
+      return { entries: this.userMessages.map((text) => ({ item: { type: "user_message", text } })) };
+    }
+  }
+
+  it("keeps sendMessage unchanged and marks texts sent with a message id as its own", async () => {
+    const client = new MessagingClient();
+    const { connection } = await connected(client);
+    await connection.sendMessage("a1", "plain note");
+    await connection.sendAgentMessageAsUser("a1", "pr was merged", { messageId: "c1:abc" });
+    expect(client.sent).toEqual([
+      { agentId: "a1", text: "plain note", options: undefined },
+      { agentId: "a1", text: "pr was merged", options: { messageId: "c1:abc", activeTurnBehavior: "steer" } },
+    ]);
+    client.userMessages = ["plain note", "pr was merged", "what the person typed"];
+    expect((await connection.agentContext("a1")).firstPrompt).toBe("what the person typed");
+    await connection.stop();
+  });
+
+  it("refuses the new calls while the daemon is not connected", async () => {
+    const connection = new PaseoConnection({ createClient: () => new MessagingClient() });
+    await expect(connection.sendAgentMessageAsUser("a1", "x", { messageId: "m" })).rejects.toThrow("not connected");
+    await expect(connection.setAgentLabels("a1", {})).rejects.toThrow("not connected");
+    await expect(connection.timelineTail("a1", 5)).rejects.toThrow("not connected");
+    await expect(connection.createAgent({ provider: "claude", cwd: "/w", initialPrompt: "x", labels: {}, idempotencyKey: "k" })).rejects.toThrow("not connected");
+  });
+
+  it("projects the tail of a timeline and passes labels and creation to the client", async () => {
+    const calls: unknown[] = [];
+    const client = new MessagingClient();
+    client.fetchAgentTimeline = (async (_id: string, options: unknown) => {
+      calls.push(options);
+      return { entries: [{ item: { type: "tool_call", name: "Bash", detail: { type: "shell", command: "gh pr create", output: "u", exitCode: 0 } } }, { item: { type: "assistant_message", text: "ok" } }] };
+    }) as never;
+    Object.assign(client, {
+      updateAgent: async (agentId: string, updates: unknown) => { calls.push(["update", agentId, updates]); },
+      createAgent: async (options: unknown) => { calls.push(["create", options]); return { id: "n1" }; },
+    });
+    const { connection } = await connected(client);
+    expect(await connection.timelineTail("a1", 7)).toEqual([
+      { type: "tool_call", name: "Bash", detail: { type: "shell", command: "gh pr create", output: "u", exitCode: 0 } },
+      { type: "assistant_message" },
+    ]);
+    await connection.setAgentLabels("a1", { k: "v" });
+    const options = { provider: "claude", cwd: "/w", initialPrompt: "x", labels: { a: "b" }, idempotencyKey: "k" };
+    expect(await connection.createAgent(options)).toEqual({ id: "n1" });
+    expect(calls).toEqual([{ direction: "tail", limit: 7, projection: "projected" }, ["update", "a1", { labels: { k: "v" } }], ["create", options]]);
+    await connection.stop();
+  });
+});
