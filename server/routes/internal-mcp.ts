@@ -15,7 +15,7 @@ import { nameList } from "../mcp-health.ts";
 import type { McpAuthState, McpOAuthManager } from "../mcp-oauth.ts";
 import type { McpProbeResult } from "../mcp-probe.ts";
 import { publicMcpUrl, type HostLookup } from "../mcp-public-url.ts";
-import { isRemoteMcpServer, parseMcpServerMutation, parseStoredMcpServer, type StoredMcpServer, type StoredRemoteMcpServer, type StoredStdioMcpServer } from "../mcp-registry.ts";
+import { isRemoteMcpServer, isV2Connection, parseMcpServerMutation, parseStoredMcpServer, V2_BOT_REFUSAL, type StoredMcpServer, type StoredRemoteMcpServer, type StoredStdioMcpServer } from "../mcp-registry.ts";
 import { serverLine, type ServerLineKey } from "../server-lines.ts";
 import type { BotRecord } from "../store.ts";
 import { PASS, type RouteHandler } from "./table.ts";
@@ -174,6 +174,7 @@ async function act(deps: Ctx, body: unknown, signal: AbortSignal): Promise<Outco
   const parsed = parseStoredMcpServer(name, servers[name]);
   if (!parsed.ok) return { status: 400, error: parsed.error };
   const server = parsed.server;
+  if (isV2Connection(server)) return { status: 403, error: V2_BOT_REFUSAL };
   const owner = mcpOwner(name, server, deps.sender.id, deps.personal());
   const may = botMayChange(owner, server);
   if (owner === "theirs" && !may.ok) return { status: 403, error: may.error };
@@ -200,7 +201,7 @@ function list(deps: Deps): Outcome {
   const personal = deps.personal();
   const rows = Object.entries(deps.cfg().mcpServers ?? {}).flatMap(([name, raw]) => {
     const parsed = parseStoredMcpServer(name, raw);
-    if (!parsed.ok) return [];
+    if (!parsed.ok || isV2Connection(parsed.server)) return [];
     const owner = mcpOwner(name, parsed.server, deps.sender.id, personal);
     if (owner === "theirs") return [];
     const server = parsed.server;

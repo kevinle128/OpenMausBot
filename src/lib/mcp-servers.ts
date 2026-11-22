@@ -7,6 +7,8 @@ export interface McpServerSummary {
   enabled: boolean;
   /** The bot whose own server this is. */
   bot?: string;
+  /** Used by MausBot itself (an MCP v2 connection): no bot can be given it. */
+  ombOnly?: boolean;
   /** The bots it is off for, because it doesn't start for them. */
   offFor?: string[];
 }
@@ -24,7 +26,7 @@ const subscribe = (listener: () => void) => {
 export function updateMcpServers(servers: McpServerSummary[]): void {
   generation += 1;
   inflight = null;
-  cached = { servers: servers.map(({ name, enabled, bot, offFor }) => ({ name, enabled: Boolean(enabled), ...(bot ? { bot } : {}), ...(offFor?.length ? { offFor } : {}) })), error: false };
+  cached = { servers: servers.map(({ name, enabled, bot, offFor, ombOnly }) => ({ name, enabled: Boolean(enabled), ...(bot ? { bot } : {}), ...(ombOnly ? { ombOnly: true } : {}), ...(offFor?.length ? { offFor } : {}) })), error: false };
   for (const listener of listeners) listener();
 }
 
@@ -60,7 +62,7 @@ export function useMcpServers(): { servers: McpServerSummary[] | null; error: bo
 
 /** The servers a bot can be given: every bot's, and its own. */
 export function mcpServersOfBot(all: McpServerSummary[], botId: string): McpServerSummary[] {
-  return all.filter((server) => !server.bot || server.bot === botId);
+  return all.filter((server) => !server.ombOnly && (!server.bot || server.bot === botId));
 }
 
 export function mcpServersForBot(all: McpServerSummary[], own: string[] | null | undefined, botId: string): McpServerSummary[] {

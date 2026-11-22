@@ -151,15 +151,23 @@ export function McpServerEditor({ server, fixKeys = false, taken, team, busy, on
                   <span className={LABEL}>{t("mcp.field.type")}</span>
                   <Select className="mt-1.5 w-full" value={draft.type} onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value === "sse" ? "sse" : "http" }))}>
                     <option value="http">{t("mcp.type.http")}</option>
-                    <option value="sse">{t("mcp.type.sse")}</option>
+                    <option value="sse" disabled={draft.protocol === "v2"}>{t("mcp.type.sse")}</option>
                   </Select>
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className={LABEL}>{t("mcp.field.protocol")}</span>
+                  <Select className="mt-1.5 w-full" value={draft.protocol} onChange={(event) => setDraft((current) => event.target.value === "v2" ? { ...current, protocol: "v2", type: "http" } : { ...current, protocol: "legacy" })}>
+                    <option value="legacy">{t("mcp.protocol.legacy")}</option>
+                    <option value="v2">{t("mcp.protocol.v2")}</option>
+                  </Select>
+                  {draft.protocol === "v2" && <span data-mcp-v2-hint className="mt-1 block text-[11px] text-ink-secondary">{t("mcp.protocol.v2Hint")}</span>}
                 </label>
                 <div className="sm:col-span-2">
                   <div className={cn(LABEL, "mb-1.5")}>{t("mcp.field.headerRows")}</div>
                   <McpSecretRows kind="header" rows={draft.headers} onChange={(headers) => setDraft((current) => ({ ...current, headers }))} />
                   <span className="mt-1.5 block text-[11px] text-ink-secondary">{t("mcp.headersHint")}</span>
                 </div>
-                <div className="sm:col-span-2">
+                {draft.protocol !== "v2" && <div className="sm:col-span-2">
                   <div className="text-[12px] font-medium text-ink">{t("mcp.oauth.title")}</div>
                   <p className="mt-1 text-[11px] leading-relaxed text-ink-secondary">{savedOAuth ? t("mcp.oauth.hintRedirect", { uri: savedOAuth.redirectUri }) : t("mcp.oauth.hint")}</p>
                   <div className="mt-2 grid gap-4 sm:grid-cols-2">
@@ -187,7 +195,7 @@ export function McpServerEditor({ server, fixKeys = false, taken, team, busy, on
                         onChange={(event) => setDraft((current) => ({ ...current, oauthScopes: event.target.value }))} />
                     </label>
                   </div>
-                </div>
+                </div>}
               </>
             ) : (
               <>
