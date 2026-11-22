@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { configJsonSchema, configVersion, createConfigSource, parseOrchestratorConfig, resolveForRepo, resolveRoutines } from "./config.ts";
+import { configJsonSchema, configVersion, createConfigSource, orchestratorActive, parseOrchestratorConfig, resolveForRepo, resolveRoutines } from "./config.ts";
 import { BUILT_IN_CONNECTORS } from "./connectors/index.ts";
 import { DEFAULT_ROUTINES } from "./default-routines.ts";
 import { DEFAULT_MESSAGES } from "./messages.ts";
@@ -273,5 +273,14 @@ describe("config JSON Schema", () => {
   it("matches the committed JSON Schema file", () => {
     const committed = readFileSync(new URL("./config.schema.json", import.meta.url), "utf8");
     expect(committed).toBe(`${JSON.stringify(configJsonSchema(BUILT_IN_CONNECTORS), null, 2)}\n`);
+  });
+});
+
+describe("orchestratorActive", () => {
+  it("is on for the top-level flag or for any enabled connector, and off otherwise", () => {
+    expect(orchestratorActive(parse({}))).toBe(false);
+    expect(orchestratorActive(parse({ enabled: true }))).toBe(true);
+    expect(orchestratorActive(parse({ connectors: { "fake-event": { use: "fake-event", enabled: true } } }))).toBe(true);
+    expect(orchestratorActive(parse({ enabled: false, connectors: { "fake-event": { use: "fake-event", enabled: false } } }))).toBe(false);
   });
 });

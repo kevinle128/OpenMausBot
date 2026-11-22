@@ -42,6 +42,14 @@ describe("connector supervisor", () => {
     expect(h.store.connectorStatus("test-feed", h.clock.now()).events24h).toBe(2);
   });
 
+  it("starts an enabled connector with no top-level flag, and starts nothing when no connector is enabled", () => {
+    const feed = createTestFeed([chatEvent("test-feed", "a")]);
+    start(feed, () => configWith(feed, false, false)).sync();
+    expect(supervisor.running()).toEqual([]);
+    start(feed, () => configWith(feed, true, false)).sync();
+    expect(supervisor.running()).toEqual(["test-feed"]);
+  });
+
   it("rejects an emitted event that breaks the contract and logs the reason", () => {
     const bad = { ...chatEvent("test-feed", "bad"), data: { text: 1 } };
     const feed = createTestFeed([bad as never]);

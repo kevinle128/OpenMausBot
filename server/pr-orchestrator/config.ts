@@ -287,6 +287,10 @@ function deepMerge(base: unknown, patch: unknown): unknown {
   return merged;
 }
 
+/** Whether the orchestrator receives events: the top-level flag, or any enabled connector instance. A connector is a gate that receives events, so turning one on opens intake without the top-level flag. */
+export const orchestratorActive = (config: Pick<OrchestratorConfig, "enabled" | "connectors">): boolean =>
+  config.enabled || Object.values(config.connectors).some(instance => instance.enabled);
+
 /** The config for one repo: the tunables with the matching overrides applied in list order, and the resolved routines (their provider and repo filters are the evaluator's job). */
 export function resolveForRepo(config: OrchestratorConfig, provider: Provider, repo: string): RepoConfig {
   let tunable: unknown = {
