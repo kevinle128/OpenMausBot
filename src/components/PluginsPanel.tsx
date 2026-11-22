@@ -45,7 +45,7 @@ import { SavedKeysReset } from "./SavedKeysReset";
 import { botAppScope } from "@/lib/bot-app-access";
 import { AppGrantPrompt, botsForApps, useAppGrants } from "./AppGrantPrompt";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { ServiceIcon, type ToolkitCard } from "./ServiceIcon"; import { AppsSection } from "./AppsSection";
+import { ServiceIcon, type ToolkitCard } from "./ServiceIcon"; import { AppsSection } from "./AppsSection"; import { EventSourcesSection } from "./event-sources/EventSourcesSection";
 export { ServiceIcon, type ToolkitCard } from "./ServiceIcon";
 
 export { preloadConnectedApps, type ConnectorInventory } from "@/lib/connected-apps";
@@ -731,6 +731,7 @@ export function PluginsPanel() {
               <McpServersPanel embedded hideHosted={filter === "all"} />
             </div>
           )}
+          {filter === "all" && category === null && !searching && <EventSourcesSection />}
         </div>
         <ConfirmDialog open={disconnecting !== null} layer="z-[60]" tone="danger" title={t("connectors.disconnect")} confirmLabel={t("connectors.disconnect")}
           body={disconnecting ? disconnectAccountConfirmation(disconnecting.label, disconnecting.account) : ""} onCancel={() => setDisconnecting(null)}

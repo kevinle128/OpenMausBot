@@ -2,9 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { noneAttached, type AttachedAdapters } from "./adapters/switched.ts";
 import { createOrchestratorCore, type OrchestratorCore } from "./core.ts";
+import type { NotifierPort } from "./ports.ts";
 import { openOrchestratorStore } from "./store.ts";
-import { counterIds, DEFAULT_PR_KEY, ev, fakeClock } from "./testing/builders.ts";
+import { counterIds, DEFAULT_PR_KEY, ev, fakeClock, SHA_A, SHA_B } from "./testing/builders.ts";
+import { creation, fakeRuntime, FAKE_OWNER } from "./testing/fake-runtime.ts";
+import { recordingPorts } from "./testing/recording-ports.ts";
 import { manualTimer } from "./testing/manual-timer.ts";
 import type { CommandRecord } from "./types.ts";
 
@@ -151,5 +155,169 @@ describe("orchestrator core with the real due timer", () => {
     expect(calls).toBe(1);
     release();
     await vi.waitFor(() => expect(core.status(false).counts.commands).toEqual([{ status: "done", outcome: "succeeded", count: 1 }]));
+  });
+});
+
+describe("orchestrator core adapters", () => {
+  const ADAPTERS_ON = { adapters: { forge: { github: { enabled: true }, gitlab: { enabled: true } }, notifier: { enabled: true }, runtime: { enabled: true } } };
+  const start = (doc: Record<string, unknown>, attached: () => AttachedAdapters) => {
+    writeFileSync(configPath(), JSON.stringify({ enabled: true, ...doc }));
+    const session = open({ attached });
+    session.core.start();
+    return session;
+  };
+
+  /** A notifier that records its cards; adopt answers what the test sets. */
+  function fakeNotifier() {
+    const recording = recordingPorts().ports.notifier;
+    const seen = { cards: [] as Array<{ kind: string; decisionId: string }>, adopted: [] as string[], reconciled: [] as string[][], adoptAnswer: true };
+    const port: NotifierPort = {
+      card: async (kind, payload, answers) => {
+        seen.cards.push({ kind, decisionId: payload.decisionId });
+        return recording.card(kind, payload, answers).then(() => ({ cardId: `card-${seen.cards.length}` }));
+      },
+      notice: recording.notice,
+      adopt: cardId => { seen.adopted.push(cardId); return seen.adoptAnswer; },
+      reconcile: ids => { seen.reconciled.push([...ids].sort()); },
+    };
+    return { port, seen };
+  }
+  /** Lets a finished resume clear its guard before the next call. */
+  const resumed = (core: OrchestratorCore) => {
+    core.resumeCards();
+    return new Promise<void>(resolve => setTimeout(resolve, 5));
+  };
+  const attachedWith = (patch: Partial<AttachedAdapters>) => () => ({ ...noneAttached(), ...patch });
+
+  it("binds an owner once when the runtime reports the same creation twice", async () => {
+    const runtime = fakeRuntime();
+    const session = start(ADAPTERS_ON, attachedWith({ runtime: runtime.port }));
+    runtime.create(creation("github", "acme/widgets", 1));
+    runtime.create(creation("github", "acme/widgets", 1));
+    const bound = () => session.core.pr(DEFAULT_PR_KEY)?.ledger.filter(row => row.entry.type === "owner.bound") ?? [];
+    expect(bound()).toHaveLength(1);
+    expect(session.core.pr(DEFAULT_PR_KEY)?.record.owner).toMatchObject({ agentId: FAKE_OWNER.agentId });
+
+    runtime.create(creation("github", "acme/widgets", 1, { ...FAKE_OWNER, agentId: "agent-2" }));
+    expect(bound()).toHaveLength(2);
+    await session.core.stop();
+    expect(runtime.subscribers()).toBe(0);
+  });
+
+  it("drops a creation report while binding owners is off", () => {
+    const runtime = fakeRuntime();
+    const session = start({ adapters: { runtime: { enabled: true, bindOwners: false } } }, attachedWith({ runtime: runtime.port }));
+    runtime.create(creation("github", "acme/widgets", 1));
+    expect(session.core.pr(DEFAULT_PR_KEY)).toBeNull();
+  });
+
+  /** A PR that waits for a decision, with its card shown by the attached notifier. */
+  async function pendingDecision(notifier: ReturnType<typeof fakeNotifier>) {
+    const session = start(ADAPTERS_ON, attachedWith({ notifier: notifier.port }));
+    receive(session, ev.opened(), ev.reviewFinished({ status: "needs-person", head: SHA_A, reviewedSha: SHA_A }));
+    await session.run();
+    await vi.waitFor(() => expect(session.core.pr(DEFAULT_PR_KEY)?.record.pendingDecision).not.toBeNull());
+    return session;
+  }
+
+  it("adopts the open card of a pending decision and opens it again when it is gone", async () => {
+    const notifier = fakeNotifier();
+    const session = await pendingDecision(notifier);
+    const { decisionId } = session.core.pr(DEFAULT_PR_KEY)!.record.pendingDecision!;
+    expect(notifier.seen.cards).toEqual([{ kind: "decision", decisionId }]);
+
+    notifier.seen.adoptAnswer = true;
+    notifier.seen.reconciled.length = 0;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[decisionId]]));
+    expect(notifier.seen.adopted).toContain("card-1");
+    expect(notifier.seen.cards).toHaveLength(1);
+
+    notifier.seen.adoptAnswer = false;
+    notifier.seen.reconciled.length = 0;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[decisionId]]));
+    expect(notifier.seen.cards).toHaveLength(2);
+    const asked = session.core.pr(DEFAULT_PR_KEY)!.commands.find(command => command.type === "AskPerson");
+    expect(asked?.result).toEqual({ outcome: "succeeded", detail: { cardId: "card-2" } });
+    // The next restart adopts the new card, not the old one.
+    notifier.seen.adoptAnswer = true;
+    notifier.seen.adopted.length = 0;
+    notifier.seen.reconciled.length = 0;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[decisionId]]));
+    expect(notifier.seen.adopted).toEqual(["card-2"]);
+  });
+
+  it("resumes no card for an answered decision", async () => {
+    const notifier = fakeNotifier();
+    const session = await pendingDecision(notifier);
+    const { decisionId } = session.core.pr(DEFAULT_PR_KEY)!.record.pendingDecision!;
+    session.core.inputs.answer(DEFAULT_PR_KEY, decisionId, "Leave it as it is");
+    notifier.seen.adopted.length = 0;
+    notifier.seen.reconciled.length = 0;
+    notifier.seen.adoptAnswer = false;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[]]));
+    expect(notifier.seen.adopted).toEqual([]);
+    expect(notifier.seen.cards).toHaveLength(1);
+  });
+
+  it("closes the card of an approval whose held command was dropped", async () => {
+    const notifier = fakeNotifier();
+    // oxlint-disable-next-line unicorn/no-thenable -- a routine's action list is named "then" in the config document
+    const ask = { id: "ask-merge", name: "Merge after approval", when: { on: ["pr.opened"] }, then: [{ do: "Merge", askFirst: true }], once: "per-pr" };
+    const session = start({ ...ADAPTERS_ON, routines: { useDefaults: false, custom: [ask] } }, attachedWith({ notifier: notifier.port }));
+    receive(session, ev.opened());
+    await session.run();
+    await vi.waitFor(() => expect(session.core.pr(DEFAULT_PR_KEY)?.record.pendingDecision?.kind).toBe("approve_action"));
+    const { decisionId } = session.core.pr(DEFAULT_PR_KEY)!.record.pendingDecision!;
+    notifier.seen.reconciled.length = 0;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[decisionId]]));
+
+    receive(session, ev.pushed({ head: SHA_B, after: SHA_B }));
+    await session.run();
+    expect(session.core.pr(DEFAULT_PR_KEY)?.record.pendingDecision).toBeNull();
+    notifier.seen.reconciled.length = 0;
+    await resumed(session.core);
+    await vi.waitFor(() => expect(notifier.seen.reconciled).toEqual([[]]));
+  });
+
+  it("does nothing for cards while the notifier switch is off", async () => {
+    const notifier = fakeNotifier();
+    const session = start({}, attachedWith({ notifier: notifier.port }));
+    await resumed(session.core);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(notifier.seen.reconciled).toEqual([]);
+  });
+
+  it("runs a routine test with every switch on and adapters attached without calling any adapter", async () => {
+    const recording = recordingPorts();
+    const runtime = fakeRuntime();
+    const notifier = fakeNotifier();
+    const session = start({ ...ADAPTERS_ON, routines: { useDefaults: false } }, attachedWith({
+      forge: { github: recording.ports.forge.github, gitlab: recording.ports.forge.gitlab }, notifier: notifier.port, runtime: runtime.port,
+    }));
+    receive(session, ev.opened());
+    await session.run();
+    const inputSeq = session.core.pr(DEFAULT_PR_KEY)!.ledger.find(row => row.entry.type === "event.received")!.seq;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const calls = recording.calls.length;
+    const cards = notifier.seen.cards.length;
+
+    // oxlint-disable-next-line unicorn/no-thenable -- a routine's action list is named "then" in the config document
+    const draft = { id: "try-everything", name: "Try everything", when: { on: ["pr.opened"] }, once: "per-trigger", then: [
+      { do: "Notify", params: { kind: "merged" } }, { do: "TellOwner", params: { template: "merged" } }, { do: "Merge" }, { do: "RefreshDetails" },
+      { do: "AskPerson", params: { kind: "decision" } }, { do: "Instruct", params: { to: "new-agent", prompt: "Look at {{repo}}" } },
+    ] };
+    const result = await session.core.testRoutine({ routine: draft, prKey: DEFAULT_PR_KEY, inputSeq });
+    expect(result.matched).toBe(true);
+    expect(result.actions.map(action => action.action)).toEqual(["Notify", "TellOwner", "Merge", "RefreshDetails", "AskPerson", "Instruct"]);
+    expect(result.actions.every(action => action.payload !== undefined)).toBe(true);
+    expect(recording.calls).toHaveLength(calls);
+    expect(notifier.seen.cards).toHaveLength(cards);
+    expect(runtime.sent).toEqual([]);
+    expect(runtime.spawned).toEqual([]);
   });
 });

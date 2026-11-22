@@ -19,10 +19,10 @@ export function recordingPorts(): { ports: OrchestratorPorts; calls: RecordedCal
   };
   const forge = (provider: "github" | "gitlab") => ({
     provider,
-    details: record(`forge.${provider}`, "details", (pr: { headSha: string | null }) => ({ headSha: pr.headSha ?? "", mergeable: true, blockers: [], requiredChecks: null, baseFailing: [], failedJobs: [] })),
+    details: record(`forge.${provider}`, "details", (pr: { headSha: string | null }) => ({ headSha: pr.headSha ?? "", mergeable: true, blockers: [] as never[], requiredChecks: null, baseFailing: [], failedJobs: [] })),
     ciLog: record(`forge.${provider}`, "ciLog", () => ""),
     reviewItems: record(`forge.${provider}`, "reviewItems", () => []),
-    merge: record(`forge.${provider}`, "merge", () => ({ merged: true, sha: "merged-sha" })),
+    merge: record(`forge.${provider}`, "merge", () => ({ merged: true as const, sha: "merged-sha" })),
     comment: record(`forge.${provider}`, "comment", () => ({})),
   });
   const ports: OrchestratorPorts = {

@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { startDueTimer } from "../due-timer.ts";
-import { createCommandBus, type CommandBus } from "./command-bus.ts";
-import { configJsonSchema, createConfigSource, resolveRoutines } from "./config.ts";
+import { createCommandBus, configOfCommand, subjectLabelOf, type CommandBus } from "./command-bus.ts";
+import { askCardOf, portHandlers } from "./command-handlers.ts";
+import { noneAttached, switchedPorts, type AttachedAdapters } from "./adapters/switched.ts";
+import { configJsonSchema, createConfigSource, orchestratorActive, resolveRoutines } from "./config.ts";
 import { createConnectorSupervisor, type ConnectorSupervisor } from "./connectors-supervisor.ts";
 import { BUILT_IN_CONNECTORS } from "./connectors/index.ts";
 import { createConnectorRegistry, type ConnectorEventType, type ConnectorRegistry } from "./connectors/registry.ts";
 import { createOmbEventValidator } from "./contract/validate.ts";
 import { stubPorts } from "./adapters/stub.ts";
-import { stubHandlers, type CommandHandlers, type OrchestratorPorts } from "./handlers.ts";
+import { stubHandlers, type CommandContext, type CommandHandlers, type OrchestratorPorts } from "./handlers.ts";
 import type { ConnectorDefinition } from "./ports.ts";
 import { createProcessManager, type EvaluationInfo, type ProcessManager } from "./process-manager.ts";
 import { createScheduler, type Scheduler } from "./scheduler.ts";
@@ -16,8 +18,8 @@ import { describeRoutineWith, testRoutine as runRoutineTest, toSimInputs, type R
 import { openOrchestratorStore, type OrchestratorStore, type ReceivedStatus } from "./store.ts";
 import {
   ROUTINE_HISTORY_SHOWN,
-  type CommandRecord, type IntakeSink, type LedgerRow, type OrchestratorConfig, type PrKey, type PrRecord, type PrState,
-  type Routine, type TimerRecord, type TriggerName,
+  prKey as makePrKey, type CommandRecord, type IntakeSink, type LedgerRow, type OrchestratorConfig, type PrKey, type PrRecord, type PrState,
+  type Owner, type Provider, type Routine, type TimerRecord, type TriggerName,
 } from "./types.ts";
 
 const SYNC_INTERVAL_MS = 15_000;
@@ -36,14 +38,26 @@ export interface CoreDeps {
   newId(): string;
   handlers?: Partial<CommandHandlers>;
   ports?: Partial<OrchestratorPorts>;
+  /** Which ports have their switch on; absent means all of them. */
+  installed?: CommandContext["installed"];
   startTimer?: typeof startDueTimer;
   onEvaluate?(info: EvaluationInfo): void;
   log(line: string): void;
 }
 
 /** The parts that run steps: the process manager, the command bus and the scheduler, wired so that new work pokes the scheduler. */
+const PORT_NAMES = ["forge", "runtime", "notifier", "workflows", "resolvers", "interpreters"] as const;
+
+/** The given ports over a base. Each port is read when it is used, so a port with a getter (the switched ones) stays live. */
+function overlay(base: OrchestratorPorts, given: Partial<OrchestratorPorts> | undefined): OrchestratorPorts {
+  if (!given) return base;
+  const merged = {} as OrchestratorPorts;
+  for (const name of PORT_NAMES) Object.defineProperty(merged, name, { enumerable: true, get: () => given[name] ?? base[name] });
+  return merged;
+}
+
 export function createCoreParts(deps: CoreDeps): CoreParts {
-  const ports: OrchestratorPorts = { ...stubPorts(), ...deps.ports };
+  const ports = overlay(stubPorts(), deps.ports);
   const handlers: CommandHandlers = { ...stubHandlers(), ...deps.handlers };
   let scheduler: Scheduler | null = null;
   const poke = () => scheduler?.poke();
@@ -52,7 +66,7 @@ export function createCoreParts(deps: CoreDeps): CoreParts {
     ...(deps.onEvaluate ? { onEvaluate: deps.onEvaluate } : {}),
   });
   const config = () => deps.config().config;
-  const bus = createCommandBus({ store: deps.store, pm, handlers, ports, config, now: deps.now, log: deps.log, onSettled: poke });
+  const bus = createCommandBus({ store: deps.store, pm, handlers, ports, ...(deps.installed ? { installed: deps.installed } : {}), config, now: deps.now, log: deps.log, onSettled: poke });
   scheduler = createScheduler({ store: deps.store, pm, bus, now: deps.now, config, startTimer: deps.startTimer, log: deps.log });
   return { store: deps.store, pm, bus, scheduler, ports };
 }
@@ -81,6 +95,11 @@ export interface RoutineRun {
 export interface OrchestratorCore {
   intake: IntakeSink;
   enabled(): boolean;
+  /**
+   * Keeps the cards of open questions answerable: takes over a card that an earlier run opened, opens it again when it is
+   * gone, and closes the notifier's cards whose question ended. It does nothing while the notifier is off or not attached.
+   */
+  resumeCards(): void;
   /** Repairs the projection, puts interrupted commands back in the queue, listens to workflow runs and starts the connectors. Call it once, in the tick that created the core. */
   start(): void;
   /** Stops the timers and the connectors, waits at most 5 s for running commands, and closes the store. A second call returns the same promise. */
@@ -115,6 +134,8 @@ export interface CoreOptions {
   newId?: () => string;
   handlers?: Partial<CommandHandlers>;
   ports?: Partial<OrchestratorPorts>;
+  /** The adapters that the host built; read on every use. */
+  attached?: () => AttachedAdapters;
   startTimer?: typeof startDueTimer;
   log?: (line: string) => void;
 }
@@ -134,6 +155,35 @@ export function inboundInstanceIn(
   return { definition, settings: instance.settings, secretName: secretNameOf(instance, definition) };
 }
 
+/** The empty status of a connector that has never stored anything. */
+export const EMPTY_CONNECTOR_STATUS: ConnectorView["status"] = {
+  lastEventAt: null, events24h: 0, lastError: null, lastErrorAt: null, signatureFailures24h: 0, cursorUpdatedAt: null,
+};
+
+/** Each configured instance of a config as the App section lists it; the status of an instance comes from the caller (a store, or nothing). */
+export function connectorViewsIn(
+  config: OrchestratorConfig, registry: ConnectorRegistry, secretPresent: (secretName: string) => boolean,
+  statusOf: (id: string) => ConnectorView["status"],
+): ConnectorView[] {
+  return Object.entries(config.connectors).flatMap(([id, instance]) => {
+    const definition = registry.get(instance.use);
+    if (!definition) return [];
+    const secretName = secretNameOf(instance, definition);
+    return [{
+      id, use: instance.use, title: definition.title, description: definition.description, icon: definition.icon, delivery: definition.delivery,
+      enabled: instance.enabled, intakePath: definition.delivery === "inbound-http" ? `/events/${id}` : null,
+      secretName, secretPresent: secretName !== null && secretPresent(secretName),
+      settings: instance.settings, settingsSchema: z.toJSONSchema(definition.settingsSchema, { io: "input" }) as Record<string, unknown>,
+      eventTypes: registry.eventTypes(instance.use),
+      status: statusOf(id),
+    }];
+  });
+}
+
+/** The resolved routines of a config with their sentences. */
+export const routinesIn = (config: OrchestratorConfig, registry: ConnectorRegistry): Array<Routine & { source: "default" | "custom"; describe: string }> =>
+  resolveRoutines(config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, config) }));
+
 export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   const definitions = (deps.connectors ?? BUILT_IN_CONNECTORS) as readonly ConnectorDefinition[];
   const registry = createConnectorRegistry(definitions);
@@ -146,8 +196,12 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     onVersion: version => log(`pr-orchestrator: config ${version.slice(0, 12)}`),
   });
   const loaded = () => source.current();
+  const attached = deps.attached ?? noneAttached;
+  const switched = switchedPorts(() => loaded().config, attached);
   const parts = createCoreParts({
-    store, connectors: registry, config: loaded, now, newId: deps.newId ?? randomUUID, handlers: deps.handlers, ports: deps.ports,
+    store, connectors: registry, config: loaded, now, newId: deps.newId ?? randomUUID,
+    handlers: { ...portHandlers(), ...deps.handlers }, ports: overlay(switched, deps.ports),
+    ...(deps.ports ? {} : { installed: switched.installed }),
     startTimer: deps.startTimer, log,
   });
   const supervisor: ConnectorSupervisor = createConnectorSupervisor({
@@ -155,6 +209,8 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   });
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let unwatch: (() => void) | null = null;
+  let unwatchCreations: (() => void) | null = null;
+  let resuming: Promise<void> | null = null;
   let stopping: Promise<void> | null = null;
   let schema: Record<string, unknown> | null = null;
 
@@ -171,17 +227,55 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     }
   }
 
+  function onCreated({ pr, owner }: { pr: { provider: Provider; repo: string; number: number; url: string }; owner: Owner }): void {
+    if (store.getPr(makePrKey(pr.provider, pr.repo, pr.number))?.owner?.agentId === owner.agentId) return;
+    try {
+      parts.pm.bindOwner(owner, pr);
+    } catch (error) {
+      log(`pr-orchestrator: owner of ${pr.repo}#${pr.number} could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function resumeOpenCards(): Promise<void> {
+    const config = loaded().config;
+    const { notifier } = parts.ports;
+    for (const { subjectKey, decisionId, command } of store.openQuestions()) {
+      if (command.payload.type !== "AskPerson") continue;
+      const record = subjectKey.startsWith("subject:") ? null : store.getPr(subjectKey);
+      const card = askCardOf(command, { record, config: configOfCommand(config, record), subjectLabel: subjectLabelOf(store, command, record) });
+      const { kind } = command.payload;
+      const detail = command.result?.outcome === "succeeded" ? command.result.detail : undefined;
+      const cardId = detail && "cardId" in detail ? detail.cardId : null;
+      if (cardId !== null && notifier.adopt?.(cardId, { kind, decisionId, subject: card.subject, answers: card.answers })) continue;
+      const opened = await notifier.card(kind, { subject: card.subject, title: card.title, body: card.body, decisionId }, card.answers);
+      store.setCommandResult(command.id, { outcome: "succeeded", detail: { cardId: opened.cardId } });
+    }
+    // Read again after the awaits above: a question asked meanwhile, or one whose card is being shown now, stays open.
+    const decisionIds = new Set([...store.openQuestions().map(open => open.decisionId), ...store.runningQuestionIds()]);
+    notifier.reconcile?.(decisionIds);
+  }
+
+  function resumeCards(): void {
+    if (resuming || stopping || !loaded().config.adapters.notifier.enabled || !attached().notifier) return;
+    resuming = resumeOpenCards().catch(error => {
+      log(`pr-orchestrator: cards could not be resumed: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => { resuming = null; });
+  }
+
   return {
     intake: parts.pm,
-    enabled: () => loaded().config.enabled,
+    enabled: () => orchestratorActive(loaded().config),
+    resumeCards,
 
     start() {
       parts.pm.ensureProjectionVersion();
       store.resetRunningCommands(now());
       unwatch = parts.ports.workflows.watch(onWorkflowDone);
+      unwatchCreations = parts.ports.runtime.watchCreations(onCreated);
       supervisor.sync();
       parts.scheduler.start();
-      syncTimer = setInterval(() => supervisor.sync(), SYNC_INTERVAL_MS);
+      resumeCards();
+      syncTimer = setInterval(() => { supervisor.sync(); resumeCards(); }, SYNC_INTERVAL_MS);
       syncTimer.unref?.();
     },
 
@@ -189,10 +283,11 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
       stopping ??= (async () => {
         if (syncTimer) clearInterval(syncTimer);
         unwatch?.();
+        unwatchCreations?.();
         parts.scheduler.stop();
         await supervisor.stop();
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([parts.bus.idle(), new Promise<void>(resolve => { timeout = setTimeout(resolve, STOP_WAIT_MS); })]);
+        await Promise.race([Promise.all([parts.bus.idle(), resuming]), new Promise<void>(resolve => { timeout = setTimeout(resolve, STOP_WAIT_MS); })]);
         clearTimeout(timeout);
         store.close();
       })();
@@ -202,7 +297,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     status(secretPresent) {
       const { config, version, error } = loaded();
       return {
-        enabled: config.enabled, configVersion: version, configError: error, secretPresent,
+        enabled: orchestratorActive(config), configVersion: version, configError: error, secretPresent,
         counts: {
           byState: store.countPrsByState(), receivedByStatus: store.countReceivedByStatus(), commands: store.countCommands(),
           timersArmed: store.countArmedTimers(),
@@ -213,19 +308,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
 
     connectors(secretPresent) {
       const at = now();
-      return Object.entries(loaded().config.connectors).flatMap(([id, instance]) => {
-        const definition = registry.get(instance.use);
-        if (!definition) return [];
-        const secretName = secretNameOf(instance, definition);
-        return [{
-          id, use: instance.use, title: definition.title, description: definition.description, icon: definition.icon, delivery: definition.delivery,
-          enabled: instance.enabled, intakePath: definition.delivery === "inbound-http" ? `/events/${id}` : null,
-          secretName, secretPresent: secretName !== null && secretPresent(secretName),
-          settings: instance.settings, settingsSchema: z.toJSONSchema(definition.settingsSchema, { io: "input" }) as Record<string, unknown>,
-          eventTypes: registry.eventTypes(instance.use),
-          status: { ...store.connectorStatus(id, at), cursorUpdatedAt: store.cursor(id)?.updatedAt ?? null },
-        }];
-      });
+      return connectorViewsIn(loaded().config, registry, secretPresent, id => ({ ...store.connectorStatus(id, at), cursorUpdatedAt: store.cursor(id)?.updatedAt ?? null }));
     },
 
     inboundInstance: id => inboundInstanceIn(loaded().config, registry, id),
@@ -246,10 +329,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
 
     inputs: { bindOwner: parts.pm.bindOwner, answer: parts.pm.answer, runFinished: parts.pm.runFinished },
 
-    routines() {
-      const { config } = loaded();
-      return resolveRoutines(config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, config) }));
-    },
+    routines: () => routinesIn(loaded().config, registry),
 
     routineRuns(routineId) {
       return store.routineRuns(routineId, ROUTINE_HISTORY_SHOWN).flatMap((row): RoutineRun[] => {

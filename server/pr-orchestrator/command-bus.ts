@@ -1,16 +1,18 @@
 import { resolveForRepo } from "./config.ts";
-import type { CommandHandlers, CommandHandler, OrchestratorPorts } from "./handlers.ts";
-import { NotInstalledError } from "./ports.ts";
+import type { CommandContext, CommandHandlers, CommandHandler, OrchestratorPorts } from "./handlers.ts";
+import { NotInstalledError, PortUnavailableError } from "./ports.ts";
 import type { ProcessManager } from "./process-manager.ts";
 import type { OrchestratorStore } from "./store.ts";
 import { subjectConfig } from "./subject-step.ts";
-import type { CommandRecord, CommandResult, OrchestratorConfig, PrRecord } from "./types.ts";
+import type { CommandRecord, CommandResult, CommandWait, OrchestratorConfig, PrRecord } from "./types.ts";
 
 export interface CommandBusDeps {
   store: OrchestratorStore;
   pm: ProcessManager;
   handlers: CommandHandlers;
   ports: OrchestratorPorts;
+  /** Which ports have their switch on. Absent means all of them: the ports themselves then answer "not installed". */
+  installed?: CommandContext["installed"];
   config(): OrchestratorConfig;
   now(): number;
   log(line: string): void;
@@ -28,17 +30,54 @@ export interface CommandBus {
 
 const SUBJECT_PREFIX = "subject:";
 const MS = 1000;
+/** Seconds between two tries of a command that waits for a port, and for a forge that is still computing. */
+const WAIT_SECONDS = { portSeconds: 60, forgeSeconds: 30 };
+const ALL_INSTALLED: CommandContext["installed"] = { forge: () => true, notifier: true, runtime: true };
+
+/** `<repo>#<number>` for a PR; for another subject, the label of its last event, else `<kind>:<id>`. */
+export function subjectLabelOf(store: Pick<OrchestratorStore, "ledger">, command: Pick<CommandRecord, "subjectKey">, record: PrRecord | null): string {
+  if (record) return `${record.repo}#${record.number}`;
+  for (const row of store.ledger(command.subjectKey).reverse()) {
+    if (row.entry.type !== "event.received") continue;
+    const { subject } = row.entry.event;
+    return (subject as { label?: string }).label ?? `${subject.kind}:${"id" in subject ? subject.id : ""}`;
+  }
+  return command.subjectKey;
+}
+
+/** The merge commit of the latest pr.merged event of a PR, or "". */
+function mergeShaOf(store: Pick<OrchestratorStore, "ledger">, command: Pick<CommandRecord, "subjectKey" | "type">): string {
+  if (command.type !== "Notify") return "";
+  for (const row of store.ledger(command.subjectKey).reverse()) {
+    if (row.entry.type === "event.received" && row.entry.event.type === "pr.merged") {
+      return (row.entry.event.data as { merge?: { commitSha?: string | null } }).merge?.commitSha ?? "";
+    }
+  }
+  return "";
+}
+
+/** The config that a command reads: the repo's for a PR, the global one for another subject. */
+export function configOfCommand(config: OrchestratorConfig, record: PrRecord | null) {
+  return record ? resolveForRepo(config, record.provider, record.repo) : subjectConfig(config);
+}
 
 export function createCommandBus(deps: CommandBusDeps): CommandBus {
   const { store, pm } = deps;
   const running = new Set<Promise<void>>();
 
-  async function call(handler: CommandHandler, command: CommandRecord, record: PrRecord | null, now: number): Promise<CommandResult> {
+  async function call(handler: CommandHandler, command: CommandRecord, record: PrRecord | null, now: number): Promise<CommandResult | CommandWait> {
     try {
       const config = deps.config();
-      return await handler(command, { record, config: record ? resolveForRepo(config, record.provider, record.repo) : subjectConfig(config), now, ports: deps.ports });
+      return await handler(command, {
+        record, config: configOfCommand(config, record), now, ports: deps.ports,
+        bindOwner: owner => {
+          if (record) pm.bindOwner(owner, { provider: record.provider, repo: record.repo, number: record.number, url: record.url });
+        },
+        installed: deps.installed ?? ALL_INSTALLED, subjectLabel: subjectLabelOf(store, command, record), mergeSha: mergeShaOf(store, command), wait: WAIT_SECONDS, log: deps.log,
+      });
     } catch (error) {
       if (error instanceof NotInstalledError) return { outcome: "skipped", reason: "not installed" };
+      if (error instanceof PortUnavailableError) return { outcome: "waiting", reason: error.message, retryAfterSeconds: WAIT_SECONDS.portSeconds };
       return { outcome: "failed", reason: error instanceof Error ? error.message : String(error), retryable: true };
     }
   }
@@ -54,7 +93,10 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
     const attempts = command.attempts + 1;
     try {
       const { commands } = deps.config();
-      if (result.outcome === "failed" && result.retryable && attempts < commands.maxAttempts) {
+      if (result.outcome === "waiting") {
+        if ((command.waits ?? 0) >= commands.maxWaits) pm.finishCommand(command, { outcome: "skipped", reason: `waited too long: ${result.reason}` });
+        else store.rescheduleWait(command.id, deps.now() + result.retryAfterSeconds * MS, result.reason, deps.now());
+      } else if (result.outcome === "failed" && result.retryable && attempts < commands.maxAttempts) {
         const seconds = Math.min(commands.backoffSeconds.initial * 2 ** (attempts - 1), commands.backoffSeconds.max);
         store.rescheduleCommand(command.id, deps.now() + seconds * MS, result.reason, deps.now());
       } else pm.finishCommand(command, result);
@@ -62,7 +104,7 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
     } catch (error) {
       deps.log(`pr-orchestrator: ${command.type} ${command.id} could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
       // Never leave the row running: that would hold every later command of the subject until a restart.
-      settleRunning(command, result);
+      settleRunning(command, result.outcome === "waiting" ? { outcome: "failed", reason: result.reason, retryable: false } : result);
     }
   }
 

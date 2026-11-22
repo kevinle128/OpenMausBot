@@ -185,6 +185,167 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "decisionChoices": {
+          "default": [
+            "Fix it as the review proposes",
+            "Leave it as it is",
+            "Stop and wait for me"
+          ],
+          "minItems": 1,
+          "maxItems": 6,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "newAgent": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "cwd": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "harness": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "model": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "adapters": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "forge": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "github": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "auth": {
+                  "default": "app",
+                  "type": "string",
+                  "enum": [
+                    "app",
+                    "token"
+                  ]
+                },
+                "apiUrl": {
+                  "type": "string"
+                },
+                "appIdSecret": {
+                  "default": "GITHUB_APP_ID",
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$"
+                },
+                "privateKeySecret": {
+                  "default": "GITHUB_APP_PRIVATE_KEY",
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$"
+                },
+                "tokenSecret": {
+                  "default": "GITHUB_TOKEN",
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "gitlab": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "tokenSecret": {
+                  "default": "GITLAB_TOKEN",
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,99}$"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "notifier": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "runtime": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "bindOwners": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -195,6 +356,12 @@
       "properties": {
         "maxAttempts": {
           "default": 6,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxWaits": {
+          "default": 120,
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
@@ -815,6 +982,61 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 9007199254740991
+                  },
+                  "decisionChoices": {
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "agents": {
+                "type": "object",
+                "properties": {
+                  "newAgent": {
+                    "type": "object",
+                    "properties": {
+                      "cwd": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "harness": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false

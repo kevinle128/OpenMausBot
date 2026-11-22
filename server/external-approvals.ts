@@ -52,6 +52,18 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
     return card;
   }
 
+  /** The open entry for a key, while its card is still there to answer; an entry whose message is gone is dropped. */
+  function live(key: string): Open | undefined {
+    const held = open.get(key);
+    if (!held) return undefined;
+    const card = store.messagesFor(held.threadId).find((message: Message) => message.id === held.messageId)?.card;
+    if (!card || card.requestId !== held.requestId || card.answered || card.dismissed) {
+      forget(key);
+      return undefined;
+    }
+    return held;
+  }
+
   function deliver(card: Open, send: () => Promise<void> | void): void {
     void Promise.resolve()
       .then(send)
@@ -61,25 +73,53 @@ export function createExternalApprovals(deps: { store: ExternalApprovalsStore; l
       });
   }
 
+  function openCard(approval: ExternalApproval): { messageId: string; requestId: string } | null {
+    if (live(approval.key)) return null;
+    const requestId = newId();
+    const message = store.appendMessage(approval.threadId, {
+      role: "bot",
+      kind: "options",
+      card: approval.choices
+        ? { title: approval.title, subtitle: approval.subtitle, options: approval.choices, fixedOptions: true, requestId, requestType: "question" }
+        : { title: approval.title, subtitle: approval.subtitle, options: [approval.allowLabel ?? "Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
+    });
+    open.set(approval.key, {
+      threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}), ...(approval.leave ? { leave: approval.leave } : {}),
+    });
+    byRequest.set(requestId, approval.key);
+    return { messageId: message.id, requestId };
+  }
+
   return {
-    has: (key: string): boolean => open.has(key),
+    has: (key: string): boolean => live(key) !== undefined,
     keys: (): string[] => [...open.keys()],
 
     /** False when a card for this key is already open. */
     open(approval: ExternalApproval): boolean {
-      if (open.has(approval.key)) return false;
-      const requestId = newId();
-      const message = store.appendMessage(approval.threadId, {
-        role: "bot",
-        kind: "options",
-        card: approval.choices
-          ? { title: approval.title, subtitle: approval.subtitle, options: approval.choices, fixedOptions: true, requestId, requestType: "question" }
-          : { title: approval.title, subtitle: approval.subtitle, options: [approval.allowLabel ?? "Allow", "Deny"], requestId, requestType: "permission", tool: approval.tool },
-      });
+      return openCard(approval) !== null;
+    },
+
+    /** As open(), but returns where the card is: null when a card for this key is already open. */
+    openCard,
+
+    /** Takes over a card that an earlier run of the server opened, so a tap reaches `onAnswer` again. False when the message
+     * is gone, the card is answered or dismissed, or the key is open already with another card. */
+    adopt(approval: ExternalApproval, at: { messageId: string; requestId: string }): boolean {
+      const held = live(approval.key);
+      if (held) {
+        if (held.requestId !== at.requestId || held.threadId !== approval.threadId) return false;
+        held.onAnswer = approval.onAnswer;
+        return true;
+      }
+      const card = store.messagesFor(approval.threadId).find((message: Message) => message.id === at.messageId)?.card;
+      if (!card || card.requestId !== at.requestId || card.answered || card.dismissed) return false;
+      if (card.requestType !== "question" && card.requestType !== "permission") return false;
+      if (byRequest.has(at.requestId)) return false;
       open.set(approval.key, {
-        threadId: approval.threadId, messageId: message.id, requestId, onAnswer: approval.onAnswer, ...(approval.choices ? { choices: approval.choices } : {}), ...(approval.leave ? { leave: approval.leave } : {}),
+        threadId: approval.threadId, messageId: at.messageId, requestId: at.requestId, onAnswer: approval.onAnswer,
+        ...(card.requestType === "question" ? { choices: card.options ?? [] } : {}), ...(approval.leave ? { leave: approval.leave } : {}),
       });
-      byRequest.set(requestId, approval.key);
+      byRequest.set(at.requestId, approval.key);
       return true;
     },
 

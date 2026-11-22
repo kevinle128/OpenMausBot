@@ -116,6 +116,8 @@ function comparablePayload(payload: CommandPayload): unknown {
   const copy = structuredClone(payload) as Record<string, unknown>;
   if (payload.type === "AskPerson") {
     delete copy.decisionId;
+    // Derived from the trigger, and absent on rows written before the field existed.
+    delete copy.about;
     if (payload.gated) copy.gated = { ...payload.gated, commandId: null };
   }
   const untrusted = copy.untrusted;

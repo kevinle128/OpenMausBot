@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyRecord, fold, foldAll, triggerOf } from "./projection.ts";
 import { ev, row, SHA_A, SHA_B } from "./testing/builders.ts";
-import type { CommandPayload, LedgerEntry, LedgerRow, Owner, PrRecord } from "./types.ts";
+import type { CommandPayload, ForgeBlocker, LedgerEntry, LedgerRow, Owner, PrRecord } from "./types.ts";
 
 const WORKFLOW: Extract<CommandPayload, { type: "RunWorkflow" }> = {
   type: "RunWorkflow", guard: "workflow:ci-fix", workflow: "ci-fix", connection: null, headSha: SHA_A, message: "fix", vars: {}, untrusted: {},
@@ -152,7 +152,7 @@ describe("fold", () => {
 
   it("takes forge facts only from a successful details refresh and reads the conflict from them", () => {
     const refresh = { type: "RefreshDetails", headSha: SHA_A } as const;
-    const forge = (headSha: string, blockers: string[]) => ({ headSha, mergeable: false, blockers, requiredChecks: null, baseFailing: [], failedJobs: [] });
+    const forge = (headSha: string, blockers: ForgeBlocker[]) => ({ headSha, mergeable: false, blockers, requiredChecks: null, baseFailing: [], failedJobs: [] });
     const opened = fixed(ev.opened({ head: SHA_A }));
     expect(fold(opened, row(finished("c", { outcome: "skipped", reason: "x" }, refresh), 5)).forge).toBeNull();
     const withConflict = fold(opened, row(finished("c", { outcome: "succeeded", detail: { forge: forge(SHA_A, ["conflict"]) } }, refresh), 5));

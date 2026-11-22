@@ -2,14 +2,22 @@ import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validFixtures } from "../pr-orchestrator/contract/conformance/index.ts";
 import { signBatch } from "../pr-orchestrator/signature.ts";
+import { openOrchestratorStore } from "../pr-orchestrator/store.ts";
+import { creation, fakeRuntime, FAKE_OWNER } from "../pr-orchestrator/testing/fake-runtime.ts";
 import { VaultStore } from "../vault-store.ts";
 import { createWebhookIngressHandler } from "../webhook-ingress.ts";
 import type { WebhookManager } from "../webhooks.ts";
 import { createPrOrchestratorHost, type PrOrchestratorHost } from "./pr-orchestrator-host.ts";
+
+// The Paseo factory builds nothing yet; the tests give the host a scripted runtime in its place.
+const scripted = vi.hoisted(() => ({ runtime: null as null | { port: unknown } }));
+vi.mock("../pr-orchestrator/adapters/paseo-factory.ts", () => ({
+  paseoRuntime: () => (scripted.runtime ? { runtime: scripted.runtime.port, resolvers: [], stop: () => {} } : null),
+}));
 
 const HUB_KEY = "fake-hub-key-for-host-tests-0123456789";
 const ENABLED = JSON.stringify({ enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } } });
@@ -155,5 +163,68 @@ describe("PR orchestrator host", () => {
     const { host } = await serve();
     host.start();
     await expect(host.stop()).resolves.toBeUndefined();
+  });
+
+  describe("with adapters", () => {
+    const KEY = "github:acme/widgets#1";
+    const pr = { provider: "github" as const, repo: "acme/widgets", number: 1, url: null };
+    const ledgerTypes = async (host: PrOrchestratorHost) => {
+      await host.stop();
+      const store = openOrchestratorStore(dbPath());
+      try {
+        return store.ledger(KEY).map(row => row.entry.type).filter(type => type === "owner.bound" || type === "person.answered");
+      } finally {
+        store.close();
+      }
+    };
+    afterEach(() => { scripted.runtime = null; });
+
+    it("attaches before any core exists and gives the adapters to the first core", async () => {
+      const runtime = fakeRuntime();
+      scripted.runtime = { port: runtime.port };
+      writeConfig(JSON.stringify({ enabled: true, adapters: { runtime: { enabled: true } } }));
+      const { host } = await serve();
+      host.attach({});
+      expect(existsSync(dbPath())).toBe(false);
+      host.start();
+      expect(existsSync(dbPath())).toBe(true);
+      runtime.create(creation("github", "acme/widgets", 1));
+      expect(await ledgerTypes(host)).toEqual(["owner.bound"]);
+    });
+
+    it("ignores a second attach", async () => {
+      const lines: string[] = [];
+      const host = createPrOrchestratorHost({ dataDir: dir, vault, log: line => lines.push(line) });
+      hosts.push(host);
+      host.attach({});
+      host.attach({});
+      expect(lines.filter(line => line.includes("already attached"))).toHaveLength(1);
+      host.detach();
+    });
+
+    it("delivers an answer to the core that runs now, after a stop and start", async () => {
+      writeConfig();
+      const { host } = await serve();
+      host.start();
+      host.bindOwner(FAKE_OWNER, pr);
+      await host.stop();
+      host.start();
+      host.answer(KEY, "d1", "Leave it as it is");
+      expect(await ledgerTypes(host)).toEqual(["owner.bound", "person.answered"]);
+    });
+
+    it("drops an answer while stopped", async () => {
+      writeConfig();
+      const lines: string[] = [];
+      const host = createPrOrchestratorHost({ dataDir: dir, vault, log: line => lines.push(line) });
+      hosts.push(host);
+      host.start();
+      host.bindOwner(FAKE_OWNER, pr);
+      await host.stop();
+      host.answer(KEY, "d1", "Leave it as it is");
+      host.bindOwner(FAKE_OWNER, pr);
+      expect(lines.filter(line => line.includes("dropped"))).toHaveLength(2);
+      expect(await ledgerTypes(host)).toEqual(["owner.bound"]);
+    });
   });
 });

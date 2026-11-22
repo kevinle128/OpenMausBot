@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS commands (
   approval_id TEXT,
   outcome TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
+  waits INTEGER NOT NULL DEFAULT 0,
   next_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   payload_json TEXT NOT NULL, result_json TEXT, last_error TEXT
@@ -141,7 +142,15 @@ export interface OrchestratorStore {
   markCommandRunning(id: string, now: number): void;
   /** Back to pending. */
   rescheduleCommand(id: string, nextAt: number, error: string, now: number): void;
+  /** Back to pending after a wait: gives back the attempt that markCommandRunning took and counts a wait instead. */
+  rescheduleWait(id: string, nextAt: number, reason: string, now: number): void;
   finishCommand(id: string, result: CommandResult, now: number): void;
+  /** Replaces the stored result of a finished command without touching the ledger or the status; used to keep a card id that a restart opened again. */
+  setCommandResult(id: string, result: CommandResult): void;
+  /** The questions that wait for the person: PRs with a pending decision, and other subjects whose card was shown and has no answer yet. */
+  openQuestions(): Array<{ subjectKey: SubjectKey; decisionId: string; command: CommandRecord }>;
+  /** The decision ids of the questions whose card is being shown now (AskPerson commands that run). */
+  runningQuestionIds(): string[];
   /** Boot: running becomes pending. Returns the number of rows changed. */
   resetRunningCommands(now: number): number;
   commandsFor(subjectKey: SubjectKey): CommandRecord[];
@@ -201,7 +210,7 @@ const readCommand = (row: Row): CommandRecord => ({
   routineId: String(row.routine_id), idemKey: String(row.idem_key), status: String(row.status) as CommandRecord["status"],
   outcome: row.outcome == null ? null : (String(row.outcome) as CommandResult["outcome"]),
   approvalId: row.approval_id == null ? null : String(row.approval_id),
-  attempts: Number(row.attempts), nextAt: Number(row.next_at), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+  attempts: Number(row.attempts), waits: Number(row.waits ?? 0), nextAt: Number(row.next_at), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
   payload: JSON.parse(String(row.payload_json)) as CommandRecord["payload"],
   result: row.result_json == null ? null : (JSON.parse(String(row.result_json)) as CommandResult),
   lastError: row.last_error == null ? null : String(row.last_error),
@@ -232,6 +241,10 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     db.exec("PRAGMA synchronous = FULL");
   }
   db.exec(SCHEMA);
+  // A store made before commands counted their waits apart from their attempts.
+  if (!(db.prepare("PRAGMA table_info(commands)").all() as Row[]).some(column => column.name === "waits")) {
+    db.exec("ALTER TABLE commands ADD COLUMN waits INTEGER NOT NULL DEFAULT 0");
+  }
 
   const q = {
     getMeta: db.prepare("SELECT value FROM meta WHERE key = ?"),
@@ -278,8 +291,18 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     nextCommandAt: db.prepare("SELECT MIN(next_at) AS at FROM commands WHERE status = 'pending'"),
     markRunning: db.prepare("UPDATE commands SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?"),
     reschedule: db.prepare("UPDATE commands SET status = 'pending', next_at = ?, last_error = ?, updated_at = ? WHERE id = ?"),
+    rescheduleWait: db.prepare(`UPDATE commands SET status = 'pending', attempts = MAX(attempts - 1, 0), waits = waits + 1,
+      next_at = ?, last_error = ?, updated_at = ? WHERE id = ?`),
     finish: db.prepare(`UPDATE commands SET status = 'done', outcome = ?, result_json = ?,
       last_error = CASE WHEN ? = 'failed' THEN ? ELSE last_error END, updated_at = ? WHERE id = ?`),
+    setResult: db.prepare("UPDATE commands SET result_json = ? WHERE id = ? AND status = 'done'"),
+    openPrQuestions: db.prepare(`SELECT c.* FROM prs p JOIN commands c ON c.id = json_extract(p.json, '$.pendingDecision.commandId')`),
+    openSubjectQuestions: db.prepare(`SELECT c.* FROM commands c WHERE c.type = 'AskPerson' AND c.status = 'done' AND c.outcome = 'succeeded'
+      AND c.subject_key LIKE 'subject:%'
+      AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.subject_key = c.subject_key AND l.type = 'person.answered'
+        AND json_extract(l.json, '$.decisionId') = json_extract(c.payload_json, '$.decisionId'))
+      ORDER BY c.created_at, c.rowid`),
+    runningQuestions: db.prepare("SELECT json_extract(payload_json, '$.decisionId') AS decision_id FROM commands WHERE type = 'AskPerson' AND status = 'running'"),
     resetRunning: db.prepare("UPDATE commands SET status = 'pending', updated_at = ? WHERE status = 'running'"),
     commandsFor: db.prepare("SELECT * FROM commands WHERE subject_key = ? ORDER BY created_at, rowid"),
     countCommands: db.prepare("SELECT status, outcome, COUNT(*) AS count FROM commands GROUP BY status, outcome"),
@@ -431,10 +454,15 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     nextCommandAt: () => nullableNumber(one(q.nextCommandAt), "at"),
     markCommandRunning: (id, now) => { q.markRunning.run(now, id); },
     rescheduleCommand: (id, nextAt, error, now) => { q.reschedule.run(nextAt, error, now, id); },
+    rescheduleWait: (id, nextAt, reason, now) => { q.rescheduleWait.run(nextAt, reason, now, id); },
     finishCommand: (id, result, now) => {
       const reason = result.outcome === "failed" ? result.reason : null;
       q.finish.run(result.outcome, JSON.stringify(result), result.outcome, reason, now, id);
     },
+    setCommandResult: (id, result) => { q.setResult.run(JSON.stringify(result), id); },
+    openQuestions: () => [...all(q.openPrQuestions), ...all(q.openSubjectQuestions)].map(readCommand).flatMap(command =>
+      command.payload.type === "AskPerson" ? [{ subjectKey: command.subjectKey, decisionId: command.payload.decisionId, command }] : []),
+    runningQuestionIds: () => all(q.runningQuestions).flatMap(row => (row.decision_id == null ? [] : [String(row.decision_id)])),
     resetRunningCommands: (now) => Number(q.resetRunning.run(now).changes),
     commandsFor: (subjectKey) => all(q.commandsFor, subjectKey).map(readCommand),
     countCommands: () => all(q.countCommands).map((row) => ({
