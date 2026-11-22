@@ -138,3 +138,13 @@ it("editing an event-app automation sends its changed types", async () => {
   expect(JSON.parse(String(init.body)).config.types).toEqual(["pr.ci.finished"]);
   expect(JSON.parse(String(init.body)).config.repos).toBe("acme/widgets");
 });
+
+it("editing keeps stored filter fields the modal does not show", async () => {
+  const onSaved = vi.fn();
+  const slack: AppTrigger = { ...saved, id: "slack-orders", app: "slack", appName: "Slack", event: "SLACK_RECEIVE_MESSAGE", config: {}, filter: { from: "ada", text: "urgent" } };
+  const container = mount(createElement(AppEventEditor, { trigger: slack, bots: [scout], onClose: vi.fn(), onSaved }));
+  flushSync(() => button(container, "Save").click());
+  await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
+  const [, init] = fixture.api.mock.calls.find(([path]) => path === "/api/app-triggers/slack-orders") as [string, RequestInit];
+  expect(JSON.parse(String(init.body)).filter).toEqual({ from: "ada", text: "urgent" });
+});

@@ -69,8 +69,9 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
 
   const save = async () => {
     const bot = bots.find((candidate) => candidate.id === botId);
-    // Only the fields shown for this app are sent: a value typed for another app stays hidden here.
-    const shownFilter: AppTriggerFilter = gmail ? { from: filter.from, subject: filter.subject, label: filter.label } : { text: filter.text };
+    // On create, only the fields shown for this app are sent: a value typed for another app stays hidden here. On edit
+    // the app is fixed, so every stored field (a bot may set any of them) is kept.
+    const shownFilter: AppTriggerFilter = trigger ? filter : gmail ? { from: filter.from, subject: filter.subject, label: filter.label } : { text: filter.text };
     const cleanFilter = Object.fromEntries(Object.entries(shownFilter).filter(([, value]) => typeof value === "string" && value.trim())) as AppTriggerFilter;
     const shownAccount = appEntry && appEntry.accounts.length > 1 && appEntry.accounts.some((candidate) => candidate.id === account) ? account : "";
     const sourceConfig = {
