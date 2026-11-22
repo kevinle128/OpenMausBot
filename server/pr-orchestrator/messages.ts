@@ -31,8 +31,9 @@ export function renderMessage(template: string, vars: Record<string, string | nu
   const lines: string[] = [];
   for (const line of template.split("\n")) {
     let dropped = false;
-    const filled = line.replace(PLACEHOLDER, (_whole, name: string) => {
-      if (UNTRUSTED_NAMES.has(name)) return fenced(untrusted[name] ?? "");
+    const filled = line.replace(PLACEHOLDER, (whole: string, name: string, offset: number) => {
+      // Text after a closing fence on its line would keep the fence open (CommonMark): it moves to the next line.
+      if (UNTRUSTED_NAMES.has(name)) return `${fenced(untrusted[name] ?? "")}${offset + whole.length < line.length ? "\n" : ""}`;
       const value = vars[name];
       if (typeof value === "boolean") {
         if (!value) dropped = true;

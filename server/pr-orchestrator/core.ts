@@ -246,7 +246,8 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     inputs: { bindOwner: parts.pm.bindOwner, answer: parts.pm.answer, runFinished: parts.pm.runFinished },
 
     routines() {
-      return resolveRoutines(loaded().config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, loaded().config) }));
+      const { config } = loaded();
+      return resolveRoutines(config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, config) }));
     },
 
     routineRuns(routineId) {
@@ -256,11 +257,16 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
           prKey: row.subjectKey, at: row.at, trigger: row.entry.trigger,
           actions: row.entry.actions.map(line => {
             const command = line.commandId ? store.getCommand(line.commandId) : null;
+            // A finished command's reason is its result's; lastError keeps an earlier attempt's error after a success.
+            const commandReason = command?.result
+              ? (command.result.outcome === "succeeded" ? undefined : command.result.reason)
+              : (command?.lastError ?? undefined);
+            const reason = line.reason ?? commandReason;
             return {
               action: line.action, result: line.result,
               ...(line.commandId ? { commandId: line.commandId } : {}),
               ...(command ? { status: command.status, outcome: command.outcome } : {}),
-              ...(line.reason ?? command?.lastError ? { reason: (line.reason ?? command?.lastError) as string } : {}),
+              ...(reason ? { reason } : {}),
             };
           }),
         }];

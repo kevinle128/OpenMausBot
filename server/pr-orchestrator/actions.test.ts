@@ -55,5 +55,7 @@ describe("action registry", () => {
       expect(sentence).not.toContain("\n");
     }
     expect(ACTION_REGISTRY.RunWorkflow.describe({ workflow: "ci-fix" })).toBe("run workflow ci-fix (one active run per PR)");
+    expect(ACTION_REGISTRY.Instruct.describe({ to: "new-agent", prompt: "x" })).toBe("instruct a new agent");
+    expect(ACTION_REGISTRY.Instruct.describe({ to: { config: "workflows.who" }, prompt: "x" })).toBe("instruct config workflows.who");
   });
 });

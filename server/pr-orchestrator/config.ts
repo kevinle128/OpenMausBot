@@ -122,7 +122,7 @@ type Issue = (path: Array<string | number>, text: string) => void;
 function declaredTypes(config: z.output<ReturnType<typeof baseSchema>>, definitions: ReadonlyMap<string, ConnectorDefinition>, selected: readonly string[]): Set<string> {
   const types = new Set<string>();
   for (const id of selected) {
-    const instance = config.connectors[id];
+    const instance = Object.hasOwn(config.connectors, id) ? config.connectors[id] : undefined;
     for (const type of (instance && definitions.get(instance.use)?.emits) ?? []) types.add(type);
   }
   return types;
@@ -136,7 +136,7 @@ function checkRoutines(config: z.output<ReturnType<typeof baseSchema>>, definiti
     if (seen.has(routine.id)) issue(at("id"), `duplicates the routine id ${routine.id}`);
     seen.add(routine.id);
     for (const id of routine.when.connectors ?? []) {
-      if (!config.connectors[id]) issue(at("when", "connectors"), `${id} is not a configured connector`);
+      if (!Object.hasOwn(config.connectors, id)) issue(at("when", "connectors"), `${id} is not a configured connector`);
     }
     const declared = declaredTypes(config, definitions, routine.when.connectors ?? instanceIds);
     routine.when.on.forEach((name, position) => {
@@ -170,17 +170,25 @@ function baseSchema(definitions: ReadonlyMap<string, ConnectorDefinition>) {
       for (const problem of parsed.error.issues) ctx.addIssue({ code: "custom", message: problem.message, path: [id, "settings", ...problem.path] });
       return {};
     };
+    // The same rule for a written and a default instance; an empty default name means no secret, never "".
+    const withSecret = (secretName: string | undefined, definition: ConnectorDefinition) => {
+      const resolved = secretName ?? (definition.secret.defaultName || undefined);
+      return resolved ? { secretName: resolved } : {};
+    };
     for (const [id, instance] of Object.entries(record)) {
       const definition = definitions.get(instance.use);
       if (!definition) {
         ctx.addIssue({ code: "custom", message: `${instance.use} is not a registered connector`, path: [id, "use"] });
         settled[id] = instance;
-      } else settled[id] = { ...instance, settings: settle(id, instance.settings, definition) };
+      } else {
+        const { secretName, ...rest } = instance;
+        settled[id] = { ...rest, ...withSecret(secretName, definition), settings: settle(id, instance.settings, definition) };
+      }
     }
     for (const definition of definitions.values()) {
-      if (!definition.defaultInstance || definition.id in settled) continue;
+      if (!definition.defaultInstance || Object.hasOwn(settled, definition.id)) continue;
       settled[definition.id] = {
-        use: definition.id, enabled: definition.defaultInstance.enabled, secretName: definition.secret.defaultName,
+        use: definition.id, enabled: definition.defaultInstance.enabled, ...withSecret(undefined, definition),
         settings: settle(definition.id, definition.defaultInstance.settings, definition),
       };
     }
@@ -318,12 +326,16 @@ export function createConfigSource(opts: ConfigSourceOptions): { current(): Load
   let lastLogged: string | null = null;
   let valid: { config: OrchestratorConfig; version: string } | null = null;
 
+  // Parsed and hashed once per document: current() runs several times per step.
+  let empty: { config: OrchestratorConfig; version: string } | null = null;
   const defaults = () => {
+    if (empty) return empty;
     const parsed = parseWith(schema, "{}");
     if (!parsed.ok) throw new Error(`the default document is invalid: ${parsed.error}`);
-    return { config: parsed.config, version: configVersion(parsed.config) };
+    empty = { config: parsed.config, version: configVersion(parsed.config) };
+    return empty;
   };
-  const cache = settledFileCache(opts.path, (): { ok: true; config: OrchestratorConfig } | { ok: false; error: string } | null => {
+  const cache = settledFileCache(opts.path, (): { ok: true; config: OrchestratorConfig; version: string } | { ok: false; error: string } | null => {
     let text: string;
     try {
       text = readFileSync(opts.path(), "utf8");
@@ -331,7 +343,8 @@ export function createConfigSource(opts: ConfigSourceOptions): { current(): Load
       const code = (error as NodeJS.ErrnoException).code;
       return code === "ENOENT" ? null : { ok: false, error: `cannot read the file (${code ?? "unknown error"})` };
     }
-    return parseWith(schema, text);
+    const parsed = parseWith(schema, text);
+    return parsed.ok ? { ...parsed, version: configVersion(parsed.config) } : parsed;
   });
 
   return {
@@ -339,7 +352,7 @@ export function createConfigSource(opts: ConfigSourceOptions): { current(): Load
       const read = cache.read();
       let error: string | null = null;
       if (read === null) valid = defaults();
-      else if (read.ok) valid = { config: read.config, version: configVersion(read.config) };
+      else if (read.ok) valid = { config: read.config, version: read.version };
       else {
         error = read.error;
         valid ??= defaults();

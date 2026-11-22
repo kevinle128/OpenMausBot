@@ -10,7 +10,7 @@ export const TRANSITIONS: Readonly<Record<PrState, readonly PrState[]>> = {
   reviewing: ["open", "ci_running", "ci_failed", "fixing", "needs_decision", "ready", "merged", "closed"],
   needs_decision: ["open", "ci_running", "ci_failed", "fixing", "reviewing", "ready", "merged", "closed"],
   ready: ["merging", "open", "ci_running", "ci_failed", "fixing", "reviewing", "needs_decision", "merged", "closed"],
-  merging: ["merged", "ready", "ci_running", "ci_failed", "fixing", "reviewing", "needs_decision", "closed"],
+  merging: ["merged", "open", "ready", "ci_running", "ci_failed", "fixing", "reviewing", "needs_decision", "closed"],
   merged: [],
   closed: ["open", "ci_running", "ci_failed", "fixing", "reviewing", "needs_decision", "ready"],
 };

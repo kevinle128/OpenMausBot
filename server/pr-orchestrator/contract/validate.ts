@@ -44,12 +44,14 @@ export function createOmbEventValidator(): {
   });
   formats.default(ajv);
   const envelope = ajv.compile(OMB_EVENT_SCHEMA);
-  const payloadValidators = new Map<string, ValidateFunction | null>();
+  const payloadValidators = new Map<string, ValidateFunction>();
 
+  /** Caches known types only: an unknown type string from a sender must not grow the map. */
   function payloadValidator(type: string): ValidateFunction | null {
     const cached = payloadValidators.get(type);
     if (cached !== undefined) return cached;
-    const compiled = payloadSchemaOf(type) ? ajv.compile({ $ref: `${SCHEMA_ID}#/$defs/payloads/${type}` }) : null;
+    if (!payloadSchemaOf(type)) return null;
+    const compiled = ajv.compile({ $ref: `${SCHEMA_ID}#/$defs/payloads/${type}` });
     payloadValidators.set(type, compiled);
     return compiled;
   }

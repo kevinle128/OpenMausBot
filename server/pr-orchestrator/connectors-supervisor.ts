@@ -55,6 +55,8 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
   const sleep = deps.sleep ?? defaultSleep;
   const instances = new Map<string, Running>();
   let stopped = false;
+  /** Runs that sync() replaced and that are still unwinding; stop() waits for them before the store closes. */
+  const draining = new Set<Promise<void>>();
 
   function emitter(id: string, definition: ConnectorDefinition) {
     return (events: unknown[]) => {
@@ -77,7 +79,9 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
     };
   }
 
-  async function loop(id: string, definition: ConnectorDefinition, signal: AbortSignal): Promise<void> {
+  async function loop(id: string, definition: ConnectorDefinition, signal: AbortSignal, previous?: Promise<void>): Promise<void> {
+    // A replaced run of the same instance unwinds first: two runs would race on its cursor.
+    if (previous) await previous;
     let delay = BACKOFF_INITIAL_MS;
     while (!signal.aborted) {
       const startedAt = deps.now();
@@ -85,11 +89,13 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
       try {
         const instance = deps.config().connectors[id];
         if (!instance) return;
-        const secretName = instance.secretName ?? definition.secret.defaultName;
+        const secretName = instance.secretName ?? (definition.secret.defaultName || null);
+        const key = secretName ? deps.key(secretName) : null;
+        if (definition.secret.required && !key) throw new Error("the connector's secret is not in the Vault");
         const ctx: SubscriptionContext<unknown> = {
           instance: id,
           settings: definition.settingsSchema.parse(instance.settings ?? {}),
-          key: deps.key(secretName),
+          key,
           signal,
           now: deps.now,
           emit: emitter(id, definition),
@@ -105,9 +111,9 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
         reason = messageOf(error);
       }
       if (signal.aborted) return;
+      if (deps.now() - startedAt >= BACKOFF_MAX_MS) delay = BACKOFF_INITIAL_MS;
       store.logConnector({ connector: id, at: deps.now(), outcome: "error", count: 1, detail: reason });
       deps.log(`pr-orchestrator: ${id} stopped (${reason}); restarting in ${delay / 1000} s`);
-      if (deps.now() - startedAt >= BACKOFF_MAX_MS) delay = BACKOFF_INITIAL_MS;
       await sleep(delay, signal);
       delay = Math.min(delay * 2, BACKOFF_MAX_MS);
     }
@@ -129,15 +135,19 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
     sync() {
       if (stopped) return;
       const wanted = desired();
+      const previous = new Map<string, Promise<void>>();
       for (const [id, running] of instances) {
         if (wanted.get(id)?.fingerprint === running.fingerprint) continue;
         running.abort.abort();
         instances.delete(id);
+        previous.set(id, running.done);
+        draining.add(running.done);
+        void running.done.finally(() => draining.delete(running.done));
       }
       for (const [id, { definition, fingerprint }] of wanted) {
         if (instances.has(id)) continue;
         const abort = new AbortController();
-        const done = loop(id, definition, abort.signal).catch(error => deps.log(`pr-orchestrator: ${id} failed: ${messageOf(error)}`));
+        const done = loop(id, definition, abort.signal, previous.get(id)).catch(error => deps.log(`pr-orchestrator: ${id} failed: ${messageOf(error)}`));
         instances.set(id, { fingerprint, abort, done });
       }
     },
@@ -147,7 +157,7 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
       const all = [...instances.values()];
       for (const running of all) running.abort.abort();
       instances.clear();
-      await Promise.all(all.map(running => running.done));
+      await Promise.all([...all.map(running => running.done), ...draining]);
     },
   };
 }

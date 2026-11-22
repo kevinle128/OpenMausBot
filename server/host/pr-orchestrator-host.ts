@@ -44,7 +44,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
   /** The core exists only once the feature has a file; an install that never uses it opens no database. */
   const ensureCore = (): OrchestratorCore | null => {
     if (core) return core;
-    if (!running || !(existsSync(configPath) || existsSync(dbPath))) return null;
+    if (!running || stopping || !(existsSync(configPath) || existsSync(dbPath))) return null;
     core = createOrchestratorCore({ dbPath, configPath, connectors: BUILT_IN_CONNECTORS, key, log });
     core.start();
     return core;
@@ -76,17 +76,21 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     routes,
     start() {
       running = true;
-      stopping = null;
-      ensureCore();
+      // A core still closing keeps the database: the next one opens once it has, in stop()'s finally.
+      if (!stopping) ensureCore();
     },
     stop() {
       running = false;
-      if (stopping) return stopping;
       const current = core;
       core = null;
-      if (!current) return Promise.resolve();
-      stopping = current.stop();
-      return stopping;
+      if (!current) return stopping ?? Promise.resolve();
+      const next: Promise<void> = (stopping ?? Promise.resolve()).then(() => current.stop()).finally(() => {
+        if (stopping !== next) return;
+        stopping = null;
+        if (running) ensureCore();
+      });
+      stopping = next;
+      return next;
     },
   };
 }

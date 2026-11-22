@@ -31,7 +31,9 @@ export function ciStatus(record: PrRecord, ctx: StepContext): { settled: boolean
   const failing = failed.filter(inRequired);
   const optionalFailing = failed.filter(check => !inRequired(check));
   if (configured.length > 0) {
-    return { settled: configured.every(glob => checks.some(check => globMatch(glob, check.key))), failing, optionalFailing, required };
+    // A job result is an early partial signal: it settles only a glob that names jobs, never a wildcard over workflows.
+    const settles = (glob: string, check: CheckFact) => (check.scope !== "job" || glob.toLowerCase().includes("/job:")) && globMatch(glob, check.key);
+    return { settled: configured.every(glob => checks.some(check => settles(glob, check))), failing, optionalFailing, required };
   }
   if (forgeList !== null) {
     return { settled: forgeList.every(key => Object.hasOwn(record.checks, key)), failing, optionalFailing, required };
@@ -51,8 +53,7 @@ export function readiness(record: PrRecord, ctx: StepContext): { ready: boolean;
   const review = record.review;
   if (
     record.pendingDecision !== null
-    || (cfg.requireReview && review?.status !== "success")
-    || (cfg.requireReviewedHead && review?.reviewedSha !== record.headSha)
+    || (cfg.requireReview && (review?.status !== "success" || (cfg.requireReviewedHead && review.reviewedSha !== record.headSha)))
   ) found.add("review_not_passed");
   const fresh = forgeIsFresh(record);
   if (!fresh) found.add("forge_stale");

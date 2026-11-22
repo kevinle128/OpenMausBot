@@ -44,10 +44,14 @@ export function invalidFixtures(): InvalidFixture[] {
   });
 }
 
+/** Renames a well-formed source only: a fixture that breaks source itself must reach the connector broken. */
 function asConnector(event: unknown, connector: string): unknown {
-  const source = typeof event === "object" && event !== null ? (event as { source?: unknown }).source : undefined;
-  if (typeof source !== "object" || source === null) return event;
-  return { ...(event as object), source: { ...source, connector } };
+  if (typeof event !== "object" || event === null || Array.isArray(event)) return event;
+  const source = (event as { source?: unknown }).source;
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return event;
+  const current = (source as { connector?: unknown }).connector;
+  if (typeof current !== "string" || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(current)) return event;
+  return { ...event, source: { ...source, connector } };
 }
 
 /**

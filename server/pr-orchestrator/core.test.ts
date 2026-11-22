@@ -131,6 +131,8 @@ describe("orchestrator core with the real due timer", () => {
       id: "waiting", subjectKey: "subject:test-hook:thread:t1", type: "Notify", routineId: "test", idemKey: "waiting", status: "pending", outcome: null,
       approvalId: null, attempts: 0, nextAt: 0, createdAt: 0, updatedAt: 0, payload: { type: "Notify", kind: "merged" }, result: null, lastError: null,
     });
+    // Left running by a stop that never finished it: only start's repair makes it due again.
+    store.markCommandRunning("waiting", 1);
     store.close();
 
     let release: () => void = () => {};
@@ -141,6 +143,8 @@ describe("orchestrator core with the real due timer", () => {
       handlers: { Notify: async () => { calls += 1; await gate; return { outcome: "succeeded" }; } },
     });
     cores.push(core);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(calls).toBe(0);
     core.start();
     await vi.waitFor(() => expect(calls).toBe(1));
     await new Promise(resolve => setTimeout(resolve, 100));

@@ -66,6 +66,7 @@ export function createPrOrchestratorRoutes(deps: PrOrchestratorRouteDeps): Route
     if (typeof prKey !== "string" || !PR_KEY.test(prKey)) return json(res, 400, { error: "prKey must look like github:owner/repo#123" });
     if (typeof inputSeq !== "number" || !Number.isInteger(inputSeq) || inputSeq < 1) return json(res, 400, { error: "inputSeq must be a ledger row number" });
     if ((routine === undefined) === (routineId === undefined)) return json(res, 400, { error: "Send one of routine or routineId" });
+    if (routine !== undefined && !isRecord(routine)) return json(res, 400, { error: "routine must be a JSON object" });
     if (routineId !== undefined && (typeof routineId !== "string" || !ROUTINE_ID.test(routineId))) return json(res, 400, { error: "routineId is not a routine id" });
     if (!core.pr(prKey)) return json(res, 404, { error: "No such PR" });
     try {

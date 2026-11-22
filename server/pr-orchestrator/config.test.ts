@@ -166,6 +166,8 @@ describe("connectors in the config document", () => {
     const custom = parse({ connectors: { "fake-event": { use: "fake-event", enabled: true, settings: {} }, second: { use: "fake-event", settings: { toleranceSeconds: 60 } } } });
     expect(custom.connectors["fake-event"]).toMatchObject({ enabled: true, settings: { toleranceSeconds: 300 } });
     expect(custom.connectors.second).toMatchObject({ enabled: false, settings: { toleranceSeconds: 60 } });
+    expect(custom.connectors["fake-event"]?.secretName).toBe("FAKE_EVENT_SECRET");
+    expect(parse({ connectors: { second: { use: "fake-event", secretName: "OWN_SECRET" } } }).connectors.second?.secretName).toBe("OWN_SECRET");
     expect(refusal({ connectors: { second: { use: "fake-event", settings: { toleranceSeconds: -1 } } } })).toContain("connectors.second.settings.toleranceSeconds");
     expect(refusal({ connectors: { second: { use: "fake-event", settings: { other: 1 } } } })).toContain("connectors.second.settings");
   });

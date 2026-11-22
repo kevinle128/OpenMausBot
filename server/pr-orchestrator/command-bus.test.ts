@@ -116,6 +116,21 @@ describe("command bus", () => {
     ]);
   });
 
+  it("finishes the row when recording the result fails, so the subject is not held", async () => {
+    h = makeHarness();
+    h.send(ev.opened());
+    const command = queue();
+    const config = orchestratorConfigSchema.parse({ enabled: true });
+    const commands = createCommandBus({
+      store: h.store, pm: { ...h.pm, finishCommand: () => { throw new Error("route failed"); } }, handlers: stubHandlers(), ports: stubPorts(),
+      config: () => config, now: h.clock.now, log: line => h.logs.push(line),
+    });
+    await commands.runDue();
+    await commands.idle();
+    expect(h.store.getCommand(command.id)).toMatchObject({ status: "done" });
+    expect(h.logs.some(line => line.includes("could not be recorded: route failed"))).toBe(true);
+  });
+
   it("finishes a command of a pruned PR as skipped", async () => {
     h = makeHarness();
     const command = queue("github:acme/gone#9");

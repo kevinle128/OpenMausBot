@@ -92,8 +92,9 @@ function issueCommand(
   if (!checked.ok) return skipped(checked.error);
   const definition = ACTION_REGISTRY[action.do];
   const record = host.record();
-  if (definition.subjects(checked.params) === "pr" && record === null) return skipped(NEEDS_PR);
+  // Resolved first: a { config } target that names the owner needs a PR as much as a written one.
   const resolved = resolveParams(checked.params, host.ctx.config);
+  if (definition.subjects(resolved) === "pr" && record === null) return skipped(NEEDS_PR);
   if (record !== null && definition.guard) {
     const target = definition.guard(resolved);
     if (record.activeRuns[target]) return skipped(`a run of ${target} is active`);

@@ -126,6 +126,18 @@ describe("PR orchestrator host", () => {
     await expect(host.stop()).resolves.toBeUndefined();
   });
 
+  it("opens the next core only once the stopping one has closed", async () => {
+    writeConfig();
+    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    const { host, base } = await serve();
+    host.start();
+    expect((await post(base, HUB_KEY)).status).toBe(200);
+    const stopped = host.stop();
+    host.start();
+    await stopped;
+    expect((await post(base, HUB_KEY)).status).toBe(200);
+  });
+
   it("stops at once when no core was ever opened", async () => {
     const { host } = await serve();
     host.start();

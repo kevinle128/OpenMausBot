@@ -115,12 +115,13 @@ export function createEventsDoor(deps: EventsDoorDeps): IngressDoor {
       const context: InboundContext<unknown> = { instance: instanceId, settings: settings.data, key, now: now() };
       const request: InboundRequest = { method: req.method, headers: headersOf(req) };
 
-      const early = inbound.precheck?.(request, context);
-      if (early && !early.ok) { refuse(early); return true; }
+      // Before the precheck: a header check against a missing key would answer 401 and count a signature failure.
       if (definition.secret.required && !key) {
         answer(503, { error: "The connector's secret is not saved" }, "error", "the connector's secret is not in the Vault");
         return true;
       }
+      const early = inbound.precheck?.(request, context);
+      if (early && !early.ok) { refuse(early); return true; }
 
       let body: Buffer;
       try {

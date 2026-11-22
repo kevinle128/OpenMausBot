@@ -86,4 +86,34 @@ describe("connector supervisor", () => {
     expect(supervisor.running()).toEqual([]);
     expect((signal as AbortSignal | null)?.aborted).toBe(true);
   });
+
+  it("starts the replacement of a changed instance only after the old run unwound", async () => {
+    const log: string[] = [];
+    let release!: () => void;
+    const unwound = new Promise<void>(resolve => { release = resolve; });
+    let runs = 0;
+    const feed: ConnectorDefinition = {
+      ...createTestFeed([]),
+      async subscribe(ctx) {
+        const run = ++runs;
+        log.push(`start ${run}`);
+        await new Promise<void>(resolve => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
+        if (run === 1) await unwound;
+        log.push(`end ${run}`);
+      },
+    };
+    let secretName = "FIRST_SECRET";
+    const config = () => {
+      const parsed = parseOrchestratorConfig(JSON.stringify({ enabled: true, connectors: { "test-feed": { use: "test-feed", enabled: true, secretName, settings: {} } } }), [feed]);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return parsed.config;
+    };
+    start(feed, config).sync();
+    secretName = "SECOND_SECRET";
+    supervisor.sync();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(log).toEqual(["start 1"]);
+    release();
+    await vi.waitFor(() => expect(log).toEqual(["start 1", "end 1", "start 2"]));
+  });
 });

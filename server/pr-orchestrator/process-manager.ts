@@ -104,8 +104,13 @@ export function createProcessManager(deps: ProcessManagerDeps): ProcessManager {
     const dropHeld = () => {
       for (const held of store.awaitingFor(subjectKey)) {
         const head = payloadHead(held.payload);
-        if (isEnded(current())) finishHeld(held, "PR ended");
-        else if (head !== null && head !== current().headSha) finishHeld(held, "head moved");
+        const reason = isEnded(current()) ? "PR ended" : head !== null && head !== current().headSha ? "head moved" : null;
+        if (reason === null) continue;
+        finishHeld(held, reason);
+        // The approval card not yet shown would ask about a dropped command, and its pendingDecision would never clear.
+        for (const ask of store.commandsFor(subjectKey)) {
+          if (ask.status === "pending" && ask.payload.type === "AskPerson" && ask.payload.gated?.commandId === held.id) finishHeld(ask, reason);
+        }
       }
     };
 
@@ -118,6 +123,7 @@ export function createProcessManager(deps: ProcessManagerDeps): ProcessManager {
         else if (head !== null && head !== current().headSha) finishHeld(held, "head moved");
         else if (APPROVE_ANSWER.test(input.answer.trim())) {
           store.releaseCommand(held.id, now);
+          out.commands.push(held.id);
           const entry = { type: "command.issued", commandId: held.id, command: held.type, routineId: held.routineId, payload: held.payload } as const;
           queue.push({ name: "command.issued", entry, seq: append(entry, inputSeq), own: false });
         } else finishHeld(held, "rejected by the person");
@@ -155,7 +161,9 @@ export function createProcessManager(deps: ProcessManagerDeps): ProcessManager {
 
       let routines = ctx.config.routines;
       if (isEnded(current())) {
-        if (!item.own || (item.name !== "pr.merged" && item.name !== "pr.closed")) continue;
+        // Only the trigger that matches the end state: a late pr.closed on a merged PR, or a refused pr.merged on a closed one, runs nothing.
+        const ending = current().state === "merged" ? "pr.merged" : "pr.closed";
+        if (!item.own || item.name !== ending) continue;
         routines = routines.filter(routine => routine.when.on.includes(item.name));
       }
       const event = item.entry.type === "event.received" ? item.entry.event : null;
@@ -181,8 +189,13 @@ export function createProcessManager(deps: ProcessManagerDeps): ProcessManager {
   const route = (subjectKey: SubjectKey, input: CoreInput): StepResult =>
     isSubjectKey(subjectKey) ? subjectStep.input(subjectKey, input) : apply(subjectKey, input);
 
-  function finishCommand(command: CommandRecord, result: CommandResult): StepResult {
+  function finishCommand(command: CommandRecord, given: CommandResult): StepResult {
     return store.transaction(() => {
+      let result = given;
+      if (command.payload.type === "AskPerson" && command.payload.gated && result.outcome === "succeeded") {
+        const held = store.getCommand(command.payload.gated.commandId);
+        if (held?.status !== "awaiting_approval") result = { outcome: "skipped", reason: "the gated command no longer awaits approval" };
+      }
       store.finishCommand(command.id, result, deps.now());
       const step = route(command.subjectKey, finishedInput(command, result));
       const { payload } = command;

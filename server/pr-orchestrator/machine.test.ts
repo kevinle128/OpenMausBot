@@ -90,6 +90,9 @@ describe("deriveState", () => {
     expect(play([...merging, finished("m1", MERGE, { outcome: "skipped", reason: "not installed" })]).state).toBe("ready");
     expect(play([...merging, finished("m1", MERGE, { outcome: "failed", reason: "boom", retryable: false })]).state).toBe("ready");
     expect(play([...merging, ev.closed()]).state).toBe("closed");
+    const draftThenSkipped = play([...merging, ev.opened({ head: SHA_A, draft: true }), finished("m1", MERGE, { outcome: "skipped", reason: "draft" })]);
+    expect(draftThenSkipped.state).toBe("open");
+    expect(isLegal("merging", "open")).toBe(true);
   });
 
   it("keeps a merged PR merged and a closed PR closed when late events arrive", () => {

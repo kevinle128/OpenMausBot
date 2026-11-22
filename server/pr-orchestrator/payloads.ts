@@ -59,6 +59,8 @@ export function placeholderValues(
   if (event?.type === "pr.review.finished") vars.reviewStatus = payloadOf(event, "pr.review.finished").review.status;
   if (event?.type === "pr.merged") vars.mergeSha = (event.data as { merge?: { commitSha?: string | null } }).merge?.commitSha ?? "";
   if (event) untrusted.eventJson = Buffer.from(JSON.stringify(event)).subarray(0, EVENT_JSON_BYTES).toString("utf8");
+  // A subject without a PR record has no lastAnswer: the answer comes from the trigger itself.
+  if (trigger.entry.type === "person.answered") untrusted.answer = trigger.entry.answer;
   if (record === null) {
     untrusted.title = event?.subject.kind === "pr" ? "" : (event?.subject as { label?: string } | undefined)?.label ?? "";
     return { vars, untrusted };
@@ -69,8 +71,8 @@ export function placeholderValues(
     failedChecks: ciStatus(record, ctx).failing.map(check => check.name).join(", "),
   });
   untrusted.title = record.title ?? "";
-  untrusted.answer = record.lastAnswer?.answer ?? "";
-  untrusted.question = record.pendingDecision?.kind ?? before?.pendingDecision?.kind ?? "";
+  untrusted.answer = record.lastAnswer?.answer ?? untrusted.answer;
+  untrusted.question = record.pendingDecision?.kind ?? before?.pendingDecision?.kind ?? record.lastAnswer?.kind ?? "";
   return { vars, untrusted };
 }
 

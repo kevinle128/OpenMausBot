@@ -45,6 +45,19 @@ describe("fold", () => {
     expect(opened).toMatchObject({ owner: OWNER, headSha: SHA_A, title: "T" });
   });
 
+  it("learns the head and url from a CI event when a binding opened the record", () => {
+    const bound = fixed({ type: "owner.bound", owner: OWNER, pr: { provider: "github", repo: "acme/widgets", number: 1, url: null } });
+    const ci = fold(bound, row(ev.ciFinished({ head: SHA_A }), 2));
+    expect(ci).toMatchObject({ headSha: SHA_A, url: "https://example.test/acme/widgets/pull/1" });
+    expect(Object.keys(ci.checks)).toEqual(["github-actions/ci"]);
+  });
+
+  it("keeps a review of the head when a late review of an older commit arrives", () => {
+    const reviewed = fixed(ev.opened({ head: SHA_B }), ev.reviewFinished({ head: SHA_B, reviewedSha: SHA_B }));
+    const late = fold(reviewed, row(ev.reviewFinished({ head: SHA_B, reviewedSha: SHA_A, status: "failed" }), 3));
+    expect(late.review).toMatchObject({ reviewedSha: SHA_B, status: "success" });
+  });
+
   it("clears head facts when a push moves the head and keeps the active runs", () => {
     const forge = { headSha: SHA_A, mergeable: true, blockers: [], requiredChecks: null, baseFailing: [], failedJobs: [] };
     const refresh = { type: "RefreshDetails", headSha: SHA_A } as const;
@@ -149,6 +162,7 @@ describe("fold", () => {
     expect(cleared.conflict).toBe(false);
     const stale = fold(withConflict, row(finished("c", { outcome: "succeeded", detail: { forge: forge(SHA_B, []) } }, refresh), 6));
     expect(stale.conflict).toBe(true);
+    expect(stale.forge).toMatchObject({ headSha: SHA_A });
   });
 
   it("gives the same record when the same rows are folded twice", () => {

@@ -151,7 +151,7 @@ describe("ask first", () => {
 
     h.finish(card, { outcome: "succeeded" });
     expect(h.record().state).toBe("needs_decision");
-    h.pm.answer(DEFAULT_PR_KEY, held.approvalId as string, "Approve");
+    expect(h.pm.answer(DEFAULT_PR_KEY, held.approvalId as string, "Approve").commands).toContain(held.id);
     expect(h.store.getCommand(held.id)).toMatchObject({ status: "pending", approvalId: null });
     expect(h.record().state).toBe("merging");
     expect(h.states().slice(-4)).toEqual(["ready", "needs_decision", "ready", "merging"]);
@@ -205,6 +205,32 @@ describe("ask first", () => {
   });
 });
 
+describe("held actions whose card is not shown yet", () => {
+  it("drops the pending approval card with the held action, so no decision is left open", () => {
+    withAskFirst();
+    bringToReady();
+    const [held] = h.commands("Merge");
+    const [card] = h.commands("AskPerson");
+    h.send(ev.pushed({ head: SHA_B, after: SHA_B }));
+    expect(h.store.getCommand(held.id)).toMatchObject({ status: "done", outcome: "skipped" });
+    expect(h.store.getCommand(card.id)).toMatchObject({ status: "done", outcome: "skipped" });
+    expect(h.record().pendingDecision).toBeNull();
+    expect(h.pm.verifyProjection()).toEqual([]);
+  });
+
+  it("records an approval card that finishes after its held action was dropped as skipped", () => {
+    withAskFirst();
+    bringToReady();
+    const [card] = h.commands("AskPerson");
+    h.store.markCommandRunning(card.id, h.clock.now());
+    h.send(ev.pushed({ head: SHA_B, after: SHA_B }));
+    h.pm.finishCommand(card, { outcome: "succeeded" });
+    expect(h.store.getCommand(card.id)).toMatchObject({ status: "done", outcome: "skipped" });
+    expect(h.record().pendingDecision).toBeNull();
+    expect(h.record().state).not.toBe("needs_decision");
+  });
+});
+
 describe("answers and cancellations", () => {
   it("forwards a decision answer to the owner but not an approval answer", () => {
     start({ enabled: true, routines: { custom: [MERGE_ASK_FIRST] } });
@@ -243,7 +269,7 @@ describe("answers and cancellations", () => {
       connectors: { "test-hook": { use: "test-hook", enabled: true } },
       routines: { custom: [
         { id: "ask-about-chat", name: "Ask", active: true, when: { connectors: ["test-hook"], on: ["chat.message.posted"] }, then: [{ do: "AskPerson", params: { kind: "decision" } }], once: "per-trigger" },
-        { id: "act-on-answer", name: "Act", active: true, when: { on: ["person.answered"] }, then: [{ do: "Instruct", params: { to: "new-agent", prompt: "The person said {{answer}}" } }], once: "per-trigger" },
+        { id: "act-on-answer", name: "Act", active: true, when: { on: ["person.answered"], all: [{ fact: "trigger.answer.kind", op: "eq", value: "decision" }] }, then: [{ do: "Instruct", params: { to: "new-agent", prompt: "The person said {{answer}}" } }], once: "per-trigger" },
       ] },
     }, [testHook], withTestTypes().contract);
     const e = chatEvent("test-hook", "m2");
@@ -254,7 +280,7 @@ describe("answers and cancellations", () => {
     h.finish(card, { outcome: "succeeded" });
     h.pm.answer(subjectKey, (card.payload as { decisionId: string }).decisionId, "go");
     const [instruction] = h.commands("RunInstruction", subjectKey);
-    expect(instruction.payload).toMatchObject({ to: "new-agent", prompt: "The person said {{answer}}" });
+    expect(instruction.payload).toMatchObject({ to: "new-agent", prompt: "The person said {{answer}}", untrusted: { answer: "go" } });
     expect(h.store.getPr(subjectKey)).toBeNull();
   });
 });

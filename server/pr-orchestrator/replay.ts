@@ -28,7 +28,7 @@ export function parseNdjsonInputs(text: string): SimInput[] {
     }
     if (!isRecord(value)) throw new Error(`${where}: not an object`);
     if (typeof value.connector === "string" && isRecord(value.event)) {
-      const at = Date.parse(String(value.event.occurredAt));
+      const at = typeof value.at === "number" && Number.isFinite(value.at) ? value.at : Date.parse(String(value.event.occurredAt));
       if (Number.isNaN(at)) throw new Error(`${where}: event.occurredAt is not a time`);
       inputs.push({ at, connector: value.connector, event: value.event as unknown as Extract<SimInput, { event: unknown }>["event"] });
     } else if (typeof value.at === "number" && typeof value.prKey === "string" && isRecord(value.input) && typeof value.input.type === "string") {
@@ -110,7 +110,9 @@ function openCopy(dbPath: string) {
 export function verifyDb(dbPath: string): PrKey[] {
   const store = openCopy(dbPath);
   try {
-    return store.ledgerKeys({ prOnly: true }).filter(key => !isDeepStrictEqual(refold(store.ledger(key)), store.getPr(key)));
+    // Both directions: a PR row without its ledger, and a PR ledger whose row is missing.
+    const keys = new Set([...store.ledgerKeys({ prOnly: true }), ...store.ledgerKeys().filter(key => !key.startsWith("subject:"))]);
+    return [...keys].filter(key => !isDeepStrictEqual(refold(store.ledger(key)), store.getPr(key)));
   } finally {
     store.close();
   }
@@ -121,7 +123,8 @@ export function exportInputs(dbPath: string): string {
   const store = openCopy(dbPath);
   try {
     const rows = store.ledgerKeys().flatMap(key => store.ledger(key)).sort((a, b) => a.at - b.at || a.seq - b.seq);
-    return toSimInputs(rows).map(item => JSON.stringify("event" in item ? { connector: item.connector, event: item.event } : item)).join("\n");
+    // Events keep the ledger's at: occurredAt is the forge's clock, the other inputs carry OMB's.
+    return toSimInputs(rows).map(item => JSON.stringify("event" in item ? { at: item.at, connector: item.connector, event: item.event } : item)).join("\n");
   } finally {
     store.close();
   }

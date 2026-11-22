@@ -266,6 +266,11 @@ describe.each([["memory", () => open()], ["file", () => open(tempFile())]])("orc
     for (const n of [1, 2, 3]) store.append(ledgerRow(`github:acme/app#${n}`, old));
     store.append(ledgerRow("subject:hook:issue:1", old));
     store.append(ledgerRow("subject:hook:issue:2", now));
+    store.append(ledgerRow("subject:hook:issue:3", old));
+    store.append(ledgerRow("subject:hook:issue:3", now));
+    store.append(ledgerRow("subject:hook:issue:4", old));
+    store.insertCommand(command("c3", { subjectKey: "subject:hook:issue:1", status: "done" }));
+    store.insertCommand(command("c4", { subjectKey: "subject:hook:issue:4" }));
     store.insertCommand(command("c1", { subjectKey: "github:acme/app#1" }));
     store.insertCommand(command("c2", { subjectKey: "github:acme/app#3" }));
     store.insertTimer(timer("t1", { subjectKey: "github:acme/app#1" }));
@@ -276,12 +281,15 @@ describe.each([["memory", () => open()], ["file", () => open(tempFile())]])("orc
     store.logConnector({ connector: "c", at: now - 8 * day, outcome: "error", count: 1 });
     store.logConnector({ connector: "c", at: now - day, outcome: "error", count: 1 });
 
-    const counts = store.prune(now - 30 * day, now - 30 * day);
+    const counts = store.prune(now - 30 * day, now - 30 * day, now);
     expect(counts).toEqual({ prs: 1, subjects: 1, received: 1, connectorLog: 1 });
     expect(store.getPr("github:acme/app#1")).toBeNull();
     expect(store.getPr("github:acme/app#2")).not.toBeNull();
     expect(store.getPr("github:acme/app#3")).not.toBeNull();
-    expect(store.ledgerKeys().sort()).toEqual(["github:acme/app#2", "github:acme/app#3", "subject:hook:issue:2"]);
+    expect(store.ledgerKeys().sort()).toEqual(["github:acme/app#2", "github:acme/app#3", "subject:hook:issue:2", "subject:hook:issue:3", "subject:hook:issue:4"]);
+    expect(store.ledger("subject:hook:issue:3")).toHaveLength(2);
+    expect(store.commandsFor("subject:hook:issue:1")).toEqual([]);
+    expect(store.commandsFor("subject:hook:issue:4")).toHaveLength(1);
     expect(store.commandsFor("github:acme/app#1")).toEqual([]);
     expect(store.commandsFor("github:acme/app#3")).toHaveLength(1);
     expect(store.timersFor("github:acme/app#1")).toEqual([]);

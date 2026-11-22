@@ -101,7 +101,7 @@ export const ACTION_REGISTRY: Readonly<Record<ActionType, ActionDefinition>> = {
       harness: orConfig(z.string().min(1)).optional(),
       model: orConfig(z.string().min(1)).optional(),
     }),
-    describe: params => `instruct ${params.to === "owner" ? "the owner session" : "a new agent"}`,
+    describe: params => `instruct ${params.to === "owner" ? "the owner session" : params.to === "new-agent" ? "a new agent" : show(params.to)}`,
   },
 };
 

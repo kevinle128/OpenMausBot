@@ -4,7 +4,7 @@ import { exportInputs, runReplay, verifyDb } from "../server/pr-orchestrator/rep
 
 const USAGE = `usage: node --experimental-strip-types scripts/pr-orchestrator-replay.ts
   --events <file.ndjson> [--config <file.json>] [--mode simulated|recorded] [--handlers stub|succeed]
-  --db <copy of pr-orchestrator.db> [--verify] [--export]`;
+  --db <copy of pr-orchestrator.db> --verify|--export`;
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -16,14 +16,15 @@ async function main(): Promise<number> {
   if (values.mode !== "simulated" && values.mode !== "recorded") throw new Error("--mode is simulated or recorded");
   if (values.handlers !== "stub" && values.handlers !== "succeed") throw new Error("--handlers is stub or succeed");
   if (values.db) {
-    if (!values.verify && !values.export) throw new Error("--db needs --verify or --export");
-    if (values.export) process.stdout.write(`${exportInputs(values.db)}\n`);
-    if (values.verify) {
-      const differing = verifyDb(values.db);
-      process.stdout.write(`${JSON.stringify({ verified: differing.length === 0, differing })}\n`);
-      return differing.length === 0 ? 0 : 1;
+    if (values.events) throw new Error("pass either --events or --db, not both");
+    if (Boolean(values.verify) === Boolean(values.export)) throw new Error("--db needs exactly one of --verify or --export");
+    if (values.export) {
+      process.stdout.write(`${exportInputs(values.db)}\n`);
+      return 0;
     }
-    return 0;
+    const differing = verifyDb(values.db);
+    process.stdout.write(`${JSON.stringify({ verified: differing.length === 0, differing })}\n`);
+    return differing.length === 0 ? 0 : 1;
   }
   if (!values.events) throw new Error("--events or --db is required");
   const eventsText = readFileSync(values.events, "utf8");

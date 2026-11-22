@@ -210,6 +210,12 @@ describe("a connector that only a test registers", () => {
     expect(harness.logs.at(-1)).toMatchObject({ outcome: "rejected" });
   });
 
+  it("answers 503, not 401, to a header-checked connector whose secret is not saved", async () => {
+    const harness = await door({ validator, key: () => null }, instances);
+    const answer = await raw(harness, "/events/test-hook", { method: "POST", headers: { authorization: "Bearer anything" }, body: JSON.stringify(chatEvent("test-hook", "m3")) });
+    expect(answer.status).toBe(503);
+  });
+
   it("refuses the test type when the shipped validator is used", async () => {
     const harness = await door({ key: () => hookKey }, instances);
     const answer = await raw(harness, "/events/test-hook", { method: "POST", headers: { authorization: `Bearer ${hookKey.toString()}` }, body: JSON.stringify(chatEvent("test-hook", "m2")) });

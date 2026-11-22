@@ -11,7 +11,7 @@ import { createPrOrchestratorRoutes } from "./pr-orchestrator.ts";
 
 let dir: string;
 let core: OrchestratorCore | null;
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "pr-orchestrator-routes-"));
   writeFileSync(join(dir, "pr-orchestrator.json"), JSON.stringify({ enabled: true }));
   const clock = fakeClock();
@@ -22,7 +22,7 @@ beforeEach(() => {
   });
   core.start();
   core.intake.accept([{ event: ev.opened(), raw: "{}" }], clock.now());
-  timer.options().run();
+  await timer.options().run();
 });
 afterEach(async () => {
   await core?.stop();
@@ -97,6 +97,7 @@ describe("PR orchestrator routes", () => {
     expect(answer).toMatchObject({ status: 400 });
     expect(await call("POST", "/api/pr-orchestrator/routines/test", { body: { prKey: DEFAULT_PR_KEY, inputSeq: 1 } })).toMatchObject({ status: 400 });
     expect(await call("POST", "/api/pr-orchestrator/routines/test", { body: { routineId: "x", routine: {}, prKey: DEFAULT_PR_KEY, inputSeq: 1 } })).toMatchObject({ status: 400 });
+    expect(await call("POST", "/api/pr-orchestrator/routines/test", { body: { routine: null, prKey: DEFAULT_PR_KEY, inputSeq: 1 } })).toMatchObject({ status: 400 });
     expect(await call("POST", "/api/pr-orchestrator/routines/test", { body: { routineId: "x", prKey: "nope", inputSeq: 1 } })).toMatchObject({ status: 400 });
   });
 

@@ -108,6 +108,21 @@ function applyExternal(sim: Sim, prKey: PrKey, input: CoreInput): void {
   else pm.apply(prKey, input);
 }
 
+/**
+ * A payload without the fields that depend on the run that issued it: ids of other commands, decision ids built from ledger
+ * row numbers, and the event text that carries the received row number. A replay on a fresh store gives those other values.
+ */
+function comparablePayload(payload: CommandPayload): unknown {
+  const copy = structuredClone(payload) as Record<string, unknown>;
+  if (payload.type === "AskPerson") {
+    delete copy.decisionId;
+    if (payload.gated) copy.gated = { ...payload.gated, commandId: null };
+  }
+  const untrusted = copy.untrusted;
+  if (typeof untrusted === "object" && untrusted !== null && !Array.isArray(untrusted)) copy.untrusted = { ...untrusted, eventJson: null };
+  return copy;
+}
+
 function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, { type: "timer.fired" | "command.finished" }>): void {
   const { store, pm } = sim.parts;
   const applyAsStored = () => { if (!prKey.startsWith(SUBJECT_PREFIX)) pm.apply(prKey, input); };
@@ -118,7 +133,8 @@ function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, {
     else if (timers.length === 0) applyAsStored();
     return;
   }
-  const twins = store.commandsFor(prKey).filter(candidate => candidate.type === input.command && isDeepStrictEqual(candidate.payload, input.payload));
+  const wanted = comparablePayload(input.payload);
+  const twins = store.commandsFor(prKey).filter(candidate => candidate.type === input.command && isDeepStrictEqual(comparablePayload(candidate.payload), wanted));
   const open = twins.find(candidate => candidate.status !== "done");
   if (open) pm.finishCommand(open, input.result);
   else if (twins.length === 0) applyAsStored();
@@ -131,14 +147,18 @@ function applyRecordedResult(sim: Sim, prKey: PrKey, input: Extract<CoreInput, {
 export function replayRecorded(input: SimOptions & { inputs: SimInput[]; onEvaluate?: (info: EvaluationInfo, inputIndex: number) => void }): SimResult {
   let index = 0;
   const sim = createSim({ ...input, onEvaluate: info => input.onEvaluate?.(info, index) });
-  input.inputs.forEach((item, position) => {
-    index = position;
-    sim.setNow(item.at);
-    if ("event" in item) sim.applyEvent(item.connector, item.event);
-    else if (item.input.type === "timer.fired" || item.input.type === "command.finished") applyRecordedResult(sim, item.prKey, item.input);
-    else applyExternal(sim, item.prKey, item.input);
-  });
-  return withoutReceived(snapshot(sim));
+  try {
+    input.inputs.forEach((item, position) => {
+      index = position;
+      sim.setNow(item.at);
+      if ("event" in item) sim.applyEvent(item.connector, item.event);
+      else if (item.input.type === "timer.fired" || item.input.type === "command.finished") applyRecordedResult(sim, item.prKey, item.input);
+      else applyExternal(sim, item.prKey, item.input);
+    });
+    return withoutReceived(snapshot(sim));
+  } finally {
+    sim.parts.store.close();
+  }
 }
 
 const withoutReceived = ({ received: _received, ...rest }: SimResult & { received: ReceivedRow[] }): SimResult => rest;
@@ -146,6 +166,14 @@ const withoutReceived = ({ received: _received, ...rest }: SimResult & { receive
 /** Simulated mode: takes external inputs only. Its own scheduler and command bus produce the timers and the command results on a virtual clock. */
 export async function simulate(input: SimOptions & { inputs: SimInput[]; handlers?: Partial<CommandHandlers>; maxIterations?: number }): Promise<SimResult & { received: ReceivedRow[] }> {
   const sim = createSim(input);
+  try {
+    return await runSimulation(sim, input);
+  } finally {
+    sim.parts.store.close();
+  }
+}
+
+async function runSimulation(sim: Sim, input: { inputs: SimInput[]; maxIterations?: number }): Promise<SimResult & { received: ReceivedRow[] }> {
   const limit = input.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   const external = input.inputs
     .filter(item => "event" in item || (item.input.type !== "timer.fired" && item.input.type !== "command.finished"))

@@ -54,7 +54,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const now = deps.now();
     if (nextPrune() <= now) {
       const { retention } = deps.config();
-      const removed = store.prune(now - retention.endedPrDays * DAY_MS, now - retention.receivedEventDays * DAY_MS);
+      const removed = store.prune(now - retention.endedPrDays * DAY_MS, now - retention.receivedEventDays * DAY_MS, now);
       store.setMeta(LAST_PRUNE_KEY, String(now));
       if (removed.prs + removed.subjects + removed.received > 0) {
         deps.log(`pr-orchestrator: pruned ${removed.prs} PRs, ${removed.subjects} subjects and ${removed.received} received events`);

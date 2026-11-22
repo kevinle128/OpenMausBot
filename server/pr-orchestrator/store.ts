@@ -173,7 +173,7 @@ export interface OrchestratorStore {
    * the ledger rows of other subjects older than endedBefore, received rows older than receivedBefore that are not pending,
    * and connector_log rows older than 7 days. Returns the counts. This is the only delete of ledger rows.
    */
-  prune(endedBefore: number, receivedBefore: number): { prs: number; subjects: number; received: number; connectorLog: number };
+  prune(endedBefore: number, receivedBefore: number, now: number): { prs: number; subjects: number; received: number; connectorLog: number };
   close(): void;
 }
 
@@ -308,7 +308,12 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     saveCursor: db.prepare(`INSERT INTO connector_cursors (connector, cursor, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(connector) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`),
 
-    pruneOtherLedger: db.prepare("DELETE FROM ledger WHERE at < ? AND subject_key NOT IN (SELECT pr_key FROM prs)"),
+    // A non-PR subject goes whole, like an ended PR: once its last row is old and no command or timer of it is still open.
+    idleSubjectKeys: db.prepare(`SELECT subject_key FROM ledger
+      WHERE subject_key NOT IN (SELECT pr_key FROM prs)
+        AND subject_key NOT IN (SELECT subject_key FROM commands WHERE status != 'done')
+        AND subject_key NOT IN (SELECT subject_key FROM timers WHERE state = 'armed')
+      GROUP BY subject_key HAVING MAX(at) < ?`),
     endedKeys: db.prepare(`SELECT pr_key FROM prs WHERE state IN ${ENDED_STATES} AND updated_at < ?`),
     pruneLedgerOf: db.prepare("DELETE FROM ledger WHERE subject_key = ?"),
     pruneCommandsOf: db.prepare("DELETE FROM commands WHERE subject_key = ?"),
@@ -469,20 +474,20 @@ export function openOrchestratorStore(path: string): OrchestratorStore {
     },
     saveCursor: (connector, cursor, at) => { q.saveCursor.run(connector, cursor, at); },
 
-    prune: (endedBefore, receivedBefore) => transaction(() => {
-      const subjects = Number(q.pruneOtherLedger.run(endedBefore).changes);
+    prune: (endedBefore, receivedBefore, now) => transaction(() => {
+      const subjects = all(q.idleSubjectKeys, endedBefore).map((row) => String(row.subject_key));
       const ended = all(q.endedKeys, endedBefore).map((row) => String(row.pr_key));
-      for (const key of ended) {
+      for (const key of [...subjects, ...ended]) {
         q.pruneLedgerOf.run(key);
         q.pruneCommandsOf.run(key);
         q.pruneTimersOf.run(key);
-        q.prunePr.run(key);
       }
+      for (const key of ended) q.prunePr.run(key);
       return {
         prs: ended.length,
-        subjects,
+        subjects: subjects.length,
         received: Number(q.pruneReceived.run(receivedBefore).changes),
-        connectorLog: Number(q.pruneConnectorLog.run(Date.now() - CONNECTOR_LOG_KEEP_MS).changes),
+        connectorLog: Number(q.pruneConnectorLog.run(now - CONNECTOR_LOG_KEEP_MS).changes),
       };
     }),
     close: () => { db.close(); },

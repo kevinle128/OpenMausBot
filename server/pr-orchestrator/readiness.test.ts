@@ -91,6 +91,22 @@ describe("readiness", () => {
     expect(ciStatus(both, ctx).settled).toBe(true);
   });
 
+  it("does not settle a wildcard required check on an early job result", () => {
+    const ctx = ctxFor({ readiness: { requiredChecks: ["github-actions/*"] } });
+    const job = record(ev.opened({ head: SHA_A }), ev.ciFinished({ head: SHA_A, scope: "job", name: "build" }));
+    expect(ciStatus(job, ctx).settled).toBe(false);
+    expect(ciStatus(job, ctxFor({ readiness: { requiredChecks: ["github-actions/job:build"] } })).settled).toBe(true);
+    const workflow = record(ev.opened({ head: SHA_A }), ev.ciFinished({ head: SHA_A }));
+    expect(ciStatus(workflow, ctx).settled).toBe(true);
+  });
+
+  it("asks for no review when requireReview is off, even with requireReviewedHead on", () => {
+    const ctx = ctxFor({ readiness: { requireReview: false } });
+    const unreviewed = record(ev.opened({ head: SHA_A }), ev.ciFinished({ head: SHA_A }), refreshed(SHA_A));
+    expect(readiness(unreviewed, ctx).gaps).not.toContain("review_not_passed");
+    expect(readiness(unreviewed, ctxFor()).gaps).toContain("review_not_passed");
+  });
+
   it("uses the required checks of a fresh forge when none are configured", () => {
     const withForge = (head: string, checks: string[]) => record(ev.opened({ head: SHA_A }), ev.ciFinished({ head: SHA_A }), refreshed(head, { requiredChecks: checks }));
     expect(ciStatus(withForge(SHA_A, ["github-actions/ci", "github-actions/lint"]), ctxFor())).toMatchObject({ settled: false, required: ["github-actions/ci", "github-actions/lint"] });

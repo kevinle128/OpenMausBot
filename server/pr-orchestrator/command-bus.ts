@@ -34,8 +34,8 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
   const running = new Set<Promise<void>>();
 
   async function call(handler: CommandHandler, command: CommandRecord, record: PrRecord | null, now: number): Promise<CommandResult> {
-    const config = deps.config();
     try {
+      const config = deps.config();
       return await handler(command, { record, config: record ? resolveForRepo(config, record.provider, record.repo) : subjectConfig(config), now, ports: deps.ports });
     } catch (error) {
       if (error instanceof NotInstalledError) return { outcome: "skipped", reason: "not installed" };
@@ -51,9 +51,9 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
       return;
     }
     const result = await call(deps.handlers[command.type], command, record, deps.now());
-    const { commands } = deps.config();
     const attempts = command.attempts + 1;
     try {
+      const { commands } = deps.config();
       if (result.outcome === "failed" && result.retryable && attempts < commands.maxAttempts) {
         const seconds = Math.min(commands.backoffSeconds.initial * 2 ** (attempts - 1), commands.backoffSeconds.max);
         store.rescheduleCommand(command.id, deps.now() + seconds * MS, result.reason, deps.now());
@@ -61,6 +61,16 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
       deps.log(`pr-orchestrator: ${command.type} ${command.id} ${result.outcome} (attempt ${attempts})`);
     } catch (error) {
       deps.log(`pr-orchestrator: ${command.type} ${command.id} could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+      // Never leave the row running: that would hold every later command of the subject until a restart.
+      settleRunning(command, result);
+    }
+  }
+
+  function settleRunning(command: CommandRecord, result: CommandResult): void {
+    try {
+      store.finishCommand(command.id, result, deps.now());
+    } catch (error) {
+      deps.log(`pr-orchestrator: ${command.type} ${command.id} stays running until a restart: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -72,7 +82,9 @@ export function createCommandBus(deps: CommandBusDeps): CommandBus {
       for (const command of due) {
         store.markCommandRunning(command.id, deps.now());
         const task: Promise<void> = execute(command).catch(error => {
-          deps.log(`pr-orchestrator: ${command.type} ${command.id} failed to run: ${error instanceof Error ? error.message : String(error)}`);
+          const reason = error instanceof Error ? error.message : String(error);
+          deps.log(`pr-orchestrator: ${command.type} ${command.id} failed to run: ${reason}`);
+          settleRunning(command, { outcome: "failed", reason, retryable: false });
         }).finally(() => {
           running.delete(task);
           deps.onSettled?.();

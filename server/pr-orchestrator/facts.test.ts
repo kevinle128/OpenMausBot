@@ -74,6 +74,15 @@ describe("factsOf", () => {
     expect(at(0, 30, 23)).toMatchObject({ "merge.quietNow": true, "merge.minutesToWindow": 390 });
   });
 
+  it("counts elapsed minutes to the window across a DST change", () => {
+    const quietHours = { start: "22:00", end: "07:00", timeZone: "America/New_York" };
+    const at = (utc: number) => facts([ev.opened()], ctxFor({ merge: { quietHours } }, utc));
+    // 22:00 EDT on 2026-10-31; clocks go back at 02:00, so 07:00 EST is ten hours later.
+    expect(at(Date.UTC(2026, 10, 1, 2, 0))).toMatchObject({ "merge.quietNow": true, "merge.minutesToWindow": 600 });
+    // 22:00 EST on 2026-03-07; clocks go forward at 02:00, so 07:00 EDT is eight hours later.
+    expect(at(Date.UTC(2026, 2, 8, 3, 0))).toMatchObject({ "merge.quietNow": true, "merge.minutesToWindow": 480 });
+  });
+
   it("reads a quiet window inside one day and no window at all", () => {
     const quietHours = { start: "09:00", end: "17:30", timeZone: "UTC" };
     const at = (hour: number, minute: number) => facts([ev.opened()], ctxFor({ merge: { quietHours } }, Date.UTC(2026, 10, 22, hour, minute)));

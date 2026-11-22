@@ -63,9 +63,12 @@ function createRecord(entry: LedgerEntry, at: number): PrRecord {
 function foldEvent(record: PrRecord, event: OmbEvent, at: number): void {
   if (!prSubjectOf(event)) throw new Error("not a PR event");
   const common = commonOf(event);
+  record.url = text(common.url) ?? record.url;
   record.branch = text(common.branch) ?? record.branch;
   record.baseRef = text(common.baseRef) ?? record.baseRef;
   record.author = text(common.author) ?? record.author;
+  // As createRecord does for a first event: a record that owner.bound opened learns its head from any PR event.
+  if (record.headSha === null && event.type !== "pr.pushed") newHead(record, text(common.headSha), at);
   switch (event.type) {
     case "pr.opened": {
       const data = payloadOf(event, "pr.opened");
@@ -97,6 +100,8 @@ function foldEvent(record: PrRecord, event: OmbEvent, at: number): void {
     }
     case "pr.review.finished": {
       const r = payloadOf(event, "pr.review.finished").review;
+      // A late review of an older commit never replaces one that covers the head.
+      if (record.headSha !== null && record.review?.reviewedSha === record.headSha && r.reviewedSha !== record.headSha) return;
       record.review = {
         status: r.status, reviewedSha: r.reviewedSha, rounds: r.rounds, maxRounds: r.maxRounds,
         items: r.items, commentId: r.commentId, commentUrl: r.commentUrl, at,
@@ -172,6 +177,8 @@ function foldCommandFinished(record: PrRecord, entry: Extract<LedgerEntry, { typ
       decisionId: payload.decisionId, kind: payload.kind, askedAt: at, commandId: entry.commandId, gatedCommandId: payload.gated?.commandId ?? null,
     };
   } else if (payload.type === "RefreshDetails" && result.detail && "forge" in result.detail) {
+    // A late refresh of an older head never replaces the facts of the current one.
+    if (record.headSha !== null && record.forge?.headSha === record.headSha && result.detail.forge.headSha !== record.headSha) return;
     record.forge = { ...result.detail.forge, at };
     if (record.forge.headSha === record.headSha) record.conflict = record.forge.blockers.includes("conflict");
   }

@@ -15,15 +15,27 @@ function localMinutes(now: number, timeZone: string): number {
   return part("hour") * 60 + part("minute");
 }
 
+function isQuietAt(current: number, start: number, end: number): boolean {
+  return start <= end ? current >= start && current < end : current >= start || current < end;
+}
+
 function mergeWindow(ctx: StepContext): { quietNow: boolean; minutesToWindow: number } {
   const quiet = ctx.config.merge.quietHours;
   if (quiet === null) return { quietNow: false, minutesToWindow: 0 };
   const start = minutesOfDay(quiet.start);
   const end = minutesOfDay(quiet.end);
-  const current = localMinutes(ctx.now, quiet.timeZone);
-  const quietNow = start <= end ? current >= start && current < end : current >= start || current < end;
-  if (!quietNow) return { quietNow, minutesToWindow: 0 };
-  return { quietNow, minutesToWindow: Math.max(1, (end - current + 1440) % 1440) };
+  const at = (minutes: number) => localMinutes(ctx.now + minutes * 60_000, quiet.timeZone);
+  if (!isQuietAt(at(0), start, end)) return { quietNow: false, minutesToWindow: 0 };
+  // Wall-clock minutes are not elapsed minutes across a DST change: correct the guess by the local time it lands on.
+  let minutes = Math.max(1, (end - at(0) + 1440) % 1440);
+  for (let pass = 0; pass < 2; pass++) {
+    const short = (end - at(minutes) + 1440) % 1440;
+    if (short === 0) break;
+    minutes = short <= 180 ? minutes + short : Math.max(1, minutes - (1440 - short));
+  }
+  // An end inside a skipped hour is never shown: take the first minute that is no longer quiet.
+  for (let guard = 0; guard < 180 && isQuietAt(at(minutes), start, end); guard++) minutes += 1;
+  return { quietNow: true, minutesToWindow: minutes };
 }
 
 function eventFacts(entry: LedgerEntry, facts: FactMap): void {
