@@ -176,13 +176,13 @@ describe("command bus", () => {
       { Notify: async () => ({ outcome: "waiting", reason: "the daemon is down", retryAfterSeconds: 10 }) },
       { commands: { maxWaits: 3 } },
     );
-    for (let round = 0; round < 3; round += 1) {
+    for (let round = 0; round < 4; round += 1) {
       await commands.runDue();
       await commands.idle();
       h.clock.advance(10_000);
     }
     expect(h.store.getCommand(command.id)).toMatchObject({
-      status: "done", outcome: "skipped", attempts: 1, waits: 2, result: { outcome: "skipped", reason: "waited too long: the daemon is down" },
+      status: "done", outcome: "skipped", attempts: 1, waits: 3, result: { outcome: "skipped", reason: "waited too long: the daemon is down" },
     });
     expect(h.entries("command.finished")).toHaveLength(1);
   });
