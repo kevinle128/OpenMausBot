@@ -1206,3 +1206,31 @@ describe("which other bots a server notice names", () => {
     expect(otherBotsGiven(bots, bot("admin", { visibility: "admins" }), everyone)).toEqual(["A", "B", "SECRET", "FEW"]);
   });
 });
+
+describe("internal mcp_server and an MCP v2 connection", () => {
+  const archon = { type: "http", protocol: "v2", url: "https://archon.example.com/mcp", headers: {}, enabled: true, apps: false };
+
+  it("leaves a v2 connection out of the list and refuses every action named on it", async () => {
+    const probe = probeWith({ ok: true, tools: [] });
+    const { post, cfg } = fixture({ servers: { linear, archon } });
+    const listed = await post({ action: "list" });
+    expect(listed.body.text).toContain("linear");
+    expect(listed.body.text).not.toContain("archon");
+    const before = structuredClone(cfg.mcpServers);
+    for (const action of ["test", "update", "enable", "disable", "restart", "sign_in", "sign_out", "remove"]) {
+      const { status, body } = await post({ action, name: "archon", url: "https://elsewhere.example.com/mcp" });
+      expect({ action, status, error: body.error }).toEqual({ action, status: 403, error: expect.stringContaining("MCP v2 connection") });
+    }
+    expect(probe).not.toHaveBeenCalled();
+    expect(cfg.mcpServers).toEqual(before);
+  });
+
+  it("does not let a bot add a connection as v2", async () => {
+    probeWith({ ok: true, tools: [] });
+    const { post, stored } = fixture();
+    const { status } = await post({ action: "add", name: "fresh", type: "http", url: "https://mcp.linear.app/mcp", protocol: "v2" });
+    expect(status).toBe(201);
+    expect(stored("fresh")).toMatchObject({ url: "https://mcp.linear.app/mcp" });
+    expect(stored("fresh")).not.toHaveProperty("protocol");
+  });
+});

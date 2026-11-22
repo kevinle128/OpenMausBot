@@ -1234,7 +1234,7 @@ export function customMcpServers(cfg: AppConfig, only?: string[], botId?: string
       skipMcpEntry(name, `${parsed.error} Expected { "command": "npx", "args": [...], "env": { ... } } or { "type": "http", "url": "https://…", "headers": { ... } }`);
       continue;
     }
-    if (!parsed.server.enabled || parsed.server.runsOn || !mcpServerServes(parsed.server, botId)) continue; // another computer's or bot's own
+    if (!parsed.server.enabled || parsed.server.runsOn || !mcpServerServes(parsed.server, botId) || (isRemoteMcpServer(parsed.server) && parsed.server.protocol === "v2")) continue; // another computer's or bot's own; a v2 connection is OpenMausBot's own
     out[name] = isRemoteMcpServer(parsed.server)
       ? { type: parsed.server.type, url: parsed.server.url, headers: { ...parsed.server.headers, ...postizKeyHeaders(cfg.postiz, name, parsed.server) } }
       : { command: parsed.server.command, args: parsed.server.args, env: parsed.server.env };

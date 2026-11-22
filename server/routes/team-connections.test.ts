@@ -72,3 +72,21 @@ it.each(["", 123])("refuses a malformed expected URL (%s)", async (url) => {
   expect((await save({ value: KEY, url })).status).toBe(400);
   expect(people.key(PERSON, "mail", URL_A)).toBeNull();
 });
+
+it("refuses to let each person connect their own for an MCP v2 connection", async () => {
+  const cfg = { mcpServers: { archon: { type: "http", protocol: "v2", url: URL_A, headers: {}, apps: false } } } as unknown as AppConfig;
+  const people = new PeopleConnections({ dataDir: join(DATA_DIR, randomUUID()), brokerUrl: () => null, clients: () => undefined, isOwnerLive: () => true });
+  const route = createTeamConnectionRoutes({
+    cfg: () => cfg,
+    host: { team: { id: "team-acme-1", name: "Acme" }, people, personMcp: () => [], scopes: { scope: () => "team", set: () => { throw new Error("must not be set"); }, person: () => [] } } as unknown as TeamConnectionsHost,
+    composio: {} as TeamConnectionRouteDeps["composio"], publicOrigin: null,
+  });
+  const answers: Array<{ status: number; body: unknown }> = [];
+  await route({
+    req: {} as IncomingMessage, res: {} as ServerResponse, url: new URL("http://localhost/api/team/connection-scopes"), path: "/api/team/connection-scopes", method: "PUT",
+    auth: { kind: "loopback", scopes: ["admin", "client"] } as RequestAuth,
+    json: (_res, status, answer) => { answers.push({ status, body: answer }); },
+    readBody: async () => ({ kind: "mcp", id: "archon", scope: "person" }),
+  });
+  expect(answers[0]).toMatchObject({ status: 409, body: { error: expect.stringContaining("each person cannot connect their own") } });
+});

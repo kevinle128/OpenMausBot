@@ -21,6 +21,8 @@ export interface PastedRemoteServer {
   transport: "remote";
   name: string;
   type: "http" | "sse";
+  /** Only `v2` is ever set: MCP 2026-07-28, used by MausBot itself. */
+  protocol?: "v2";
   url: string;
   urlGap?: PastedGap;
   headers: PastedSecret[];
@@ -37,7 +39,7 @@ export interface PastedStdioServer {
 
 export type PastedMcpServer = PastedRemoteServer | PastedStdioServer;
 
-export type McpPasteError = "mcp.paste.notRecognized" | "mcp.paste.badJson" | "mcp.paste.incomplete" | "mcp.paste.badPair";
+export type McpPasteError = "mcp.paste.notRecognized" | "mcp.paste.badJson" | "mcp.paste.incomplete" | "mcp.paste.badPair" | "mcp.paste.badProtocol";
 
 export type McpPaste = { ok: true; servers: PastedMcpServer[] } | { ok: false; error: McpPasteError };
 
@@ -277,7 +279,9 @@ function entryServer(name: string | undefined, entry: unknown): PastedMcpServer 
   const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
   if (url !== undefined) {
     const headers = strings(entry.headers).map(([key, value]) => secret(key, value));
-    return remoteServer(name, url, type === "sse" ? "sse" : type ? "http" : undefined, headers);
+    if (entry.protocol !== undefined && entry.protocol !== "v2") throw new PasteError("mcp.paste.badProtocol");
+    if (entry.protocol === "v2" && type === "sse") throw new PasteError("mcp.paste.badProtocol");
+    return { ...remoteServer(name, url, type === "sse" ? "sse" : type ? "http" : undefined, headers), ...(entry.protocol === "v2" ? { type: "http" as const, protocol: "v2" as const } : {}) };
   }
   if (typeof entry.command !== "string" || !entry.command.trim()) return null;
   const listed = Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === "string") : [];

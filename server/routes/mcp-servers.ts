@@ -13,12 +13,12 @@ import { PASS, type RouteHandler } from "./table.ts";
 import type { json } from "../harness/http.ts";
 import { sessionMember } from "./team-phone.ts";
 
-type ListedMcpServer = { name: string; enabled: boolean; bot?: string; offFor?: readonly string[] };
+type ListedMcpServer = { name: string; enabled: boolean; bot?: string; offFor?: readonly string[]; ombOnly?: boolean };
 
 // Security: built field by field, never spread. The settings list carries commands, arguments and addresses that can
 // hold secrets, so it stays closed to phones and this is what they get instead.
 function botMcpServers(listed: readonly ListedMcpServer[], bot: { id: string; mcpServers?: readonly string[] | null }) {
-  return listed.filter((server) => mcpServerServes(server, bot.id)).map((server) => ({
+  return listed.filter((server) => !server.ombOnly && mcpServerServes(server, bot.id)).map((server) => ({
     name: server.name,
     enabled: server.enabled,
     on: server.enabled && (!bot.mcpServers || bot.mcpServers.includes(server.name)),

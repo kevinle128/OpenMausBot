@@ -264,7 +264,7 @@ describe("remote (url) MCP servers", () => {
 
   it("lists a url server by address and header names only", () => {
     const listings = listMcpServers({ docs: { url: "https://docs.example/mcp", headers: { Authorization: "Bearer real", "X-Org": "acme" } } });
-    expect(listings).toEqual([{ name: "docs", type: "http", url: "https://docs.example/mcp", headerKeys: ["Authorization", "X-Org"], enabled: true, apps: true }]);
+    expect(listings).toEqual([{ name: "docs", type: "http", protocol: "legacy", url: "https://docs.example/mcp", headerKeys: ["Authorization", "X-Org"], enabled: true, apps: true }]);
     expect(JSON.stringify(listings)).not.toContain("real");
     expect(JSON.stringify(listings)).not.toContain("acme");
   });
@@ -297,7 +297,7 @@ describe("a url server's sign-in app", () => {
     });
     const listings = listMcpServers({ docs: saved });
     expect(listings).toEqual([{
-      name: "docs", type: "http", url, headerKeys: [], enabled: true, apps: true,
+      name: "docs", type: "http", protocol: "legacy", url, headerKeys: [], enabled: true, apps: true,
       oauth: { clientId: "corp-app", scopes: ["api://mcp/read"], clientSecretConfigured: true },
     }]);
     expect(JSON.stringify(listings)).not.toContain("app-secret-value");
