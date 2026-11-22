@@ -62,7 +62,7 @@ describe("updateConnectorInstance", () => {
   it("writes the file owner-only and atomically", () => {
     writeFileSync(path, "{}", { mode: 0o644 });
     updateConnectorInstance(path, BUILT_IN_CONNECTORS, "github-event", { enabled: true, secretName: "MY_HUB_SECRET" });
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(read().connectors["github-event"].secretName).toBe("MY_HUB_SECRET");
     expect(readdirSync(dir)).toEqual(["pr-orchestrator.json"]);
   });

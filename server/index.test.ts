@@ -1747,8 +1747,8 @@ describe("harness HTTP API", () => {
     try {
       const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
         // On Windows without wmic the lease reads the other server's start time through Windows PowerShell, whose first
-        // start on a CI runner takes several seconds.
-        const timer = setTimeout(() => reject(new Error("competing server did not exit")), process.platform === "win32" ? 30_000 : 5_000);
+        // start on a CI runner takes several seconds. A loaded Linux runner can spend the same starting this process.
+        const timer = setTimeout(() => reject(new Error("competing server did not exit")), process.platform === "win32" ? 30_000 : 20_000);
         timer.unref?.();
         contender.once("close", (code, signal) => {
           clearTimeout(timer);
@@ -8802,7 +8802,7 @@ describe("harness HTTP API", () => {
     try {
       const created = await api("POST", "/api/mcp/servers", { name: "docs", url: fake.url, headers: { Authorization: secret } });
       expect(created.status).toBe(201);
-      expect(created.body.servers).toEqual([{ name: "docs", type: "http", url: fake.url, headerKeys: ["Authorization"], enabled: false, apps: true, scope: "team" }]);
+      expect(created.body.servers).toEqual([{ name: "docs", type: "http", protocol: "legacy", url: fake.url, headerKeys: ["Authorization"], enabled: false, apps: true, scope: "team" }]);
       expect(JSON.stringify(created.body)).not.toContain(secret);
 
       const tested = await api("POST", "/api/mcp/servers/docs/test");
@@ -8849,7 +8849,7 @@ describe("harness HTTP API", () => {
       const first = await api("POST", "/api/mcp/servers/hf/test");
       expect(first.body).toEqual({ ok: false, auth: "required", error: "This server needs you to sign in." });
       expect((await api("GET", "/api/mcp/servers")).body.servers).toEqual([
-        { name: "hf", type: "http", url: fake.url, headerKeys: [], enabled: false, apps: true, auth: "needs-sign-in", scope: "team" },
+        { name: "hf", type: "http", protocol: "legacy", url: fake.url, headerKeys: [], enabled: false, apps: true, auth: "needs-sign-in", scope: "team" },
       ]);
 
       const started = await api("POST", "/api/mcp/servers/hf/sign-in");
@@ -8992,7 +8992,7 @@ describe("harness HTTP API", () => {
       const created = await api("POST", "/api/mcp/servers", { name: "corp", url, oauth: { clientId: "corp-app", clientSecret: secret, scopes: ["mcp", "offline_access"] } });
       expect(created.status).toBe(201);
       expect(created.body.servers).toEqual([{
-        name: "corp", type: "http", url, headerKeys: [], enabled: false, apps: true, scope: "team",
+        name: "corp", type: "http", protocol: "legacy", url, headerKeys: [], enabled: false, apps: true, scope: "team",
         oauth: { clientId: "corp-app", scopes: ["mcp", "offline_access"], clientSecretConfigured: true, redirectUri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp-oauth\/callback$/) },
       }]);
 
