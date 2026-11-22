@@ -17,6 +17,13 @@ describe("mcpServersForBot", () => {
     { name: "off", enabled: false },
   ];
 
+  it("leaves connections used by MausBot only out of a bot's picker", () => {
+    const withV2 = [...all, { name: "archon", enabled: true, ombOnly: true }];
+    expect(mcpServersOfBot(withV2, "b1").map((s) => s.name)).toEqual(["notes", "linear", "off"]);
+    expect(mcpServersForBot(withV2, null, "b1").map((s) => s.name)).toEqual(["notes", "linear"]);
+    expect(mcpServersForBot(withV2, ["archon", "notes"], "b1").map((s) => s.name)).toEqual(["notes"]);
+  });
+
   it("gives a bot without a list every enabled server", () => {
     expect(mcpServersForBot(all, undefined, "b1").map((s) => s.name)).toEqual(["notes", "linear"]);
     expect(mcpServersForBot(all, null, "b1").map((s) => s.name)).toEqual(["notes", "linear"]);

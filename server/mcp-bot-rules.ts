@@ -6,7 +6,7 @@ import { isRemoteMcpServer, type StoredMcpServer } from "./mcp-registry.ts";
 export type McpOwner = "shared" | "own" | "theirs" | "person" | "elsewhere";
 
 /** A bot may never send these: they are the person's switches. */
-export const BOT_STRIPPED_KEYS: readonly string[] = ["bot", "runsOn", "apps", "enabled"];
+export const BOT_STRIPPED_KEYS: readonly string[] = ["bot", "runsOn", "apps", "enabled", "protocol"];
 
 const WHOLE_REF = /^secret-ref:[0-9a-f]{32}$/;
 const SECRET_FLAG_ARG = /^--(?:token|password|passwd|api-key|apikey|secret|access-key|auth-token)$/i;

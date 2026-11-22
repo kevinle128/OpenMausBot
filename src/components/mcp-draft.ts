@@ -2,6 +2,8 @@ import { gapIn, type PastedGap, type PastedMcpServer, type PastedSecret } from "
 
 import { resultBudgetDraft, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 
+export type McpProtocol = "legacy" | "v2";
+
 /** Security: secrets arrive as names only. */
 export interface StdioMcpListing extends McpResultBudgetListing {
   name: string;
@@ -13,6 +15,9 @@ export interface StdioMcpListing extends McpResultBudgetListing {
 export interface RemoteMcpListing extends McpResultBudgetListing {
   name: string;
   type: "http" | "sse";
+  /** `v2`: MCP 2026-07-28, used by MausBot itself and never by a bot. Absent or `legacy`: a standard connection. */
+  protocol?: McpProtocol;
+  ombOnly?: boolean;
   url: string;
   headerKeys: string[];
   enabled: boolean;
@@ -55,6 +60,7 @@ export interface McpDraft extends McpResultBudgetDraft {
   args: string;
   env: SecretRow[];
   type: "http" | "sse";
+  protocol: McpProtocol;
   url: string;
   urlGap?: PastedGap;
   headers: SecretRow[];
@@ -72,7 +78,7 @@ export function secretRow(row: Omit<SecretRow, "id"> = { name: "", value: "" }):
 
 export function emptyDraft(): McpDraft {
   return {
-    name: "", transport: "remote", command: "", args: "", env: [secretRow()], type: "http", url: "", headers: [secretRow()],
+    name: "", transport: "remote", command: "", args: "", env: [secretRow()], type: "http", protocol: "legacy", url: "", headers: [secretRow()],
     oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false, resultBudget: "",
   };
 }
@@ -86,6 +92,7 @@ export function draftFor(server: McpServerListing): McpDraft {
       ...emptyDraft(),
       name: server.name,
       type: server.type,
+      protocol: server.protocol ?? "legacy",
       url: server.url,
       headers: savedRows(server.headerKeys),
       oauthClientId: server.oauth?.clientId ?? "",
@@ -110,6 +117,7 @@ export function draftFromPaste(server: PastedMcpServer): McpDraft {
       ...emptyDraft(),
       name: server.name,
       type: server.type,
+      protocol: server.protocol ?? "legacy",
       url: server.url,
       ...(server.urlGap ? { urlGap: server.urlGap } : {}),
       headers: pastedRows(server.headers),
@@ -183,11 +191,13 @@ export function draftBody(
     if (gapIn(url)) return { ok: false, error: { key: "mcp.paste.urlMissing" } };
     const headers = rowsBody(draft.headers, "header");
     if (!headers.ok) return headers;
+    if (draft.protocol === "v2") return { ok: true, body: { type: "http", protocol: "v2", url, headers: headers.values } };
     const oauth = parseMcpOAuthClient(
       { clientId: draft.oauthClientId, clientSecret: draft.oauthClientSecret, scopes: draft.oauthScopes, forgetSecret: draft.oauthForgetSecret },
       existing && isRemoteMcpListing(existing) ? existing.oauth : undefined,
     );
-    return { ok: true, body: { type: draft.type, url, headers: headers.values, ...(oauth ? { oauth } : {}) } };
+    const leavesV2 = existing && isRemoteMcpListing(existing) && existing.protocol === "v2";
+    return { ok: true, body: { type: draft.type, ...(leavesV2 ? { protocol: "legacy" } : {}), url, headers: headers.values, ...(oauth ? { oauth } : {}) } };
   }
   const command = draft.command.trim();
   if (!name || !command) return { ok: false, error: { key: "mcp.err.nameAndCommand" } };
@@ -198,7 +208,7 @@ export function draftBody(
 
 /** The one key a URL server is reached with, which a Team Cloud keeps as this person's own when it's only for them. */
 export function soleKey(draft: McpDraft): string | null {
-  if (draft.transport !== "remote" || draft.oauthClientId.trim()) return null;
+  if (draft.transport !== "remote" || draft.protocol === "v2" || draft.oauthClientId.trim()) return null;
   const named = draft.headers.filter((row) => row.name.trim());
   return named.length === 1 ? rowValue(named[0]!).trim() || null : null;
 }

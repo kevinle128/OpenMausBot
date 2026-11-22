@@ -2,8 +2,9 @@ import { userError, type UserError } from "../user-errors.ts";
 import { withMcpSignIn, type McpOAuthManager } from "../mcp-oauth.ts";
 import { brokeredServer, type BrokerPath } from "../bot-box/broker-probe.ts";
 import { probeMcpServer, sendsCredentials, type McpProbeOptions, type McpProbeResult } from "../mcp-probe.ts";
-import { isRemoteMcpServer, mcpServerLimitError, mcpServerNotFound, parseStoredMcpServer, type McpRunsOn, type StoredMcpServer, type StoredRemoteMcpServer } from "../mcp-registry.ts";
+import { isRemoteMcpServer, isV2Connection, mcpServerLimitError, mcpServerNotFound, parseStoredMcpServer, V2_PER_PERSON_REFUSAL, type McpRunsOn, type StoredMcpServer, type StoredRemoteMcpServer } from "../mcp-registry.ts";
 import { postizKeyHeaders } from "../postiz/connection.ts";
+import { probeMcpV2 } from "../mcp-v2/probe.ts";
 import type { AppConfig } from "../config.ts";
 import type { ChatAppsMcp } from "../chat-apps-mcp.ts";
 import type { CloudHomeConfig } from "../cloud-home.ts";
@@ -135,6 +136,7 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
   const refused = (name: string, server: StoredMcpServer): McpConfigResult | null => {
     const personalRefusal = personalHeaderRefusal(name, server);
     if (personalRefusal) return { status: 400, ...personalRefusal };
+    if (isV2Connection(server) && deps.teamConnections.personMcp().includes(name)) return { status: 400, error: V2_PER_PERSON_REFUSAL };
     const refusal = mcpPolicyRefusal(name, server);
     return refusal ? { status: 403, error: refusal, code: "managed_policy" } : null;
   };
@@ -169,6 +171,7 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
       if (limit) return { status: 400, error: limit };
       const personalRefusal = names.map((name) => personalHeaderRefusal(name, servers[name]!)).find(Boolean);
       if (personalRefusal) return { status: 400, ...personalRefusal };
+      if (names.some((name) => isV2Connection(servers[name]!) && deps.teamConnections.personMcp().includes(name))) return { status: 400, error: V2_PER_PERSON_REFUSAL };
       const blocked = names.filter((name) => mcpPolicyRefusal(name, servers[name] as object));
       if (blocked.length) return { status: 403, error: `${mcpPolicyRefusal(blocked[0]!, servers[blocked[0]!] as object)} Not approved: ${blocked.join(", ")}.`, code: "managed_policy" };
       persistMcpServers({ ...current, ...servers });
@@ -178,7 +181,8 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
     replace: (name, server, keys) => write(() => {
       const found = stored(name);
       if (!found.existing) return found.result!;
-      if (server.bot !== found.existing.bot) {
+      // A v2 connection only counts toward the total, so turning it into a legacy one (or back) is checked again too.
+      if (server.bot !== found.existing.bot || isV2Connection(server) !== isV2Connection(found.existing)) {
         const { [name]: _replaced, ...others } = found.current;
         const limit = mcpServerLimitError(others, [server]);
         if (limit) return { status: 400, error: limit };
@@ -221,6 +225,7 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
     setApps: (name, apps) => write(() => {
       const found = stored(name);
       if (!found.existing) return found.result!;
+      if (isV2Connection(found.existing)) return { status: 400, error: "An MCP v2 connection has no apps to show in chat." };
       const { apps: _apps, ...rest } = found.existing;
       persistMcpServers({ ...found.current, [name]: { ...rest, ...(apps ? {} : { apps: false }) } });
       if (apps) appCatalog?.serverChanged(name);
@@ -269,6 +274,9 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
           const keyed = deps.keys.resolve(name, target, asBot?.id);
           if (!keyed.ok) return { status: 200, body: { ok: false, reason: "keys", error: keyed.why } satisfies McpProbeResult };
           if (keyed.server !== target) cataloged = target = keyed.server;
+        }
+        if (isV2Connection(target) && isRemoteMcpServer(target)) {
+          return { status: 200, body: await probeMcpV2({ url: target.url, headers: target.headers }, signal) };
         }
         let sentSignIn = false;
         if (isRemoteMcpServer(target) && oauth.authState(name, target.url) === "signed-in") {

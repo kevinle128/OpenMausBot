@@ -199,6 +199,11 @@ describe("a bot's MCP servers, as a phone reads them", () => {
     ] });
   });
 
+  it("leaves a connection used by MausBot only out of a bot's server list", async () => {
+    const response = await servers({ id: "ada" }, { warehouse: { ombOnly: true } });
+    expect((await response.json() as { servers: { name: string }[] }).servers.map((server) => server.name)).toEqual(["ada_notes", "tickets", "archive"]);
+  });
+
   it("turns on only the enabled servers in the bot's list", async () => {
     expect(await (await servers({ id: "ada", mcpServers: ["tickets", "archive", "bea_files"] })).json()).toEqual({ servers: [
       { name: "warehouse", enabled: true, on: false },

@@ -388,6 +388,19 @@ card in Access shows the last turn's count against the limit and those
 servers, and a server's **Test** says when it alone has more tools than the
 limit, or half of it or more.
 
+### MCP v2 connections (used by MausBot itself)
+
+Some servers, such as Archon, speak only the MCP revision 2026-07-28, with its tasks and events extensions. Claude Code, Codex and the other agent engines cannot use that revision, and such a server refuses every older client. For these servers pick **MCP v2 (2026-07-28)** in the **Protocol** list when you add the connection. Every other server keeps **Standard**, which is the default.
+
+- **Bots cannot use it.** MausBot's own code uses a v2 connection, for example to follow a workflow run. It is never mounted in a bot's turn, it is left out of each bot's server list, and the `mcp_server` tool does not list it or change it. The server list shows a "MausBot only" tag on it.
+- **What it needs.** A Streamable HTTP address, and optional headers such as `Authorization: Bearer …`. There is no SSE, no sign-in (OAuth), no command and no lent computer, and each person cannot connect their own on a Team Cloud. These combinations are refused when you save.
+- **Paste.** A pasted `mcpServers` entry may carry `"protocol": "v2"` with its `url`. Any other value is refused.
+  ```json
+  { "mcpServers": { "archon": { "url": "https://archon.example.com/mcp", "protocol": "v2", "headers": { "Authorization": "Bearer …" } } } }
+  ```
+- **Test.** The Test button connects at 2026-07-28 and shows the server's name and version, its tool count, the extensions it offers and its event types. A server that answers without `resultType`, `ttlMs` or `cacheScope`, or that only speaks an older revision, gets a one-line explanation instead of a connection.
+- **Going back.** Choose **Standard** in the editor to turn a connection into an ordinary one.
+
 ### Which engines reach which servers
 
 | Server | Claude Code bots | Codex bots | ACP bots (Cursor, Grok, Kimi, …) | API-model bots |

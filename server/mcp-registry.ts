@@ -6,6 +6,11 @@ import { MCP_RESTART_ENV } from "./mcp-app-catalog.ts";
 
 export { importedMcpServerName } from "../shared/mcp-name.ts";
 
+export type McpProtocol = "legacy" | "v2";
+
+export const V2_PER_PERSON_REFUSAL = "An MCP v2 connection is the team's own: MausBot uses it itself, so each person cannot connect their own.";
+export const V2_BOT_REFUSAL = "This is an MCP v2 connection that MausBot uses itself. Bots cannot use it or change it.";
+
 /** The computer a server runs on when its program, files or address are that computer's own: kept with its entry so a
  * bot can reach it through that computer, and never started anywhere else. */
 export interface McpRunsOn {
@@ -44,8 +49,12 @@ export interface StoredRemoteMcpServer extends RemoteMcpSpec {
   bot?: string;
   /** "Show its apps in chat": stored only as `false`; on by default. */
   apps?: false;
+  /** MCP revision family. `v2` (2026-07-28 with the tasks and events extensions) is used only by OpenMausBot's own client and is never handed to a bot's harness. Stored only as `v2`; absent means `legacy`. */
+  protocol?: McpProtocol;
 }
 export type StoredMcpServer = StoredStdioMcpServer | StoredRemoteMcpServer;
+
+export const isV2Connection = (server: StoredMcpServer): boolean => "url" in server && server.protocol === "v2";
 
 /** What the renderer sees: names of secrets, never their values. */
 export interface StdioMcpServerListing {
@@ -70,6 +79,9 @@ export interface RemoteMcpServerListing {
   oauth?: { clientId: string; scopes: string[]; clientSecretConfigured: boolean };
   runsOn?: McpRunsOn;
   bot?: string;
+  protocol: McpProtocol;
+  /** Set for a v2 connection: only OpenMausBot's own code uses it, so bot pickers leave it out. */
+  ombOnly?: true;
 }
 export type McpServerListing = StdioMcpServerListing | RemoteMcpServerListing;
 
@@ -86,6 +98,7 @@ export function mcpServerServes(server: object & { bot?: string }, botId: string
 export function mcpServerProblemFor(servers: Record<string, unknown> | undefined, name: string, botId: string): string | null {
   const server = servers && Object.hasOwn(servers, name) ? servers[name] : undefined;
   if (!server || typeof server !== "object") return "no such server";
+  if ((server as { protocol?: unknown }).protocol === "v2") return "that connection is used by MausBot itself";
   return mcpServerServes(server, botId) ? null : "that server belongs to another bot";
 }
 
@@ -99,6 +112,8 @@ function countMcpServers(values: readonly unknown[]): { total: number; shared: n
   const own = new Map<string, number>();
   let shared = 0;
   for (const value of values) {
+    // No bot uses a v2 connection, so it counts toward the install's total only.
+    if (value && typeof value === "object" && (value as { protocol?: unknown }).protocol === "v2") continue;
     const bot = value && typeof value === "object" ? (value as { bot?: unknown }).bot : undefined;
     if (typeof bot === "string" && bot) own.set(bot, (own.get(bot) ?? 0) + 1);
     else shared++;
@@ -237,6 +252,7 @@ const oauthClientSchema = z.object({
 const remoteEntrySchema = z.object({
   /** Streamable HTTP unless the entry says the older SSE transport. */
   type: z.enum(["http", "sse"]).optional(),
+  protocol: z.enum(["legacy", "v2"]).optional(),
   url: z.string().trim().min(1).max(2_048),
   headers: z.record(z.string(), z.string().max(16_384)).optional(),
   oauth: oauthClientSchema.optional(),
@@ -361,20 +377,36 @@ function parseRemote(raw: unknown, mutation: boolean, existing?: StoredMcpServer
   if (invalidHeader) return { ok: false, error: invalidHeader };
   const oauth = resolveOAuthClient(parsed.data.oauth, existing && isRemoteMcpServer(existing) ? existing.oauth : undefined);
   if (!oauth.ok) return oauth;
+  const protocol: McpProtocol = parsed.data.protocol ?? (mutation && existing && isRemoteMcpServer(existing) ? existing.protocol : undefined) ?? "legacy";
+  const runsOn = runsOnFor(parsed.data.runsOn, mutation, existing);
+  if (protocol === "v2") {
+    const refusal = v2Refusal(parsed.data.type ?? "http", oauth.value !== undefined, runsOn.runsOn !== undefined);
+    if (refusal) return { ok: false, error: refusal };
+  }
   return {
     ok: true,
     server: {
       type: parsed.data.type ?? "http",
+      ...(protocol === "v2" ? { protocol } : {}),
       url: parsed.data.url,
       headers: headers.values,
       ...(oauth.value ? { oauth: oauth.value } : {}),
       enabled: enabledFor(parsed.data.enabled, mutation, existing),
       ...(parsed.data.resultBudget !== undefined ? { resultBudget: parsed.data.resultBudget } : {}),
-      ...runsOnFor(parsed.data.runsOn, mutation, existing),
-      ...appsFor(parsed.data.apps, mutation, existing),
-      ...botFor(parsed.data.bot, mutation, existing),
+      ...runsOn,
+      // A v2 connection has no chat apps: the app catalog reads servers with the legacy client.
+      ...(protocol === "v2" ? { apps: false as const } : appsFor(parsed.data.apps, mutation, existing)),
+      // A v2 connection is MausBot's own, never one bot's.
+      ...(protocol === "v2" ? {} : botFor(parsed.data.bot, mutation, existing)),
     },
   };
+}
+
+function v2Refusal(type: "http" | "sse", oauth: boolean, runsOn: boolean): string | null {
+  if (type === "sse") return "An MCP v2 connection uses Streamable HTTP; SSE is a legacy transport.";
+  if (oauth) return "An MCP v2 connection signs in with a header such as Authorization; OAuth is not available for it yet.";
+  if (runsOn) return "An MCP v2 connection is reached from this computer; it cannot run on a lent computer.";
+  return null;
 }
 
 function runsOnFor(value: McpRunsOn | null | undefined, mutation: boolean, existing?: StoredMcpServer): { runsOn?: McpRunsOn } {
@@ -422,7 +454,7 @@ export function mcpServerBody(body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!body || typeof body !== "object") return out;
   const record = body as Record<string, unknown>;
-  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget", "runsOn"]) {
+  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget", "runsOn", "protocol"]) {
     if (record[key] !== undefined) out[key] = record[key];
   }
   return out;
@@ -468,6 +500,8 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
       return [{
         name,
         type: server.type,
+        protocol: server.protocol ?? "legacy",
+        ...(server.protocol === "v2" ? { ombOnly: true as const } : {}),
         url: server.url,
         headerKeys: Object.keys(server.headers).sort(),
         enabled: server.enabled,
@@ -539,9 +573,12 @@ export function parseMcpServersImport(
     }
     const record = entry as Record<string, unknown>;
     if (Object.hasOwn(servers, name)) return { ok: false, error: `"${rawName}" appears twice.` };
+    if (!looksRemote(record) && record.protocol !== undefined && record.protocol !== "legacy") {
+      return { ok: false, error: `"${rawName}": An MCP v2 connection uses Streamable HTTP; a command runs over stdio.` };
+    }
     // `enabled` from the paste is dropped so nothing runs before it was tested.
     const result = parseMcpServerMutation(name, looksRemote(record)
-      ? pickEntry(record, ["type", "url", "headers", "resultBudget"])
+      ? pickEntry(record, ["type", "protocol", "url", "headers", "resultBudget"])
       : pickEntry(record, ["command", "args", "env", "resultBudget"]));
     if (!result.ok) return { ok: false, error: `"${rawName}": ${result.error}` };
     servers[name] = result.server;

@@ -13,7 +13,7 @@ import type { AdminActionRow } from "../admin-activity.ts";
 import type { AppConfig } from "../config.ts";
 import type { TeamConnectionsHost } from "../host/team-connections-host.ts";
 import { McpOAuthError, McpSignInError, mcpCallbackOrigin } from "../mcp-oauth.ts";
-import { isRemoteMcpServer, mcpServerNotFound, parseStoredMcpServer } from "../mcp-registry.ts";
+import { isRemoteMcpServer, isV2Connection, mcpServerNotFound, parseStoredMcpServer, V2_PER_PERSON_REFUSAL } from "../mcp-registry.ts";
 import { personKey } from "../person-key.ts";
 import { provesSameOrigin, requestOrigin, type RequestAuth } from "../request-auth.ts";
 import { APP_SLUG, appLabel, MCP_NAME, personKeyHeader } from "../team-connections.ts";
@@ -60,6 +60,7 @@ export function createTeamConnectionRoutes(deps: TeamConnectionRouteDeps): Route
         const found = server(id);
         if (!found) return json(res, 404, { error: mcpServerNotFound(id) });
         if (scope === "person" && !isRemoteMcpServer(found)) return json(res, 409, { error: "Only a server reached by its address can be connected by each person." });
+        if (scope === "person" && isV2Connection(found)) return json(res, 409, { error: V2_PER_PERSON_REFUSAL });
       }
       const before = deps.host.scopes.scope(kind, id);
       if (before !== scope) {

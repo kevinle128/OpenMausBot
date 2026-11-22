@@ -74,7 +74,7 @@ function publicProbeError(kind: "spawn" | "timeout" | "protocol" | "closed" | "c
   return "The command did not return a valid MCP tools list.";
 }
 
-function redactConfiguredValues(value: string, secrets: Record<string, string>): string {
+export function redactConfiguredValues(value: string, secrets: Record<string, string>): string {
   const ranges: [number, number][] = [];
   for (const secret of new Set(Object.values(secrets))) {
     if (!secret) continue;
