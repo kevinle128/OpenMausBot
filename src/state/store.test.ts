@@ -1454,18 +1454,26 @@ describe("routine receipt retention", () => {
   it("opens a bot's logs without retaining stale filters on a later global visit", () => {
     const focused = reducer(initialState, { type: "showRoutines", section: "logs", view: "list", botId: "echo", routineId: "routine-1" });
     expect(focused.activeView).toBe("routines");
-    expect(focused.routinesFocus).toEqual({ section: "logs", view: "list", botId: "echo", routineId: "routine-1", nonce: 1 });
+    expect(focused.routinesFocus).toEqual({ section: "logs", view: "list", botId: "echo", routineId: "routine-1", newApp: undefined, nonce: 1 });
     const all = reducer(focused, { type: "showRoutines" });
-    expect(all.routinesFocus).toEqual({ section: undefined, view: undefined, botId: undefined, routineId: undefined, nonce: 2 });
+    expect(all.routinesFocus).toEqual({ section: undefined, view: undefined, botId: undefined, routineId: undefined, newApp: undefined, nonce: 2 });
     const failures = reducer(focused, { type: "showRoutines", section: "logs" });
-    expect(failures.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, nonce: 2 });
+    expect(failures.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, newApp: undefined, nonce: 2 });
   });
 
   it("carries the problems filter from the errors pill and drops it on a plain visit", () => {
     const focused = reducer(initialState, { type: "showRoutines", section: "logs", runStatus: "problems" });
-    expect(focused.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, runStatus: "problems", nonce: 1 });
+    expect(focused.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, runStatus: "problems", newApp: undefined, nonce: 1 });
     const plain = reducer(focused, { type: "showRoutines", section: "logs" });
-    expect(plain.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, runStatus: undefined, nonce: 2 });
+    expect(plain.routinesFocus).toEqual({ section: "logs", view: undefined, botId: undefined, routineId: undefined, runStatus: undefined, newApp: undefined, nonce: 2 });
+  });
+
+  it("names the event app to set up and closes Apps", () => {
+    const open = reducer({ ...initialState, pluginsOpen: true }, { type: "showRoutines", view: "list", newApp: "github-event" });
+    expect(open.pluginsOpen).toBe(false);
+    expect(open.activeView).toBe("routines");
+    expect(open.routinesFocus.newApp).toBe("github-event");
+    expect(open.routinesFocus.view).toBe("list");
   });
 
   it("leaves the bulk-seen sweep to the server's emitted receipts", () => {
