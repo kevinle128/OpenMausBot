@@ -10578,6 +10578,8 @@
   "server.prOrchestrator.answer.understood": "Understood",
   "server.prOrchestrator.answer.approve": "Approve",
   "server.prOrchestrator.answer.reject": "Reject",
+  "server.prOrchestrator.bot.name": "Pull requests",
+  "server.prOrchestrator.bot.description": "Questions and notices about your pull requests and merge requests from MausBot.",
   "settings.section.phoneDevices": "Phone & devices",
   "devices.pair": "Pair a device",
   "devices.paired": "Paired",

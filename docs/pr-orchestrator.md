@@ -295,6 +295,31 @@ returns the port to the stub.
 An adapter that is not built into this install leaves its port waiting while its
 switch is on. Check the command list of a PR in `GET /api/pr-orchestrator/pr?key=...`.
 
+### Inbox
+
+With `adapters.notifier.enabled` set to `true`, `AskPerson` and `Notify` reach
+you in the Inbox.
+
+- **Cards.** Each question opens one card in a conversation named "Pull
+  requests", made on first use. The card shows under "needs you". A decision card
+  has the buttons from `escalation.decisionChoices`. An approval card has
+  "Approve" and "Reject". A tap comes back as `person.answered`. Each new card
+  also sends one notification, the one the app sends for a question or an
+  approval, and it opens the "Pull requests" conversation. A card taken over
+  after a restart, or closed, sends none.
+- **Restarts.** A card that an earlier run opened is taken over again at start,
+  so a tap still reaches the orchestrator and no second card appears. A card
+  whose question ended is closed, and a later tap does nothing.
+- **Notices.** A notice (merged, ready with auto-merge off, review failed) is one
+  unread line in the Inbox, and one notification. Nothing is posted in the
+  "Pull requests" conversation except cards, because a later message there would
+  hide an open card from "needs you".
+- **Team Cloud.** The unread line is added on a single-place install. On a Team
+  Cloud, a notice reaches you only as a notification, because no person asked
+  the "Pull requests" conversation anything.
+- **Language.** Card and notice text is English only for now. The words are
+  `server.prOrchestrator.*` keys, so a translation can be added later.
+
 ## Vault secrets
 
 Each hub connector has one Vault secret, the key that signs its batches:
