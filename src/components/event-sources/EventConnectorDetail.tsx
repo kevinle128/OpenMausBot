@@ -28,7 +28,7 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
 
 /** The sink to paste into the hub's config: the address, the name of the environment variable that holds the key (never its value) and the forge. */
 function hubSnippet(connector: EventConnector): string {
-  const provider = connector.id.split("-")[0] ?? connector.id;
+  const provider = (connector.use ?? connector.id).split("-")[0] ?? connector.id;
   const url = connector.intakeUrl ?? `${t("eventSources.snippet.address")}${connector.intakePath ?? ""}`;
   return ["sinks:", "  - type: omb", `    url: ${url}`, `    secretEnv: ${connector.secretName ?? ""}`, "    batchSize: 20", "    filter:", `      providers: [${provider}]`].join("\n");
 }
@@ -100,7 +100,13 @@ export function EventConnectorDetail({ connector, busy, error, onSave, onOpenVau
         <ul className="flex flex-col gap-1">
           {connector.eventTypes.map((type) => (
             <li key={type.type} data-event-type={type.type}>
-              <details open={typeOpen === type.type} onToggle={(event) => setTypeOpen((event.currentTarget as HTMLDetailsElement).open ? type.type : null)}>
+              <details
+                open={typeOpen === type.type}
+                onToggle={(event) => {
+                  const isOpen = event.currentTarget.open;
+                  setTypeOpen((current) => (isOpen ? type.type : current === type.type ? null : current));
+                }}
+              >
                 <summary className="cursor-pointer text-[13px] text-ink"><span className="font-medium">{type.title}</span> <span className="text-ink-secondary">{type.description}</span></summary>
                 <pre className="mt-1 overflow-x-auto rounded-lg bg-control px-2.5 py-1.5 font-mono text-[12px] text-ink-secondary">{JSON.stringify(type.payloadSchema, null, 2)}</pre>
               </details>

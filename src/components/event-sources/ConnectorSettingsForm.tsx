@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { Select } from "../Select";
 
 type Field =
   | { kind: "number"; name: string; integer: boolean; min?: number; max?: number; fallback?: number }
@@ -121,9 +122,9 @@ export function ConnectorSettingsForm({ schema, settings, onSave }: {
             {field.kind === "boolean" ? (
               <input id={id} type="checkbox" disabled={saving} checked={values[field.name] === true} onChange={(event) => set(field.name, event.target.checked)} />
             ) : field.kind === "enum" ? (
-              <select id={id} disabled={saving} className={INPUT} value={String(values[field.name] ?? "")} onChange={(event) => set(field.name, event.target.value)}>
+              <Select id={id} size="sm" className="w-40" disabled={saving} value={String(values[field.name] ?? "")} onChange={(event) => set(field.name, event.target.value)}>
                 {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
+              </Select>
             ) : (
               <input
                 id={id}
@@ -141,7 +142,7 @@ export function ConnectorSettingsForm({ schema, settings, onSave }: {
       {error && <p role="alert" className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-[12px] text-danger">{error}</p>}
       {editable.length > 0 && (
         <div>
-          <button type="submit" disabled={!valid || !changed || saving} className="rounded-full bg-accent px-3.5 py-1.5 text-[13px] font-medium text-white transition-colors enabled:hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="submit" disabled={!valid || !changed || saving} className="ui-button ui-button-md ui-button-pill ui-button-primary">
             {saving ? t("eventSources.settings.saving") : t("eventSources.settings.save")}
           </button>
         </div>

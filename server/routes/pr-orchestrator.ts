@@ -36,9 +36,8 @@ function connectorViews(views: ConnectorView[], routines: ReturnType<Orchestrato
   return views.map((view: ConnectorView) => {
     const types = new Set(view.eventTypes.map(item => item.type));
     const usedBy = routines
-      .filter(routine => routine.when.connectors
-        ? routine.when.connectors.includes(view.id)
-        : routine.when.on.some(name => name === "*" || types.has(name)))
+      .filter(routine => routine.when.on.some(name => name === "*" || types.has(name))
+        && (!routine.when.connectors?.length || routine.when.connectors.includes(view.id)))
       .map(routine => ({ routineId: routine.id, name: routine.name, active: routine.active, describe: routine.describe }));
     return { ...view, intakeUrl: base && view.intakePath ? base + view.intakePath : null, usedBy };
   });

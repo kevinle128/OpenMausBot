@@ -81,6 +81,20 @@ describe("PR orchestrator connector routes", () => {
     expect(byId["github-event"].intakeUrl).toBe("http://hooks.example:8787/events/github-event");
   });
 
+  it("matches usedBy like the routine policy: an empty connector list means any, and the event type must match", async () => {
+    writeFileSync(join(dir, "pr-orchestrator.json"), JSON.stringify({
+      enabled: true,
+      routines: { useDefaults: false, custom: [
+        routineOf("empty-list", "Empty list", { connectors: [], on: ["pr.pushed"] }),
+        routineOf("timer-only", "Timer only", { connectors: ["github-event"], on: ["timer.fired"] }),
+      ] },
+    }));
+    const answer = await call("GET", "/api/pr-orchestrator/connectors");
+    const byId = Object.fromEntries((answer as Answer).body.connectors.map((item: any) => [item.id, item]));
+    expect(byId["github-event"].usedBy.map((item: any) => item.routineId)).toEqual(["empty-list"]);
+    expect(byId["gitlab-event"].usedBy.map((item: any) => item.routineId)).toEqual(["empty-list"]);
+  });
+
   it("gives no intake URL when the listener address is unknown", async () => {
     const answer = await call("GET", "/api/pr-orchestrator/connectors");
     expect((answer as Answer).body.connectors.every((item: any) => item.intakeUrl === null)).toBe(true);

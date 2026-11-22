@@ -1,5 +1,5 @@
 // Event connectors (GitHub Event, GitLab Event, ...) as the admin API lists them: apps that receive events, never tools for a bot.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/state/store";
 
 export interface EventConnectorType {
@@ -18,6 +18,8 @@ export interface EventConnectorRoutine {
 
 export interface EventConnector {
   id: string;
+  /** The connector definition this instance runs (`github-event`, `gitlab-event`, ...). */
+  use?: string;
   title: string;
   description: string;
   icon: { glyph: string } | { image: string };
@@ -60,9 +62,13 @@ export function saveEventConnector(id: string, patch: EventConnectorPatch): Prom
  */
 export function useEventConnectors(watching: boolean) {
   const [connectors, setConnectors] = useState<EventConnector[] | null>(null);
+  // Bumped by every load and every saved change, so a load that started before a newer one does not overwrite it.
+  const generation = useRef(0);
   const refresh = useCallback(async () => {
+    const started = ++generation.current;
     try {
-      setConnectors(await loadEventConnectors());
+      const loaded = await loadEventConnectors();
+      if (generation.current === started) setConnectors(loaded);
     } catch {
       setConnectors((current) => current);
     }
@@ -75,6 +81,7 @@ export function useEventConnectors(watching: boolean) {
     return () => clearInterval(timer);
   }, [watching, refresh]);
   const replace = useCallback((updated: EventConnector) => {
+    generation.current++;
     setConnectors((current) => current?.map((item) => (item.id === updated.id ? updated : item)) ?? current);
   }, []);
   return { connectors, refresh, replace };
