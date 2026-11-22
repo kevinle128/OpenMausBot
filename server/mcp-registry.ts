@@ -573,6 +573,9 @@ export function parseMcpServersImport(
     }
     const record = entry as Record<string, unknown>;
     if (Object.hasOwn(servers, name)) return { ok: false, error: `"${rawName}" appears twice.` };
+    if (!looksRemote(record) && record.protocol !== undefined && record.protocol !== "legacy") {
+      return { ok: false, error: `"${rawName}": An MCP v2 connection uses Streamable HTTP; a command runs over stdio.` };
+    }
     // `enabled` from the paste is dropped so nothing runs before it was tested.
     const result = parseMcpServerMutation(name, looksRemote(record)
       ? pickEntry(record, ["type", "protocol", "url", "headers", "resultBudget"])

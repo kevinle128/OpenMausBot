@@ -71,3 +71,13 @@ describe("a v2 connection and each person's own connection", () => {
     expect(cfg.mcpServers).toEqual({});
   });
 });
+
+describe("the server limit and a v2 connection", () => {
+  it("checks the per-bot limit again when a v2 connection is turned into a legacy one", () => {
+    const { config, cfg } = fixture();
+    cfg.mcpServers = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`s${i}`, { command: "x", args: [], env: {}, enabled: false }]));
+    expect(config.add("archon", v2("https://archon.example.com/mcp")).status).toBe(201);
+    const legacy = { type: "http", url: "https://archon.example.com/mcp", headers: {}, enabled: false } as StoredMcpServer;
+    expect(config.replace("archon", legacy)).toEqual({ status: 400, error: "You can add at most 20 MCP servers." });
+  });
+});

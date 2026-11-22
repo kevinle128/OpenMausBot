@@ -181,7 +181,8 @@ export function createMcpConfig(deps: McpConfigDeps & { changed(): void }): McpC
     replace: (name, server, keys) => write(() => {
       const found = stored(name);
       if (!found.existing) return found.result!;
-      if (server.bot !== found.existing.bot) {
+      // A v2 connection only counts toward the total, so turning it into a legacy one (or back) is checked again too.
+      if (server.bot !== found.existing.bot || isV2Connection(server) !== isV2Connection(found.existing)) {
         const { [name]: _replaced, ...others } = found.current;
         const limit = mcpServerLimitError(others, [server]);
         if (limit) return { status: 400, error: limit };

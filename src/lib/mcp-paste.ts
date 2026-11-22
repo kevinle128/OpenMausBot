@@ -277,6 +277,8 @@ function entryServer(name: string | undefined, entry: unknown): PastedMcpServer 
   if (!isRecord(entry)) return null;
   const url = typeof entry.url === "string" ? entry.url : typeof entry.serverUrl === "string" ? entry.serverUrl : undefined;
   const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  // Not a server entry at all (for example a server map with a server named "protocol"): let the caller look further.
+  if (url === undefined && (typeof entry.command !== "string" || !entry.command.trim())) return null;
   // "legacy" is the standard protocol; "v2" only exists for a URL server.
   if (entry.protocol !== undefined && entry.protocol !== "legacy" && (entry.protocol !== "v2" || url === undefined)) throw new PasteError("mcp.paste.badProtocol");
   if (url !== undefined) {

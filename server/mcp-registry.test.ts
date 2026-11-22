@@ -238,6 +238,11 @@ describe("parseMcpServersImport", () => {
     expect(parseMcpServersImport("not json")).toMatchObject({ ok: false, error: expect.stringMatching(/JSON/i) });
     expect(parseMcpServersImport("[]")).toMatchObject({ ok: false });
   });
+
+  it("refuses protocol v2 on a command instead of importing a legacy stdio server", () => {
+    expect(parseMcpServersImport('{"mcpServers": {"archon": {"command": "npx", "args": ["archon"], "protocol": "v2"}}}')).toMatchObject({ ok: false, error: expect.stringMatching(/stdio/) });
+    expect(parseMcpServersImport('{"mcpServers": {"fs": {"command": "mcp-fs", "protocol": "legacy"}}}')).toMatchObject({ ok: true });
+  });
 });
 
 describe("remote (url) MCP servers", () => {

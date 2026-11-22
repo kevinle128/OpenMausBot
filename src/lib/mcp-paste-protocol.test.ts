@@ -21,4 +21,9 @@ describe("the protocol of a pasted entry", () => {
     if (legacy?.ok) expect(legacy.servers[0]).not.toHaveProperty("protocol");
     expect(paste({ command: "npx", args: ["archon"], protocol: "v2" })).toEqual({ ok: false, error: "mcp.paste.badProtocol" });
   });
+
+  it("reads a server named protocol in a bare map and leaves unrelated JSON unrecognized", () => {
+    expect(readMcpPaste(JSON.stringify({ protocol: { url: "https://example.com/mcp" } }), [])).toMatchObject({ ok: true, servers: [{ transport: "remote", name: "protocol" }] });
+    expect(readMcpPaste(JSON.stringify({ protocol: "v3" }), [])).toEqual({ ok: false, error: "mcp.paste.notRecognized" });
+  });
 });
