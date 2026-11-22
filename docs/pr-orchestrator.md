@@ -324,6 +324,42 @@ you in the Inbox.
 - **Language.** Card and notice text is English only for now. The words are
   `server.prOrchestrator.*` keys, so a translation can be added later.
 
+### Paseo
+
+With `adapters.runtime.enabled`, MausBot uses the Paseo connection that it
+already has. That connection exists only when `OMB_PASEO_BRIDGE=1`; without it,
+the port keeps waiting.
+
+- **Who owns a PR.** The owner is the Paseo session that opened the PR. MausBot
+  reads the end of an agent's timeline for a successful `gh pr create`,
+  `glab mr create`, a `POST` through `gh api` or `glab api`, or a create-PR
+  tool. Only the URL in the call's output counts. A URL that a command only
+  mentions binds nothing. The owner is the root of the parent chain
+  (`paseo.parent-agent-id`), or the highest agent of the chain that is still
+  listed. A child that the daemon detached is its own root.
+- **When it looks.** After a turn ends (2 seconds later), when an agent is
+  removed, and after each connect for the agents that changed in the last
+  30 minutes, so a PR opened while MausBot restarted is found. A removed agent
+  stays in memory for 6 hours (at most 500), because a child often opens a PR
+  and is removed soon after. When no owner is bound, `TellOwner` searches the
+  timelines of the 30 most recent agents of the last 24 hours. A miss is
+  remembered for 10 minutes.
+- **How a message goes.** An owner message is sent at once, whatever the agent
+  does, the way the Paseo app sends a message that the person types: with the
+  app's default `steer` behaviour and a message id. A running turn gets the
+  message in its turn, or the daemon replaces the turn when the provider cannot
+  steer. The send also clears the agent's pending permission requests, as a
+  typed message does. The daemon keeps a receipt per message id, so a repeat of
+  the same message sends nothing. MausBot does not wait for an idle agent.
+- **When it cannot send.** An archived, closed or removed agent gives `skipped`
+  ("owner session gone"). A down daemon, or a list that is not complete yet,
+  makes the command wait.
+- **New agents.** `Instruct` with `to: "new-agent"` creates one Paseo agent with
+  the command id as its idempotency key, so a retry gives the same agent. It
+  starts in the owner's folder and workspace when the PR has a live owner.
+- **Before you switch it on.** Run `paseo --version` on the Mac mini. A daemon
+  that predates message ids can deliver a retried message twice.
+
 ## Vault secrets
 
 Each hub connector has one Vault secret, the key that signs its batches:
