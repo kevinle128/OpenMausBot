@@ -13,7 +13,7 @@ let dir: string;
 let core: OrchestratorCore | null;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "pr-orchestrator-routes-"));
-  writeFileSync(join(dir, "pr-orchestrator.json"), JSON.stringify({ enabled: true }));
+  writeFileSync(join(dir, "pr-orchestrator.json"), JSON.stringify({ enabled: true, routines: { useDefaults: true } }));
   const clock = fakeClock();
   const timer = manualTimer();
   core = createOrchestratorCore({

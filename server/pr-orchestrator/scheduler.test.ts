@@ -42,7 +42,7 @@ function pendingCommand(nextAt: number): CommandRecord {
 describe("scheduler", () => {
   it("drains pending events before it fires timers and runs commands", async () => {
     const { timer, order, scheduler } = setup();
-    h.setConfig({ enabled: true, workflows: { ciFix: { workflow: "ci-fix" } } });
+    h.setConfig({ enabled: true, workflows: { ciFix: { workflow: "ci-fix" } }, routines: { useDefaults: true } });
     h.send(ev.opened());
     h.store.setMeta("last_prune_at", String(h.clock.now()));
     h.pm.accept([{ event: ev.ciFinished({ status: "failed" }), raw: "{}" }], h.clock.now());

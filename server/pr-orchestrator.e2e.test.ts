@@ -11,7 +11,7 @@ const HUB_KEY = "fake-hub-key-for-end-to-end-tests-0123456789";
 const SECRET_NAME = "GITHUB_EVENT_HUB_SECRET";
 const PR_KEY = "github:acme/widgets#42";
 const ENABLED_ONLY = { enabled: true };
-const GITHUB_ENABLED = { enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } } };
+const GITHUB_ENABLED = { enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } }, routines: { useDefaults: true } };
 
 let fixture: VerificationServer;
 let url: string;

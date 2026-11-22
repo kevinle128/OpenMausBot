@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { counterIds, DEFAULT_PR_KEY, ev, fakeClock, SHA_B } from "./testing/buil
 import { manualTimer } from "./testing/manual-timer.ts";
 
 const HAPPY = readFileSync(new URL("./testing/fixtures/happy-path.ndjson", import.meta.url), "utf8");
+const DEFAULTS_ON = JSON.stringify({ routines: { useDefaults: true } });
 let dir: string;
 let liveEnv: string | undefined;
 beforeEach(() => {
@@ -30,15 +31,15 @@ describe("replay", () => {
     const text = `${HAPPY}${JSON.stringify({ at: Date.parse("2026-11-22T03:00:06Z"), prKey: "github:acme/widgets#42", input: owner })}\n`;
     expect(parseNdjsonInputs(text)).toHaveLength(7);
 
-    const summary = await runReplay({ eventsText: text, mode: "simulated", handlers: "succeed" });
+    const summary = await runReplay({ eventsText: text, configText: DEFAULTS_ON, mode: "simulated", handlers: "succeed" });
     expect(summary).toMatchObject({ mode: "simulated", inputs: 7, mismatches: [], refused: 0 });
     expect(summary.prs).toEqual([expect.objectContaining({ key: "github:acme/widgets#42", state: "merging", headSha: SHA_B })]);
     expect(summary.commands.map(command => command.type)).toEqual(["RefreshDetails", "Merge"]);
 
-    const stubbed = await runReplay({ eventsText: text, mode: "simulated", handlers: "stub" });
+    const stubbed = await runReplay({ eventsText: text, configText: DEFAULTS_ON, mode: "simulated", handlers: "stub" });
     expect(stubbed.prs[0]?.state).not.toBe("merging");
 
-    const recorded = await runReplay({ eventsText: HAPPY, mode: "recorded", handlers: "stub" });
+    const recorded = await runReplay({ eventsText: HAPPY, configText: DEFAULTS_ON, mode: "recorded", handlers: "stub" });
     expect(recorded).toMatchObject({ mode: "recorded", mismatches: [] });
   });
 
@@ -51,8 +52,10 @@ describe("replay", () => {
     const live = join(dir, "pr-orchestrator.db");
     const timer = manualTimer();
     const clock = fakeClock();
+    const configPath = join(dir, "pr-orchestrator.json");
+    writeFileSync(configPath, DEFAULTS_ON);
     const core = createOrchestratorCore({
-      dbPath: live, configPath: join(dir, "none.json"), now: clock.now, newId: counterIds("c"), startTimer: timer.startTimer,
+      dbPath: live, configPath, now: clock.now, newId: counterIds("c"), startTimer: timer.startTimer,
     });
     core.start();
     core.intake.accept([ev.opened(), ev.ciFinished({ status: "failed" }), ev.conflict()].map(event => ({ event, raw: "{}" })), clock.now());
@@ -67,7 +70,7 @@ describe("replay", () => {
     const exported = exportInputs(copy);
     expect(exported.split("\n")).toHaveLength(4);
     expect(exported).toContain('"type":"command.finished"');
-    const summary = await runReplay({ eventsText: exported, mode: "recorded", handlers: "stub" });
+    const summary = await runReplay({ eventsText: exported, configText: DEFAULTS_ON, mode: "recorded", handlers: "stub" });
     expect(summary.mismatches).toEqual([]);
     expect(summary.prs[0]).toMatchObject({ key: DEFAULT_PR_KEY, state: "ci_failed" });
   });

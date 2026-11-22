@@ -6,7 +6,7 @@ import { FORGE_A, FORGE_B, makeHarness, type Harness } from "./testing/pm-harnes
 import type { CommandRecord } from "./types.ts";
 
 const GUARD = "workflow:ci-fix";
-const WITH_WORKFLOW = { enabled: true, workflows: { ciFix: { workflow: "ci-fix" } } };
+const WITH_WORKFLOW = { enabled: true, workflows: { ciFix: { workflow: "ci-fix" } }, routines: { useDefaults: true } };
 
 let h: Harness;
 const start = (doc: Record<string, unknown> = WITH_WORKFLOW) => { h = makeHarness(doc); return h; };

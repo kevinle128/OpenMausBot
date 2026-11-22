@@ -24,7 +24,7 @@ function configOf(doc: Record<string, unknown> = {}): OrchestratorConfig {
 
 const event = (e: OmbEvent, at: number): SimInput => ({ at, connector: e.connector, event: contractPart(e) });
 const input = (at: number, body: CoreInput, prKey = DEFAULT_PR_KEY): SimInput => ({ at, prKey, input: body });
-const WITH_WORKFLOW = { workflows: { ciFix: { workflow: "ci-fix" } } };
+const WITH_WORKFLOW = { workflows: { ciFix: { workflow: "ci-fix" } }, routines: { useDefaults: true } };
 const FORGE_B = { headSha: SHA_B, mergeable: true, blockers: [], requiredChecks: null, baseFailing: [], failedJobs: [] };
 
 /** The stream of a PR that fails CI, gets a fix, passes CI and review, and is merged. */
@@ -158,7 +158,7 @@ describe("simulator", () => {
   });
 
   it("fires the merge window on the virtual clock", async () => {
-    const config = configOf({ merge: { quietHours: { start: "22:00", end: "07:00", timeZone: "Asia/Saigon" } } });
+    const config = configOf({ merge: { quietHours: { start: "22:00", end: "07:00", timeZone: "Asia/Saigon" } }, routines: { useDefaults: true } });
     const at = Date.parse("2026-11-22T16:00:00Z");
     const handlers: Partial<CommandHandlers> = scriptedHandlers({
       RefreshDetails: () => ({ outcome: "succeeded", detail: { forge: { ...FORGE_B, headSha: SHA_A } } }),

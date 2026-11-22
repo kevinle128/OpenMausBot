@@ -110,7 +110,7 @@ describe("orchestrator core", () => {
   });
 
   it("lists the resolved routines with their sentences and the last runs of one routine", async () => {
-    writeFileSync(configPath(), JSON.stringify({ enabled: true }));
+    writeFileSync(configPath(), JSON.stringify({ enabled: true, routines: { useDefaults: true } }));
     const session = open();
     session.core.start();
     const routines = session.core.routines();
@@ -257,7 +257,7 @@ describe("orchestrator core adapters", () => {
 
   /** A PR that waits for a decision, with its card shown by the attached notifier. */
   async function pendingDecision(notifier: ReturnType<typeof fakeNotifier>) {
-    const session = start(ADAPTERS_ON, attachedWith({ notifier: notifier.port }));
+    const session = start({ ...ADAPTERS_ON, routines: { useDefaults: true } }, attachedWith({ notifier: notifier.port }));
     receive(session, ev.opened(), ev.reviewFinished({ status: "needs-person", head: SHA_A, reviewedSha: SHA_A }));
     await session.run();
     await vi.waitFor(() => expect(session.core.pr(DEFAULT_PR_KEY)?.record.pendingDecision).not.toBeNull());

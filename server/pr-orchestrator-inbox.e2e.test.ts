@@ -57,7 +57,7 @@ afterAll(async () => { await fixture?.close(); });
 
 describe("PR orchestrator Inbox notifier", () => {
   it("asks the person in the Inbox when a review needs a decision and records the answer", async () => {
-    writeConfig({ enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } }, adapters: { notifier: { enabled: true } } });
+    writeConfig({ enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } }, adapters: { notifier: { enabled: true } }, routines: { useDefaults: true } });
     expect((await api("POST", "/api/vault/secrets", { name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY })).status).toBe(201);
     expect((await sendBatch([fixtureEvent("pr.opened"), fixtureEvent("pr.review.finished")])).status).toBe(200);
 
