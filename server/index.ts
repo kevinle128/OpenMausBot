@@ -15346,7 +15346,7 @@ const gracefulShutdown = createGracefulShutdown({
       tunnelListener?.close(); void tailnetShare.close(); phoneRelay?.stop(); stopCloudHomeConnectedApps();
     },
     () => phoneScreen.closeAll(),
-    async () => { await prOrchestrator.stop(); await managedDesktop.close(); await registry.disposeAll(); },
+    () => prOrchestrator.stop(), async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {
       const temporaries = [...temporaryBrowserSessions.keys()].map((botId) => forgetTemporaryBrowser(botId));
