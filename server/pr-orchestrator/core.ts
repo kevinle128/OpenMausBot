@@ -4,7 +4,7 @@ import { startDueTimer } from "../due-timer.ts";
 import { createCommandBus, configOfCommand, subjectLabelOf, type CommandBus } from "./command-bus.ts";
 import { askCardOf, portHandlers } from "./command-handlers.ts";
 import { noneAttached, switchedPorts, type AttachedAdapters } from "./adapters/switched.ts";
-import { configJsonSchema, createConfigSource, resolveRoutines } from "./config.ts";
+import { configJsonSchema, createConfigSource, orchestratorActive, resolveRoutines } from "./config.ts";
 import { createConnectorSupervisor, type ConnectorSupervisor } from "./connectors-supervisor.ts";
 import { BUILT_IN_CONNECTORS } from "./connectors/index.ts";
 import { createConnectorRegistry, type ConnectorEventType, type ConnectorRegistry } from "./connectors/registry.ts";
@@ -155,6 +155,35 @@ export function inboundInstanceIn(
   return { definition, settings: instance.settings, secretName: secretNameOf(instance, definition) };
 }
 
+/** The empty status of a connector that has never stored anything. */
+export const EMPTY_CONNECTOR_STATUS: ConnectorView["status"] = {
+  lastEventAt: null, events24h: 0, lastError: null, lastErrorAt: null, signatureFailures24h: 0, cursorUpdatedAt: null,
+};
+
+/** Each configured instance of a config as the App section lists it; the status of an instance comes from the caller (a store, or nothing). */
+export function connectorViewsIn(
+  config: OrchestratorConfig, registry: ConnectorRegistry, secretPresent: (secretName: string) => boolean,
+  statusOf: (id: string) => ConnectorView["status"],
+): ConnectorView[] {
+  return Object.entries(config.connectors).flatMap(([id, instance]) => {
+    const definition = registry.get(instance.use);
+    if (!definition) return [];
+    const secretName = secretNameOf(instance, definition);
+    return [{
+      id, use: instance.use, title: definition.title, description: definition.description, icon: definition.icon, delivery: definition.delivery,
+      enabled: instance.enabled, intakePath: definition.delivery === "inbound-http" ? `/events/${id}` : null,
+      secretName, secretPresent: secretName !== null && secretPresent(secretName),
+      settings: instance.settings, settingsSchema: z.toJSONSchema(definition.settingsSchema, { io: "input" }) as Record<string, unknown>,
+      eventTypes: registry.eventTypes(instance.use),
+      status: statusOf(id),
+    }];
+  });
+}
+
+/** The resolved routines of a config with their sentences. */
+export const routinesIn = (config: OrchestratorConfig, registry: ConnectorRegistry): Array<Routine & { source: "default" | "custom"; describe: string }> =>
+  resolveRoutines(config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, config) }));
+
 export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
   const definitions = (deps.connectors ?? BUILT_IN_CONNECTORS) as readonly ConnectorDefinition[];
   const registry = createConnectorRegistry(definitions);
@@ -235,7 +264,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
 
   return {
     intake: parts.pm,
-    enabled: () => loaded().config.enabled,
+    enabled: () => orchestratorActive(loaded().config),
     resumeCards,
 
     start() {
@@ -268,7 +297,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
     status(secretPresent) {
       const { config, version, error } = loaded();
       return {
-        enabled: config.enabled, configVersion: version, configError: error, secretPresent,
+        enabled: orchestratorActive(config), configVersion: version, configError: error, secretPresent,
         counts: {
           byState: store.countPrsByState(), receivedByStatus: store.countReceivedByStatus(), commands: store.countCommands(),
           timersArmed: store.countArmedTimers(),
@@ -279,19 +308,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
 
     connectors(secretPresent) {
       const at = now();
-      return Object.entries(loaded().config.connectors).flatMap(([id, instance]) => {
-        const definition = registry.get(instance.use);
-        if (!definition) return [];
-        const secretName = secretNameOf(instance, definition);
-        return [{
-          id, use: instance.use, title: definition.title, description: definition.description, icon: definition.icon, delivery: definition.delivery,
-          enabled: instance.enabled, intakePath: definition.delivery === "inbound-http" ? `/events/${id}` : null,
-          secretName, secretPresent: secretName !== null && secretPresent(secretName),
-          settings: instance.settings, settingsSchema: z.toJSONSchema(definition.settingsSchema, { io: "input" }) as Record<string, unknown>,
-          eventTypes: registry.eventTypes(instance.use),
-          status: { ...store.connectorStatus(id, at), cursorUpdatedAt: store.cursor(id)?.updatedAt ?? null },
-        }];
-      });
+      return connectorViewsIn(loaded().config, registry, secretPresent, id => ({ ...store.connectorStatus(id, at), cursorUpdatedAt: store.cursor(id)?.updatedAt ?? null }));
     },
 
     inboundInstance: id => inboundInstanceIn(loaded().config, registry, id),
@@ -312,10 +329,7 @@ export function createOrchestratorCore(deps: CoreOptions): OrchestratorCore {
 
     inputs: { bindOwner: parts.pm.bindOwner, answer: parts.pm.answer, runFinished: parts.pm.runFinished },
 
-    routines() {
-      const { config } = loaded();
-      return resolveRoutines(config).map(routine => ({ ...routine, describe: describeRoutineWith(routine, registry, config) }));
-    },
+    routines: () => routinesIn(loaded().config, registry),
 
     routineRuns(routineId) {
       return store.routineRuns(routineId, ROUTINE_HISTORY_SHOWN).flatMap((row): RoutineRun[] => {

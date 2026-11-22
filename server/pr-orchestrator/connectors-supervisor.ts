@@ -1,3 +1,4 @@
+import { orchestratorActive } from "./config.ts";
 import type { ConnectorRegistry } from "./connectors/registry.ts";
 import { conformItems } from "./intake.ts";
 import type { ConnectorDefinition, SubscriptionContext } from "./ports.ts";
@@ -123,7 +124,7 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
   function desired(): Map<string, { definition: ConnectorDefinition; fingerprint: string }> {
     const config = deps.config();
     const wanted = new Map<string, { definition: ConnectorDefinition; fingerprint: string }>();
-    if (!config.enabled) return wanted;
+    if (!orchestratorActive(config)) return wanted;
     for (const [id, instance] of Object.entries(config.connectors)) {
       const definition = deps.registry.get(instance.use);
       if (!instance.enabled || !definition?.subscribe || definition.delivery === "inbound-http") continue;

@@ -5,7 +5,11 @@ It receives events from the git-event-hub, stores each one, and works out the
 state of each PR. Your routines then choose what to do.
 
 It is **off by default**. It starts only when `pr-orchestrator.json` exists in
-the data folder and says `"enabled": true`.
+the data folder and at least one connector is enabled. A connector is a gate
+that receives events: turning it on opens intake for that connector, and
+turning every connector off stops intake. What MausBot does with the events
+is set by each routine's own `active` flag. A file that sets the top-level
+`"enabled": true` keeps working and opens intake even with no connector on.
 
 ## What it does in this release
 
@@ -182,7 +186,7 @@ Answers:
 |---|---|
 | `200` | `{ "acked": [ids], "rejected": [ids] }`. A rejected item that has no `id` is not listed; its reason shows in the connector status. A repeat of a batch gives the same answer and adds no row. |
 | `401` | Bad signature or a timestamp outside the tolerance. Nothing is stored. |
-| `404` | The core is off, or this connector is not enabled. |
+| `404` | No connector is enabled (and the top-level `enabled` is not `true`), or this connector is not enabled. |
 | `405` | The method is not POST. |
 | `413` / `400` | The body is too large or is not a valid batch. |
 | `503` | The hub secret is not in the Vault, or the store could not take the batch. |
@@ -251,7 +255,7 @@ JSON Schema is `server/pr-orchestrator/config.schema.json`, and
   was in force.
 - A file added later takes effect on the next request.
 
-To try it, write `{"enabled": true, "connectors": {"github-event": {"use": "github-event", "enabled": true}}}`.
+To try it, write `{"connectors": {"github-event": {"use": "github-event", "enabled": true}}}`.
 
 ## Adapters
 
@@ -391,7 +395,7 @@ except the dry-run routine test.
 
 | Route | Gives |
 |---|---|
-| `GET /api/pr-orchestrator/status` | `{ enabled, configured, configVersion, configError, secretPresent, counts, lastReceivedAt }`. Without a config file: `{ enabled: false, configured: false }`. |
+| `GET /api/pr-orchestrator/status` | `{ enabled, configured, configVersion, configError, secretPresent, counts, lastReceivedAt }`. `enabled` is true when the top-level flag is true or any connector is enabled. Without a config file: `{ enabled: false, configured: false }`. |
 | `GET /api/pr-orchestrator/prs?state=<state>` | Up to 200 PRs, newest first. An unknown `state` gives `400`. |
 | `GET /api/pr-orchestrator/pr?key=<key>` | `{ record, ledger, commands, timers }`. The key looks like `github:owner/repo#123`. A bad key gives `400`, an unknown PR gives `404`. |
 | `GET /api/pr-orchestrator/config` | The effective config, its version, its error and its schema. |
