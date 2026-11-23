@@ -1,15 +1,11 @@
-import { startAkBridge, type AkBridgeWiring } from "../ak/start.ts";
 import { createApprovalNotifier } from "./approval-notice.ts";
-import { createRequestOrigins } from "./auto-approval.ts";
 import { PaseoConnection } from "./connection.ts";
 import { startDispatcherWake, type DispatcherWakeDeps } from "./dispatcher-wake.ts";
 import { startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 import { createLiveAgents } from "./live-agents.ts";
 import type { SecretsService } from "../secrets/service.ts";
 
-export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "origins" | "ownsRef" | "agentContext"> & {
-  /** With this, the Vault is copied to `ak` for the Paseo agents and their secret requests are answered. */
-  ak?: Pick<AkBridgeWiring, "vault" | "dataDir" | "cli" | "secretsDir">;
+export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" | "agentContext"> & {
   /** With this, a Paseo agent a Dispatcher bot created wakes that bot's thread when it finishes or fails. */
   dispatcher?: Pick<DispatcherWakeDeps, "store" | "wake">;
   /** With this, the agents the daemon lists name a secret request on its card, and an approved request is told to its agent. */
@@ -18,7 +14,7 @@ export type PaseoBridgeWiring = Omit<PaseoGatekeeperDeps, "connection" | "log" |
 
 export interface PaseoBridge {
   connection: PaseoConnection;
-  /** Stops the gatekeeper, the Dispatcher wake and the ak bridge, then closes the connection to the daemon. */
+  /** Stops the gatekeeper and the Dispatcher wake, then closes the connection to the daemon. */
   stop(): Promise<void>;
 }
 
@@ -37,25 +33,14 @@ export function startPaseoBridge(env: NodeJS.ProcessEnv = process.env, wiring?: 
   connection.on("error", (error) => console.error("paseo bridge: listener failed", error));
   const stops: Array<() => void> = [];
   if (wiring) {
-    const { ak, dispatcher, secrets, ...gatekeeper } = wiring;
-    const origins = createRequestOrigins();
-    // The Vault sync starts after the gatekeeper; until it has, no ref is owned.
+    const { dispatcher, secrets, ...gatekeeper } = wiring;
     const agents = createLiveAgents(connection);
     stops.push(() => agents.stop());
-    const notifier = createApprovalNotifier({ connection, origins, agents, log });
+    const notifier = createApprovalNotifier({ connection, agents, log });
     stops.push(() => notifier.stop());
     if (secrets) stops.push(secrets.attach({ agents, notifier }));
-    let owns: (ref: string) => boolean = () => false;
-    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, origins, ownsRef: (ref) => owns(ref), agentContext: (agentId) => connection.agentContext(agentId) }));
+    stops.push(startPaseoGatekeeper({ ...gatekeeper, connection, log, agentContext: (agentId) => connection.agentContext(agentId) }));
     if (dispatcher) stops.push(startDispatcherWake({ ...dispatcher, connection, log }));
-    // After the gatekeeper, which closes the cards an earlier run left open.
-    if (ak) {
-      try {
-        stops.push(startAkBridge({ ...ak, store: wiring.store, approvals: wiring.approvals, notify: wiring.notify, screenLocked: wiring.screenLocked, origins, notifyAgent: (approved) => notifier.approved(approved), onOwns: (fn) => { owns = fn; }, ...(wiring.history ? { history: wiring.history } : {}) }, log));
-      } catch (error) {
-        log(`ak bridge: could not start (${error instanceof Error ? error.message : String(error)})`);
-      }
-    }
   }
   connection.start();
   return {

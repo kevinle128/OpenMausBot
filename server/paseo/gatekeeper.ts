@@ -4,7 +4,7 @@ import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { BotRecord, Store } from "../store.ts";
 import type { PaseoConnection, PaseoPermissionRequested } from "./connection.ts";
-import type { AutoApprovalHistory, PersonAnswer, RequestOrigins } from "./auto-approval.ts";
+import type { AutoApprovalHistory, PersonAnswer } from "./auto-approval.ts";
 import { approvingOption, createJevGuard, scoresLine, type AgentContext, type GuardOutcome } from "./jev-guard.ts";
 import { classifyPermission, permissionTarget } from "./permission-rules.ts";
 import { APPROVE_ONCE, hookReadQuestion, hookReadShape, questionAnswer, readQuestions, type PaseoQuestion } from "./question-rules.ts";
@@ -41,10 +41,6 @@ export interface PaseoGatekeeperDeps {
   log(message: string): void;
   /** Called for everything this gatekeeper allowed without the person, so the Inbox can list it. */
   history?: AutoApprovalHistory;
-  /** Told of each `ak secrets request` command, so its later approval can name the agent that asked. */
-  origins?: Pick<RequestOrigins, "note">;
-  /** True for an `ak` ref OpenMausBot owns: an `ak secrets run` that names only such refs is allowed. */
-  ownsRef?: (ref: string) => boolean;
   /** The agent's first prompt and last tool calls, for Jev Guard. Without it Jev judges the call alone. */
   agentContext?(agentId: string): Promise<AgentContext | null>;
 }
@@ -56,8 +52,8 @@ const oneLine = (value: string, max: number): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
-/** Decides each permission a Paseo agent asks for: lets the two kinds of secret reading go, and puts everything else on
- * a card in the Paseo conversation. Returns a function that stops listening. */
+/** Decides each permission a Paseo agent asks for: lets an env-file read and a read-only shell command go, and puts
+ * everything else on a card in the Paseo conversation. Returns a function that stops listening. */
 export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
   const { connection, store, approvals, decider } = deps;
   const stages = new Map<string, Stage>();
@@ -162,10 +158,9 @@ export function startPaseoGatekeeper(deps: PaseoGatekeeperDeps): () => void {
     let asked = false;
     try {
       const target = permissionTarget(request);
-      if (target?.kind === "command") deps.origins?.note(target.command, { agentId, agent: describe(event).label, cwd: agent.cwd });
       // The privacy hook asks before an agent reads a file; that one question is answered here, every other one is not.
       // The agent's files are on the agent's machine, so every file check asks the daemon there.
-      const rules = { cwd: agent.cwd, inspectPath: (cwd: string, path: string) => connection.inspectPath(cwd, path), ...(deps.ownsRef ? { ownsRef: deps.ownsRef } : {}) };
+      const rules = { cwd: agent.cwd, inspectPath: (cwd: string, path: string) => connection.inspectPath(cwd, path) };
       const hookRead = await hookReadQuestion(request, rules);
       // A hook read question whose file is not a plain file there (a link, a missing path, a daemon that cannot tell) is for the
       // person alone: Jev Guard would pick "Yes, approve once" without seeing what is at the path.

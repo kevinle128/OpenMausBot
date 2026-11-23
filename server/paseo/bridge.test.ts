@@ -25,16 +25,9 @@ vi.mock("./dispatcher-wake.ts", () => ({
     return () => calls.push("wake stop");
   },
 }));
-vi.mock("../ak/start.ts", () => ({
-  startAkBridge: () => {
-    calls.push("ak start");
-    return () => calls.push("ak stop");
-  },
-}));
-
 const { startPaseoBridge } = await import("./bridge.ts");
 
-const wiring = { store: {}, approvals: {}, decider: {}, notify: () => {}, screenLocked: async () => false, ak: { vault: {}, dataDir: "/tmp" }, dispatcher: { store: {}, wake: () => {} } } as never;
+const wiring = { store: {}, approvals: {}, decider: {}, notify: () => {}, screenLocked: async () => false, dispatcher: { store: {}, wake: () => {} } } as never;
 
 describe("startPaseoBridge", () => {
   beforeEach(() => {
@@ -48,17 +41,17 @@ describe("startPaseoBridge", () => {
 
   it("stops every listener it started, then the connection, and only once", async () => {
     const bridge = startPaseoBridge({ OMB_PASEO_BRIDGE: "1" }, wiring)!;
-    expect(calls).toEqual(["gatekeeper start", "wake start", "ak start", "connection start"]);
+    expect(calls).toEqual(["gatekeeper start", "wake start", "connection start"]);
     calls.length = 0;
     await bridge.stop();
-    expect(calls).toEqual(["ak stop", "wake stop", "gatekeeper stop", "connection stop"]);
+    expect(calls).toEqual(["wake stop", "gatekeeper stop", "connection stop"]);
     calls.length = 0;
     await bridge.stop();
     expect(calls).toEqual(["connection stop"]);
   });
 
-  it("starts only the gatekeeper when no ak or Dispatcher wiring is given", async () => {
-    const bridge = startPaseoBridge({ OMB_PASEO_BRIDGE: "1" }, { ...(wiring as object), ak: undefined, dispatcher: undefined } as never)!;
+  it("starts only the gatekeeper when no Dispatcher wiring is given", async () => {
+    const bridge = startPaseoBridge({ OMB_PASEO_BRIDGE: "1" }, { ...(wiring as object), dispatcher: undefined } as never)!;
     expect(calls).toEqual(["gatekeeper start", "connection start"]);
     await bridge.stop();
     expect(calls.at(-1)).toBe("connection stop");

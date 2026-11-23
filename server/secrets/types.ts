@@ -4,7 +4,7 @@ export const FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
 export const ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 export const PROGRAM_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
-/** Exit codes shared with `ak secrets`: a caller maps the envelope's `exit_code` straight onto its own exit status. */
+/** Exit codes of the secrets envelope: a caller maps `exit_code` straight onto its own exit status. */
 export const EXIT = { ok: 0, invalid: 2, missing: 3, exists: 4, unavailable: 5, refused: 6, pending: 8, limited: 9 } as const;
 export type ExitCode = typeof EXIT[keyof typeof EXIT];
 

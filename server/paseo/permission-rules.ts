@@ -36,32 +36,10 @@ export interface PermissionContext {
   hazard?: { hit: boolean };
   /** Replaced by tests. Whether no git setting in this directory makes a read run another program. */
   gitConfigSafe?: (dir: string | undefined) => boolean;
-  /** Whether OpenMausBot owns this `ak` ref (a Vault secret kept to the Paseo bot). Without it no `ak secrets run` is allowed. */
-  ownsRef?: (ref: string) => boolean;
 }
 
 /** The hook of AgentKit puts this before a path it let the person approve once. */
 export const APPROVED_PREFIX = "APPROVED:";
-
-const READ_SUBCOMMANDS = new Set(["get", "list", "search", "describe", "request", "resolve", "audit", "grants"]);
-const WRITE_SUBCOMMANDS = new Set([
-  "set", "delete", "rotate", "grant", "approve", "revoke", "import-env", "export", "sync", "trust", "alias", "annotate", "recovery",
-]);
-
-/** Flags every read-only `ak secrets` subcommand takes. `--reveal`, `-y`, `--backend`, `--exec`, `--env` and
- * `--unlock-with-recovery` are not here: they print a value, answer a prompt or change where `ak` reads. */
-const AK_COMMON_FLAGS = new Set(["--json", "--no-interactive", "-q", "--quiet"]);
-/** Per subcommand: the flags that narrow it and take a value, and how many plain words it takes (null: any number). */
-const AK_SUBCOMMANDS: Record<string, { valueFlags: string[]; words: number | null }> = {
-  get: { valueFlags: [], words: 1 },
-  describe: { valueFlags: [], words: 1 },
-  list: { valueFlags: [], words: 0 },
-  grants: { valueFlags: [], words: 0 },
-  search: { valueFlags: ["--account", "--environment", "--kind", "--project", "--provider", "--sensitivity", "--tag"], words: null },
-  request: { valueFlags: ["--project", "--purpose"], words: 1 },
-  resolve: { valueFlags: ["--project", "--purpose"], words: 1 },
-  audit: { valueFlags: ["--agent", "--cursor", "--decision", "--limit", "--secret", "--since", "--source"], words: 0 },
-};
 
 /** Flags that only change how a file is shown. `rg --pre` and `grep -f` run or load other things, so they are not here;
  * `less` and `source` are not readers at all, because they run what they read or can open a shell. */
@@ -198,31 +176,6 @@ async function readsOnlyEnvFiles(tool: string, args: string[], context: Permissi
   return true;
 }
 
-/** True when every flag is a common one or a narrowing flag of the subcommand, and the plain words fit. */
-function akFlagsAreSafe(sub: string, args: string[]): boolean {
-  const spec = AK_SUBCOMMANDS[sub];
-  if (!spec) return false;
-  let plain = 0;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (!arg.startsWith("-")) {
-      plain += 1;
-      continue;
-    }
-    if (AK_COMMON_FLAGS.has(arg)) continue;
-    const [name, ...inline] = arg.split("=");
-    if (!spec.valueFlags.includes(name!)) return false;
-    if (inline.length > 0) {
-      if (inline.join("=").startsWith("-")) return false;
-    } else {
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith("-")) return false;
-      i += 1;
-    }
-  }
-  return spec.words === null || plain === spec.words;
-}
-
 function isPipeFilter(tool: string, args: string[]): boolean {
   const spec = Object.hasOwn(PIPE_FILTERS, tool) ? PIPE_FILTERS[tool] : undefined;
   if (!spec) return false;
@@ -242,44 +195,9 @@ function isPipeFilter(tool: string, args: string[]): boolean {
   return plain >= spec.words[0] && plain <= spec.words[1];
 }
 
-const RUN_RULE = "ak-secrets-run-owned-ref";
-const RUN_VALUE_FLAGS = new Set(["--purpose", "--project", "--session"]);
-
-/** True for `ak secrets run` with only known flags, at least one `--env VAR=REF`, every REF owned, and a program after `--`. */
-function akRunIsOwned(args: string[], context: PermissionContext): boolean {
-  if (!context.ownsRef) return false;
-  const refs: string[] = [];
-  let i = 0;
-  for (; i < args.length && args[i] !== "--"; i += 1) {
-    const arg = args[i]!;
-    if (AK_COMMON_FLAGS.has(arg)) continue;
-    const [name, ...inline] = arg.split("=");
-    if (name === "--env") {
-      const pair = inline.length > 0 ? inline.join("=") : args[++i];
-      const at = pair?.indexOf("=") ?? -1;
-      if (!pair || at < 1 || at === pair.length - 1) return false;
-      refs.push(pair.slice(at + 1));
-    } else if (RUN_VALUE_FLAGS.has(name!)) {
-      const value = inline.length > 0 ? inline.join("=") : args[++i];
-      if (value === undefined || value.startsWith("-")) return false;
-    } else {
-      return false;
-    }
-  }
-  return args[i] === "--" && i + 1 < args.length && refs.length > 0 && refs.every((ref) => context.ownsRef!(ref));
-}
-
 /** One command with no pipe or separator. */
 async function classifyStep(tokens: string[], context: PermissionContext): Promise<Step> {
   const [tool, ...args] = tokens as [string, ...string[]];
-  if (tool === "ak" && args[0] === "secrets") {
-    const sub = args[1] ?? "";
-    if (READ_SUBCOMMANDS.has(sub)) {
-      return akFlagsAreSafe(sub, args.slice(2)) ? { kind: "allow", rule: "ak-secrets-read" } : { kind: "ask", rule: "ak-secrets-flags" };
-    }
-    if (sub === "run") return akRunIsOwned(args.slice(2), context) ? { kind: "allow", rule: RUN_RULE } : { kind: "ask", rule: "ak-secrets-run" };
-    return { kind: "ask", rule: WRITE_SUBCOMMANDS.has(sub) ? "ak-secrets-write" : "ak-secrets-unknown" };
-  }
   if (ENV_FILE_READERS.has(tool) && (await readsOnlyEnvFiles(tool, args, context))) {
     return { kind: "allow", rule: args.some((arg) => arg.startsWith(APPROVED_PREFIX)) ? "approved-file-read-command" : "env-file-read-command" };
   }
@@ -288,15 +206,14 @@ async function classifyStep(tokens: string[], context: PermissionContext): Promi
 }
 
 /**
- * Three outcomes. A command is allowed outright when it is one step that reads an env file or runs a read-only `ak secrets`,
- * or when the whole line only reads (see read-only-commands.ts). Steps joined by `|`, `;` or a newline go to Jev only when
- * every step is an env-file read, a read-only `ak` step or a pipe filter after a pipe. Anything else is `ask`: the gatekeeper
- * then lets Jev Guard judge it, except an `ask` with `hazard` set, which only the person may allow.
+ * Three outcomes. A command is allowed outright when it is one step that reads an env file, or when the whole line only
+ * reads (see read-only-commands.ts). Steps joined by `|`, `;` or a newline go to Jev only when every step is an env-file
+ * read or a pipe filter after a pipe. Anything else is `ask`: the gatekeeper then lets Jev Guard judge it, except an
+ * `ask` with `hazard` set, which only the person may allow.
  */
 async function classifyCommand(command: string, context: PermissionContext): Promise<PermissionDecision> {
   const strict = await classifyStrictCommand(command, context);
   if (strict.verdict !== "ask") return strict;
-  // A line with an `ak` step keeps the path above: it is never read-only here.
   const readOnly = await readOnlyCommand(command, {
     cwd: context.cwd,
     gitConfigSafe: context.gitConfigSafe ?? gitConfigRunsNoProgram,
@@ -327,25 +244,10 @@ async function classifyStrictCommand(command: string, context: PermissionContext
   }
   for (const { tokens, afterPipe } of steps) {
     const step = await classifyStep(tokens!, context);
-    // A run starts a program with a value in its environment: it is never one step of a longer line.
-    if ((step.kind === "allow" && step.rule !== RUN_RULE) || (step.kind === "filter" && afterPipe)) continue;
+    if (step.kind === "allow" || (step.kind === "filter" && afterPipe)) continue;
     return { verdict: "ask", rule: "compound-command" };
   }
   return { verdict: "ambiguous", rule: "compound-secret-command" };
-}
-
-/** The ref of a plain `ak secrets request <REF>` command, or null for any other command. */
-export function akSecretsRequestRef(command: string): string | null {
-  if (SHELL_SYNTAX.test(command)) return null;
-  const tokens = words(command);
-  if (!tokens || tokens[0] !== "ak" || tokens[1] !== "secrets" || tokens[2] !== "request") return null;
-  const spec = AK_SUBCOMMANDS.request!;
-  for (let i = 3; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (!token.startsWith("-")) return token;
-    if (spec.valueFlags.includes(token)) i += 1;
-  }
-  return null;
 }
 
 export async function classifyPermission(

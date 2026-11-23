@@ -15315,7 +15315,7 @@ function noteTurnsCutByShutdown(): void {
 function runtimeHoldsRoot(threadId: string): boolean {
   return coordinator.active().some((n) => !n.parentId && n.threadId === threadId && !ENDED.has(n.status));
 }
-const paseoBridge = startPaseo({ store, approvals: externalApprovals, decider, notify, autoApproved: (input) => teamMessages.autoApproved(input), vault: logins, dataDir: DATA_DIR, secrets: secrets.service, enqueueWebhook: (input) => routines!.enqueueWebhook(input) }); prOrchestrator.attach({ paseo: paseoBridge?.connection ?? null, inbox: { store, approvals: externalApprovals, notify } });
+const paseoBridge = startPaseo({ store, approvals: externalApprovals, decider, notify, autoApproved: (input) => teamMessages.autoApproved(input), secrets: secrets.service, enqueueWebhook: (input) => routines!.enqueueWebhook(input) }); prOrchestrator.attach({ paseo: paseoBridge?.connection ?? null, inbox: { store, approvals: externalApprovals, notify } });
 const gracefulShutdown = createGracefulShutdown({
   cleanup: [
     () => {

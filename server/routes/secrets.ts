@@ -1,5 +1,5 @@
 // `omb secrets`: the agent routes (a `secrets` token or an admin) and, under /api/secrets/admin/, the person's own. Every
-// answer is an envelope the way `ak secrets --json` writes one. A value appears only in the answer to run-check and
+// answer is a JSON envelope. A value appears only in the answer to run-check and
 // admin reveal; no request body or answer is logged. A fetch answer is the destination's, with the value scrubbed out.
 import { ownerOrAdmin, scopeSatisfied, type RequestAuth } from "../request-auth.ts";
 import type { AuditQuery, AuditSource } from "../secrets/audit.ts";

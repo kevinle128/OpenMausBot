@@ -106,7 +106,7 @@ async function stepIsReadOnly(tokens: ShellWord[], hooks: ReadOnlyHooks, dir: st
   }
   const [tool, ...args] = texts as [string, ...string[]];
   const check = PROGRAMS.get(tool);
-  // A program that is not listed, `ak` included, is not read-only here.
+  // A program that is not listed is not read-only here.
   if (!check || !check(args)) return false;
   // `uniq` takes one file and no glob, which could expand into a second one.
   if (tool === "uniq" && tokens.slice(1).some((token) => token.glob)) return false;

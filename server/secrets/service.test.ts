@@ -516,7 +516,7 @@ describe("with the real notifier", () => {
     const f = fixture();
     const connection = Object.assign(new EventEmitter(), { sendMessage: vi.fn(async () => {}), recentShellCommands: vi.fn(async () => []) });
     const agents = createLiveAgents(connection as never);
-    const notifier = createApprovalNotifier({ connection: connection as never, origins: { find: () => null }, agents, log: () => {}, now: () => clock });
+    const notifier = createApprovalNotifier({ connection: connection as never, agents, log: () => {}, now: () => clock });
     f.service.attach({ agents, notifier });
     connection.emit("agentUpdate", { id: "a1", status: "idle", title: "Deploy agent", cwd: "/work/site", updatedAt: new Date(clock).toISOString() });
     connection.emit("agentUpdate", { id: "a2", status: "idle", title: "Other", cwd: "/x", updatedAt: new Date(clock).toISOString() });
@@ -544,11 +544,11 @@ describe("with the real notifier", () => {
     expect(f.history.at(-1)!.what).toContain("không rõ agent, chưa báo");
   });
 
-  it("never guesses an agent from its ak commands when the request named no live agent", async () => {
+  it("never guesses an agent from recent shell commands when the request named no live agent", async () => {
     const f = fixture();
-    const connection = Object.assign(new EventEmitter(), { sendMessage: vi.fn(async () => {}), recentShellCommands: vi.fn(async () => ["ak secrets get API_KEY"]) });
+    const connection = Object.assign(new EventEmitter(), { sendMessage: vi.fn(async () => {}), recentShellCommands: vi.fn(async () => ["omb secrets get API_KEY"]) });
     const agents = createLiveAgents(connection as never);
-    const notifier = createApprovalNotifier({ connection: connection as never, origins: { find: () => null }, agents, log: () => {}, now: () => clock });
+    const notifier = createApprovalNotifier({ connection: connection as never, agents, log: () => {}, now: () => clock });
     f.service.attach({ agents, notifier });
     connection.emit("agentUpdate", { id: "a2", status: "idle", title: "Other", cwd: "/x", updatedAt: new Date(clock).toISOString() });
     f.save("API_KEY", [PASEO_BOT_ID]);

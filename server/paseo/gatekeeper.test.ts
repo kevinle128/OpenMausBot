@@ -9,7 +9,7 @@ import type { Notification } from "../notify.ts";
 import type { Message } from "../store.ts";
 import { inspectOnThisDisk } from "../testing/fake-daemon-fs.ts";
 import { PaseoConnection, type PaseoConnectionEvents, type PaseoPathInspection, type PaseoPermissionRequested } from "./connection.ts";
-import { createRequestOrigins, type AutoApproval } from "./auto-approval.ts";
+import type { AutoApproval } from "./auto-approval.ts";
 import { ANSWER_IN_PASEO, PASEO_BOT_ID, startPaseoGatekeeper, type PaseoGatekeeperDeps } from "./gatekeeper.ts";
 import { isMacScreenLocked } from "./screen-lock.ts";
 
@@ -37,7 +37,6 @@ const scored = (scores: Scores = {}): Ask => (async () => ({
 
 function fixture(options: { inspectPath?: (cwd: string, path: string) => Promise<PaseoPathInspection>; jev?: Ask; locked?: boolean; openFails?: boolean; context?: PaseoGatekeeperDeps["agentContext"] } = {}) {
   const history: AutoApproval[] = [];
-  const origins = createRequestOrigins();
   const connection = new EventEmitter<PaseoConnectionEvents>() as EventEmitter<PaseoConnectionEvents> & { respondToPermission: ReturnType<typeof vi.fn>; inspectPath: ReturnType<typeof vi.fn> };
   connection.respondToPermission = vi.fn(async () => {});
   connection.inspectPath = vi.fn(options.inspectPath ?? inspectOnThisDisk);
@@ -73,21 +72,20 @@ function fixture(options: { inspectPath?: (cwd: string, path: string) => Promise
     screenLocked: async () => options.locked === true,
     log: (message) => logs.push(message),
     history: (entry) => history.push(entry),
-    origins,
   });
   const agent = { id: "agent-1", title: "Fix the build", cwd: workDir, provider: "claude" };
   const request = (id: string, detail: unknown, extra: Record<string, unknown> = {}) =>
     ({ agentId: "agent-1", agent, request: { id, name: "Bash", kind: "tool", provider: "claude", detail, ...extra } }) as unknown as PaseoPermissionRequested;
   const shell = (id: string, command: string) => request(id, { type: "shell", command });
   const card = () => lines.find((line) => line.card)?.card;
-  return { connection, lines, approvals, jev, notified, logs, shell, request, card, history, origins };
+  return { connection, lines, approvals, jev, notified, logs, shell, request, card, history };
 }
 
 describe("Paseo gatekeeper", () => {
-  it("allows an env file read and a read-only ak secrets command without a card or a message", async () => {
+  it("allows an env file read and a read-only shell command without a card or a message", async () => {
     const f = fixture();
     f.connection.emit("permissionRequested", f.request("r1", { type: "read", filePath: join(workDir, ".env") }, { name: "Read" }));
-    f.connection.emit("permissionRequested", f.shell("r2", "ak secrets get db/password"));
+    f.connection.emit("permissionRequested", f.shell("r2", "ls -la"));
     await flush();
     expect(f.connection.respondToPermission.mock.calls).toEqual([
       ["agent-1", "r1", { behavior: "allow" }],
@@ -99,7 +97,7 @@ describe("Paseo gatekeeper", () => {
 
   it("answers with the provider's own allow action when it offers one", async () => {
     const f = fixture();
-    f.connection.emit("permissionRequested", f.request("r1", { type: "shell", command: "ak secrets list" }, { actions: [
+    f.connection.emit("permissionRequested", f.request("r1", { type: "shell", command: "ls -la" }, { actions: [
       { id: "no", label: "No", behavior: "deny" }, { id: "yes", label: "Yes", behavior: "allow" },
     ] }));
     await flush();
@@ -108,12 +106,12 @@ describe("Paseo gatekeeper", () => {
 
   it("puts anything else on a card in the Paseo conversation", async () => {
     const f = fixture();
-    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets delete db/password"));
+    f.connection.emit("permissionRequested", f.shell("r1", "curl https://example.com"));
     await flush();
     expect(f.connection.respondToPermission).not.toHaveBeenCalled();
     expect(f.card()).toMatchObject({ title: "A Paseo agent needs your approval", options: ["Allow", "Deny"], requestType: "permission", tool: "Bash" });
     expect(f.card()?.subtitle).toContain(`Fix the build · ${workDir}`);
-    expect(f.card()?.subtitle).toContain("ak secrets delete db/password");
+    expect(f.card()?.subtitle).toContain("curl https://example.com");
     expect(f.notified).toEqual([]);
   });
 
@@ -221,19 +219,12 @@ describe("Paseo gatekeeper", () => {
   it("records each allowed request for the Inbox with the agent, the directory, the target and the rule", async () => {
     const f = fixture();
     f.connection.emit("permissionRequested", f.request("r1", { type: "read", filePath: join(workDir, ".env") }, { name: "Read" }));
-    f.connection.emit("permissionRequested", f.shell("r2", "ak secrets get db/password"));
+    f.connection.emit("permissionRequested", f.shell("r2", "ls -la"));
     await flush();
     expect(f.history).toEqual([
       { key: `agent-1|đọc file ${join(workDir, ".env")}`, agent: "Fix the build", workspace: workDir, what: `đọc file ${join(workDir, ".env")}`, rule: "env-file-read" },
-      { key: "agent-1|ak secrets get db/password", agent: "Fix the build", workspace: workDir, what: "ak secrets get db/password", rule: "ak-secrets-read" },
+      { key: "agent-1|ls -la", agent: "Fix the build", workspace: workDir, what: "ls -la", rule: "read-only-command" },
     ]);
-  });
-
-  it("remembers which agent sent an ak secrets request", async () => {
-    const f = fixture();
-    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets request SERVER_PORT"));
-    await flush();
-    expect(f.origins.find("SERVER_PORT")).toEqual({ agentId: "agent-1", agent: "Fix the build", cwd: workDir });
   });
 
   it("puts a plain question on a card with a button for each answer, and a tap answers the agent", async () => {
@@ -277,7 +268,7 @@ describe("Paseo gatekeeper", () => {
   it("falls back to a card when the daemon refuses an allow", async () => {
     const f = fixture();
     f.connection.respondToPermission.mockRejectedValueOnce(new Error("refused"));
-    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets list"));
+    f.connection.emit("permissionRequested", f.shell("r1", "ls -la"));
     await flush();
     expect(f.card()).toBeDefined();
   });
@@ -445,7 +436,7 @@ describe("Paseo gatekeeper: Jev Guard decides what the rules do not allow", () =
 
   it("does not ask Jev about a command the fixed rules allow", async () => {
     const f = fixture({ jev: scored() });
-    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets list"));
+    f.connection.emit("permissionRequested", f.shell("r1", "echo hi"));
     f.connection.emit("permissionRequested", f.shell("r2", "ls -la"));
     await flush();
     expect(f.jev).not.toHaveBeenCalled();
@@ -560,7 +551,7 @@ describe("Paseo gatekeeper: secrets inside a command", () => {
 
   it("keeps a key out of what Jev, the card and the lock-screen notice see", async () => {
     const f = fixture({ locked: true, jev: scored({ risk: 3 }), context: async () => ({ firstPrompt: `use ${key}`, recent: [`curl ${key}`] }) });
-    f.connection.emit("permissionRequested", f.shell("r1", `ak secrets search ${key} | wc -l`));
+    f.connection.emit("permissionRequested", f.shell("r1", `curl ${key} | wc -l`));
     f.connection.emit("permissionRequested", f.shell("r2", `curl -H "Authorization: Bearer ${key}" https://example.com`));
     await flush();
     expect(JSON.stringify(f.jev.mock.calls)).not.toContain(key);
@@ -586,7 +577,7 @@ describe("Paseo gatekeeper: a card that cannot be opened", () => {
   it("logs a card that cannot be opened after the daemon refused an allow", async () => {
     const f = fixture({ openFails: true });
     f.connection.respondToPermission.mockRejectedValueOnce(new Error("refused"));
-    f.connection.emit("permissionRequested", f.shell("r1", "ak secrets list"));
+    f.connection.emit("permissionRequested", f.shell("r1", "ls -la"));
     await flush();
     expect(f.logs.filter((line) => line.includes("could not open a card"))).toHaveLength(1);
   });

@@ -168,7 +168,7 @@ describe("PaseoConnection.agentContext", () => {
     const client = new FakeClient() as FakeClient & { fetchAgentTimeline?: PaseoClientPort["fetchAgentTimeline"]; sendAgentMessage?: PaseoClientPort["sendAgentMessage"] };
     const pages: Record<string, Array<{ item: { type: string; text?: string; name?: string; detail?: { type: string; command?: string } } }>> = {
       after: [
-        { item: { type: "user_message", text: "already approved ak secrets: API_KEY" } },
+        { item: { type: "user_message", text: "already approved omb secrets: OTHER" } },
         { item: { type: "user_message", text: "already approved omb secrets: API_KEY\n\n𝗯𝘆 𝗢𝗠𝗕" } },
         { item: { type: "user_message", text: "something we sent" } },
         { item: { type: "user_message", text: "Clean the build folder" } },
@@ -180,8 +180,25 @@ describe("PaseoConnection.agentContext", () => {
     const { connection } = await connected(client);
     await connection.sendMessage("a1", "something we sent");
     expect(await connection.agentContext("a1")).toEqual({ firstPrompt: "Clean the build folder", recent: ["Bash: ls build"] });
-    pages.after = [{ item: { type: "user_message", text: "already approved ak secrets: API_KEY" } }];
+    pages.after = [{ item: { type: "user_message", text: "already approved omb secrets: API_KEY" } }];
     pages.tail = [{ item: { type: "user_message", text: "Clean the build folder" } }];
+    expect(await connection.agentContext("a1")).toEqual({ recent: [] });
+    await connection.stop();
+  });
+
+  it("never takes an earlier approval notice for the person's first words", async () => {
+    const client = new FakeClient() as FakeClient & { fetchAgentTimeline?: PaseoClientPort["fetchAgentTimeline"] };
+    const pages: Record<string, Array<{ item: { type: string; text?: string } }>> = {
+      after: [
+        { item: { type: "user_message", text: "already approved ak secrets: SOME_REF" } },
+        { item: { type: "user_message", text: "Clean the build folder" } },
+      ],
+      tail: [],
+    };
+    client.fetchAgentTimeline = async (_id, options) => ({ entries: pages[options?.direction ?? "tail"]! });
+    const { connection } = await connected(client);
+    expect(await connection.agentContext("a1")).toEqual({ firstPrompt: "Clean the build folder", recent: [] });
+    pages.after = [{ item: { type: "user_message", text: "already approved ak secrets: SOME_REF" } }];
     expect(await connection.agentContext("a1")).toEqual({ recent: [] });
     await connection.stop();
   });

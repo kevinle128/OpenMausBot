@@ -1,6 +1,6 @@
 # OMB secrets API
 
-The server side of `omb secrets`: the Vault of OpenMausBot, opened to agent machines under the same command surface, JSON envelope and exit codes as `ak secrets`. A command line client (`omb`) is built against this page.
+The server side of `omb secrets`: the Vault of OpenMausBot, opened to agent machines. A command line client (`omb`) is built against this page.
 
 Everything here is under `/api/secrets/`. Requests and answers are JSON. Nothing in a request or an answer is logged, and a secret value appears in exactly two answers: `run-check`, which sends it to the command line client for one pinned program, and `admin/reveal`. `fetch` uses a value on the server and never returns it.
 

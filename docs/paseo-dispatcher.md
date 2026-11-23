@@ -21,11 +21,6 @@ OpenMausBot bundles needs the matching `inspectPath` method.
 Every other question
 becomes a card with one button for each answer, or with an **Answer in Paseo**
 button when it has several questions or lets the person pick more than one.
-It also allows `ak secrets run` (a single command with known flags whose `--env
-VAR=REF` refs are all secrets OpenMausBot keeps for the Paseo bot) and the
-matching exec request in the `ak` inbox, for 24 hours and for that program and
-variable only. A ref OpenMausBot does not own, and every `ak` write command,
-still ask the person; the secret request card's allow button reads "Allow 24h".
 It allows read-only shell commands without asking, by a fixed rule and never by
 Jev: `git` (diff, log, show, status, blame, list-only branch, rev-parse,
 ls-files, ls-tree, grep, describe, remote -v, config --get/--list), `ls`, `cat`,
@@ -66,15 +61,17 @@ yes option (Yes, Allow, Approve, Continue) is judged the same way and answered w
 that option; any other question is a card. Each allow is written to the Inbox with
 the rule `jev-guard` and the scores. The questions and thresholds are adapted from
 [jev-guard](https://github.com/leepokai/jev-guard) (MIT, commit `cda06c4`).
-When an `ak` secret request is approved, by OpenMausBot or by the person on the
-card, the Paseo agent that asked is sent one message, `already approved ak
-secrets: <REF>`, so it can run the command again. When OpenMausBot approved by
-itself, the message ends with a blank line and `𝗯𝘆 𝗢𝗠𝗕`. The agent is the one seen
-running `ak secrets` for that ref in the last 10 minutes; with none or several,
-nobody is told. A running agent is not interrupted: the message waits until it is
-idle, for up to 10 minutes. The Inbox line says whether the agent was told.
+When an `omb secrets` request for a Vault secret kept to the Paseo bot or to
+every bot is approved, the live Paseo agent named on that request is sent one
+message, `already approved omb secrets: <REF>`, so it can run the command
+again. That notice is sent when OpenMausBot approved by itself and when a
+person allowed the card. The message ends with a blank line and `𝗯𝘆 𝗢𝗠𝗕` only
+when OpenMausBot approved by itself. The agent is the one named by `agentId`, and
+only if that agent is listed now; nobody else is guessed. A running agent is
+not interrupted: the message waits until it is idle, for up to 10 minutes. The
+Inbox line says whether the agent was told.
 Pressing Deny, or closing a question card, leaves the question to be answered in
-Paseo. Each request it allows without asking (a file read, a read-only `ak secrets`
+Paseo. Each request it allows without asking (a file read, a read-only shell
 command, the hook's read question, a Vault secret request) is written as one
 already read line listed in the Inbox, headed "OpenMausBot tự duyệt", with no
 notification. The same agent and target within an hour share one line with a

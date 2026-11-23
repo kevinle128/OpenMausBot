@@ -9,9 +9,6 @@ import { readScreenLocked } from "./screen-lock.ts";
 export type PaseoHost = Pick<PaseoBridgeWiring, "approvals" | "decider" | "notify"> & {
   /** The conversations: the Paseo bot lives here, and a Dispatcher is found by the thread it speaks in. */
   store: PaseoBridgeWiring["store"] & Pick<Store, "botByThread">;
-  /** The Vault whose secrets kept to the Paseo bot are copied to `ak`. */
-  vault: NonNullable<PaseoBridgeWiring["ak"]>["vault"];
-  dataDir: string;
   /** Writes one line of what was allowed without asking into the Inbox as an already read line. */
   autoApproved(line: AutoApprovalLine): void;
   enqueueWebhook(input: Parameters<RoutineManager["enqueueWebhook"]>[0]): unknown;
@@ -31,7 +28,6 @@ export function startPaseo(host: PaseoHost, env: NodeJS.ProcessEnv = process.env
       const bot = ensurePaseoBot(host.store);
       host.autoApproved({ botId: bot.id, threadId: bot.threadId, key: entry.key, text: (count) => formatAutoApproval(entry, count) });
     },
-    ak: { vault: host.vault, dataDir: host.dataDir },
     ...(host.secrets ? { secrets: host.secrets } : {}),
     dispatcher: {
       store: host.store,

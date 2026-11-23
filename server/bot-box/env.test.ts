@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { BOX_ENV_NAMES, BOX_ENV_NEVER, BOX_ENV_OMB_NAMES, BOX_ENV_OMB_PREFIXES, boxEnvironment, boxEnvironmentAllows, instanceEnvNames } from "./env.ts";
@@ -9,7 +9,7 @@ import { BOX_ENV_NAMES, BOX_ENV_NEVER, BOX_ENV_OMB_NAMES, BOX_ENV_OMB_PREFIXES, 
 const SERVER_ONLY_OMB: ReadonlySet<string> = new Set([
   "OMB_ACP_LIMIT_QUIET_MS", "OMB_ACP_NO_SIGNS_STOP_MS", "OMB_ACP_PLAN_LINES", "OMB_ACP_QUIET_NOTICE_MS",
   "OMB_ACP_QUIET_TICK_MS", "OMB_ACP_SESSION_IDLE_", "OMB_ACP_SHARED_RECYCLE_MS", "OMB_ADMIN_", "OMB_ADMIN_MEMBERSHIP",
-  "OMB_ADMIN_URL", "OMB_ADMIN_WORKSPACE", "OMB_AGENT_BROWSER_PATH", "OMB_AI_CHECKS", "OMB_AK_BIN", "OMB_ANTHROPIC_API_KEY",
+  "OMB_ADMIN_URL", "OMB_ADMIN_WORKSPACE", "OMB_AGENT_BROWSER_PATH", "OMB_AI_CHECKS", "OMB_ANTHROPIC_API_KEY",
   "OMB_ANTHROPIC_API_URL", "OMB_APP_VERSION", "OMB_ATTACHMENTS_MAX_BYTES", "OMB_AZURE_OPENAI_LIVE_DEPLOYMENT",
   "OMB_AZURE_OPENAI_LIVE_ENDPOINT", "OMB_BACKGROUND_TEXT_MAX", "OMB_BOAT_API", "OMB_BOT_BOX", "OMB_BOX_CANARY", "OMB_BRAND_FILE",
   "OMB_BROWSER_CONNECTION", "OMB_BROWSER_IDLE_HANDOVER_MS", "OMB_BROWSER_LANG", "OMB_BROWSER_LEGACY_SHELL",
@@ -68,7 +68,12 @@ function knownOmbNames(): string[] {
   const files = execFileSync("git", ["ls-files", "server", "shared", "packages", "enterprise/server", "electron"], { cwd: ROOT, encoding: "utf8" })
     .split("\n").filter((file) => /\.(?:ts|mts|mjs|cjs|js)$/.test(file) && !/\.test\.|\/testing\/|node-test/.test(file));
   const names = new Set<string>();
-  for (const file of files) for (const match of readFileSync(new URL(file, ROOT), "utf8").matchAll(/\bOMB_[A-Z0-9_]+\b/g)) names.add(match[0]);
+  for (const file of files) {
+    const path = new URL(file, ROOT);
+    // git ls-files still names a path that is gone from the worktree.
+    if (!existsSync(path)) continue;
+    for (const match of readFileSync(path, "utf8").matchAll(/\bOMB_[A-Z0-9_]+\b/g)) names.add(match[0]);
+  }
   return [...names].sort();
 }
 

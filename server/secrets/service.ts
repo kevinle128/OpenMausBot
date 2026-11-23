@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { redactSecretsInText } from "../../shared/redact.ts";
 import { SECRET_VALUE_MAX_BYTES, vaultNameKey, type SecretProfile } from "../../shared/vault.ts";
-import { paseoScopedSecrets } from "../ak/vault-sync.ts";
+import { paseoScopedSecrets } from "./scope.ts";
 import type { ExternalApprovals } from "../external-approvals.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import type { AutoApprovalHistory, PersonAnswer } from "../paseo/auto-approval.ts";
@@ -158,7 +158,7 @@ export function createSecretsService(deps: SecretsDeps) {
     });
   }
 
-  /** Only the live agent the request named is told: without one, the notifier would guess from `ak secrets` commands. */
+  /** Only the live agent the request named is told: without one, nobody is guessed from recent shell commands. */
   async function tell(request: PendingRequest, by?: "omb"): Promise<NoticeOutcome | null> {
     if (!paseo) return null;
     if (!request.agentId) return { result: "none" };
