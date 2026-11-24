@@ -16,7 +16,6 @@ const { OMB_UI_CHROMIUM: chromiumPath, OMB_UI_PLAYWRIGHT_CORE: playwrightPath, O
 const shots = process.env.OMB_UI_SHOTS ?? join(process.cwd(), "docs", "screenshots", "apps-event-sources");
 const ready = Boolean(chromiumPath && playwrightPath && dist);
 const HUB_KEY = "fake-hub-key-for-the-browser-journey-0123456789";
-const SECRET_NAME = "GITHUB_EVENT_HUB_SECRET";
 
 let fixture: Awaited<ReturnType<typeof launchVerificationServer>>;
 let browser: any;
@@ -55,31 +54,21 @@ it.skipIf(!ready)("turns GitHub Event on from the Apps page and shows its first 
   if (await skipTour.isVisible({ timeout: 15_000 }).catch(() => false)) await skipTour.click();
   await page.locator('[data-tour="nav-apps"]').first().click();
 
-  // 1. A fresh install lists both event apps, off, apart from the tool apps.
-  const section = page.locator('[data-apps-section="apps-section-event-sources"]');
-  await section.waitFor({ timeout: 30_000 });
-  const github = section.locator('[data-event-source-tile="github-event"]');
-  expect(await section.locator("[data-event-source-tile]").count()).toBe(2);
-  expect(await github.getAttribute("data-event-source-state")).toBe("off");
+  // 1. A fresh install lists both event apps in Developer tools as standard Connect tiles.
+  const github = page.locator('[data-event-source-tile="github-event"]');
+  await github.waitFor({ timeout: 30_000 });
+  expect(await page.locator("[data-event-source-tile]").count()).toBe(2);
   await shot("event-sources-off.png");
 
-  // 2. The tile switch opens the gate; with no key in the Vault the tile asks for setup.
-  await github.getByRole("switch").click();
-  await expect.poll(() => github.getAttribute("data-event-source-state"), { timeout: 15_000 }).toBe("needs_setup");
+  // 2. Pasting the key and clicking Connect saves it write-only and turns the connector on.
+  await github.locator('input[type="password"]').fill(HUB_KEY);
+  await github.getByRole("button", { name: /Connect/i }).click();
+  await expect.poll(() => github.getByRole("button", { name: /Disconnect/i }).isVisible(), { timeout: 15_000 }).toBe(true);
   expect(JSON.parse(readFileSync(join(dataDir, "pr-orchestrator.json"), "utf8")).connectors["github-event"].enabled).toBe(true);
-  await github.getByRole("button", { expanded: false }).click();
-  const detail = section.locator('[data-event-source-detail="github-event"]');
-  expect(await detail.locator("[data-secret-state]").textContent()).toBe("Not saved");
-  await shot("event-sources-needs-setup.png");
-
-  // 3. The key is saved in the Vault; the detail shows Saved and never the value.
-  expect((await api("POST", "/api/vault/secrets", { name: SECRET_NAME, value: HUB_KEY }))).toBeTruthy();
-  await github.getByRole("button", { expanded: true }).click();
-  await github.getByRole("button", { expanded: false }).click();
-  await expect.poll(() => detail.locator("[data-secret-state]").textContent(), { timeout: 15_000 }).toBe("Saved");
   expect(await page.content()).not.toContain(HUB_KEY);
+  await shot("event-sources-connected.png");
 
-  // 4. A signed batch arrives; the detail shows the first event.
+  // 3. A signed batch arrives and is accepted with the saved key.
   const event = structuredClone(validFixtures().find(item => item.type === "pr.opened")!.event);
   const body = JSON.stringify({ v: 1, events: [event] });
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -87,10 +76,5 @@ it.skipIf(!ready)("turns GitHub Event on from the Apps page and shows its first 
     method: "POST", body, headers: { "content-type": "application/json", "x-omb-timestamp": timestamp, "x-omb-signature": signBatch(Buffer.from(HUB_KEY), timestamp, Buffer.from(body)) },
   });
   expect(sent.status).toBe(200);
-  await github.getByRole("button", { expanded: true }).click();
-  await github.getByRole("button", { expanded: false }).click();
-  await expect.poll(() => github.getAttribute("data-event-source-state"), { timeout: 15_000 }).toBe("receiving");
-  expect(await detail.textContent()).not.toContain("Last eventNone");
   expect(bodies.filter(text => text.includes(HUB_KEY))).toEqual([]);
-  await shot("event-sources-receiving.png");
 });

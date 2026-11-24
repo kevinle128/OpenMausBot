@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPrOrchestratorHost, type PrOrchestratorHost } from "../host/pr-orchestrator-host.ts";
 import { PaseoConnection } from "../paseo/connection.ts";
 import { VaultStore } from "../vault-store.ts";
+import { writeConnectorSecret } from "./connector-secrets.ts";
 import { createWebhookIngressHandler } from "../webhook-ingress.ts";
 import type { WebhookManager } from "../webhooks.ts";
 import { validFixtures } from "./contract/conformance/index.ts";
@@ -51,7 +52,7 @@ async function post(base: string, events: unknown[]): Promise<void> {
 describe("Paseo owner scenario", () => {
   it("binds the creating session and sends it the merged message at once, while its turn runs", async () => {
     const vault = new VaultStore({ dataDir: dir });
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    writeConnectorSecret(join(dir, "pr-orchestrator-secrets.json"), "github-event", HUB_KEY);
     const configPath = join(dir, "pr-orchestrator.json");
     writeFileSync(configPath, JSON.stringify(CONFIG));
     const past = new Date(Date.now() - 3_000);

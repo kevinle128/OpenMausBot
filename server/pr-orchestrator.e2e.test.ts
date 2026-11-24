@@ -8,7 +8,6 @@ import { invalidFixtures, validFixtures } from "./pr-orchestrator/contract/confo
 import { signBatch } from "./pr-orchestrator/signature.ts";
 
 const HUB_KEY = "fake-hub-key-for-end-to-end-tests-0123456789";
-const SECRET_NAME = "GITHUB_EVENT_HUB_SECRET";
 const PR_KEY = "github:acme/widgets#42";
 const ENABLED_ONLY = { enabled: true };
 const GITHUB_ENABLED = { enabled: true, connectors: { "github-event": { use: "github-event", enabled: true } }, routines: { useDefaults: true } };
@@ -68,13 +67,13 @@ describe("PR orchestrator over the webhook listener", () => {
     expect((await sendBatch([fixtureEvent("pr.opened")])).status).toBe(404);
   });
 
-  it("answers 503 while the hub secret is not in the Vault", async () => {
+  it("answers 503 while the hub secret is not saved", async () => {
     writeConfig(GITHUB_ENABLED);
     expect((await sendBatch([fixtureEvent("pr.opened")])).status).toBe(503);
   });
 
   it("acks a signed batch once and shows the PR in the ledger", async () => {
-    expect((await api("POST", "/api/vault/secrets", { name: SECRET_NAME, value: HUB_KEY })).status).toBe(201);
+    expect((await api("PUT", "/api/pr-orchestrator/connectors/github-event", { enabled: true, secret: HUB_KEY })).status).toBe(200);
     const first = await sendBatch([fixtureEvent("pr.opened")]);
     expect(first).toMatchObject({ status: 200, body: { rejected: [] } });
     expect(first.body.acked).toHaveLength(1);

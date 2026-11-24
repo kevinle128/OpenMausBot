@@ -105,7 +105,7 @@ describe("orchestrator core", () => {
     expect(status.counts.receivedByStatus).toEqual({ pending: 0, applied: 2, failed: 0 });
     expect(status.counts.byState).toEqual({ ci_failed: 1 });
     expect(status.lastReceivedAt).toBe(session.clock.now());
-    const [github] = session.core.connectors(name => name === "GITHUB_EVENT_HUB_SECRET");
+    const [github] = session.core.connectors(id => id === "github-event");
     expect(github).toMatchObject({ id: "github-event", intakePath: "/events/github-event", secretName: "GITHUB_EVENT_HUB_SECRET", secretPresent: true });
   });
 

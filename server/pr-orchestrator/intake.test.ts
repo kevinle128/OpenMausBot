@@ -122,7 +122,7 @@ describe("events door", () => {
   it("answers 503 when the connector's secret is not saved", async () => {
     const harness = await door({ key: () => null });
     expect((await postBatch(harness, "github-event", github())).status).toBe(503);
-    expect(harness.logs).toEqual([{ connector: "github-event", outcome: "error", count: 1, detail: "the connector's secret is not in the Vault" }]);
+    expect(harness.logs).toEqual([{ connector: "github-event", outcome: "error", count: 1, detail: "the connector's secret is not saved" }]);
     expect(harness.batches).toEqual([]);
   });
 
