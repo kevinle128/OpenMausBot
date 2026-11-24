@@ -18,7 +18,8 @@ export function EventConnectorTile({ connector, busy, error, onConnect, onDiscon
   connector: EventConnector;
   busy: boolean;
   error: string | null;
-  onConnect: (secret: string) => void;
+  /** Resolves true once the secret is saved; the input keeps the pasted key until then. */
+  onConnect: (secret: string) => Promise<boolean>;
   onDisconnect: () => void;
 }) {
   const [secret, setSecret] = useState("");
@@ -28,8 +29,7 @@ export function EventConnectorTile({ connector, busy, error, onConnect, onDiscon
   const submit = () => {
     const trimmed = secret.trim();
     if (!trimmed || busy) return;
-    onConnect(trimmed);
-    setSecret("");
+    void onConnect(trimmed).then((saved) => { if (saved) setSecret(""); });
   };
 
   return (

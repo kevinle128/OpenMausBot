@@ -56,6 +56,39 @@ describe("EventConnectorCards", () => {
     expect(el.querySelector("[data-event-source-tile='gitlab-event']")).not.toBeNull();
   });
 
+  it("matches the Developer tools pill in any letter case and catalog-style searches", async () => {
+    const gh = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
+    apiMock.mockResolvedValue({ connectors: [gh] });
+
+    const el = await renderCards({ filter: "all", category: "Developer Tools", search: "" });
+    expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
+
+    for (const search of ["connect github", "github app", "pull requests"]) {
+      await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "all", category: null, search })); });
+      expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
+    }
+  });
+
+  it("keeps the pasted key when saving it fails", async () => {
+    const gh: EventConnector = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
+    apiMock
+      .mockResolvedValueOnce({ connectors: [gh] })
+      .mockRejectedValueOnce(new Error("secret must not contain whitespace"));
+
+    const el = await renderCards({ filter: "all", category: null, search: "" });
+    const input = el.querySelector<HTMLInputElement>("input[type='password']")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "my hub-secret");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { el.querySelector<HTMLButtonElement>("button")!.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(el.querySelector("[role='alert']")?.textContent).toContain("secret must not contain whitespace");
+    expect(el.querySelector<HTMLInputElement>("input[type='password']")!.value).toBe("my hub-secret");
+  });
+
   it("connects with a pasted key and disconnects by clearing it, without Vault or setup chrome", async () => {
     const gh: EventConnector = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
     apiMock

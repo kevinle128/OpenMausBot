@@ -42,6 +42,8 @@ export function excludedWorkspaceAuthPath(path: string): boolean {
   if (/^secret-(?:grants|requests)\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // Saved website logins and their key never leave the computer they were saved on, nor does the key sealing webhook secrets.
   if (/^(?:logins\.json\.enc|member-secrets\.json\.enc|logins-key|webhook-key)(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
+  // Event connector secrets (GitHub/GitLab Event keys) stay with the computer they were pasted on.
+  if (/^pr-orchestrator-secrets\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // A Cloud home's connected-apps installation: its connected accounts belong to it, so a copy would share them.
   if (/^connected-apps-installation\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // A Team Cloud's kept rules: a restored Cloud asks the Admin for the ones in force now.

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  EVENT_CONNECTORS_CATEGORY,
   eventConnectorConnected,
   eventConnectorMatchesSearch,
+  inEventConnectorsCategory,
   saveEventConnector,
   useEventConnectors,
   type EventConnectorPatch,
@@ -18,13 +18,13 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
   onCount?: (connected: number, shown: number) => void;
 }) {
   const { connectors, replace } = useEventConnectors(false, refreshKey);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string | null>>({});
 
   const searching = search.trim().length > 0;
   const visible = (connectors ?? []).filter((connector) => {
     if (filter === "mcp") return false;
-    if (!searching && category !== null && category !== EVENT_CONNECTORS_CATEGORY) return false;
+    if (!searching && category !== null && !inEventConnectorsCategory(category)) return false;
     if (!searching && filter === "connected" && !eventConnectorConnected(connector)) return false;
     return eventConnectorMatchesSearch(connector, search);
   });
@@ -36,13 +36,14 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
 
   if (visible.length === 0) return null;
 
-  const run = (id: string, patch: EventConnectorPatch) => {
-    setBusyId(id);
+  /** Resolves true once the change is saved, false when it failed (the error shows on the tile). */
+  const run = (id: string, patch: EventConnectorPatch): Promise<boolean> => {
+    setBusy((current) => ({ ...current, [id]: true }));
     setErrors((current) => ({ ...current, [id]: null }));
-    saveEventConnector(id, patch)
-      .then((updated) => replace(updated))
-      .catch((failure) => setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) })))
-      .finally(() => setBusyId((current) => (current === id ? null : current)));
+    return saveEventConnector(id, patch)
+      .then((updated) => { replace(updated); return true; })
+      .catch((failure) => { setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) })); return false; })
+      .finally(() => setBusy((current) => ({ ...current, [id]: false })));
   };
 
   return (
@@ -51,10 +52,10 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
         <EventConnectorTile
           key={connector.id}
           connector={connector}
-          busy={busyId === connector.id}
+          busy={busy[connector.id] === true}
           error={errors[connector.id] ?? null}
           onConnect={(secret) => run(connector.id, { enabled: true, secret })}
-          onDisconnect={() => run(connector.id, { enabled: false, secret: "" })}
+          onDisconnect={() => { void run(connector.id, { enabled: false, secret: "" }); }}
         />
       ))}
     </>

@@ -1,6 +1,7 @@
 // Event connectors (GitHub Event, GitLab Event, ...) as the admin API lists them: apps that receive events, never tools for a bot.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/state/store";
+import { matchesCatalogSearch } from "../../shared/app-suggestions";
 
 export interface EventConnectorType {
   type: string;
@@ -52,10 +53,11 @@ export function eventConnectorConnected(connector: Pick<EventConnector, "enabled
 }
 
 export function eventConnectorMatchesSearch(connector: Pick<EventConnector, "id" | "title" | "description">, search: string): boolean {
-  const query = search.trim().toLowerCase();
-  if (!query) return true;
-  const hay = `${connector.title} ${connector.id} ${connector.description} developer tools pull request pr event`.toLowerCase();
-  return query.split(/\s+/).every((part) => hay.includes(part));
+  return matchesCatalogSearch(`${connector.title} ${connector.id} ${connector.description} ${EVENT_CONNECTORS_CATEGORY} pull request merge request pr mr event`, search);
+}
+
+export function inEventConnectorsCategory(category: string): boolean {
+  return category.trim().toLowerCase() === EVENT_CONNECTORS_CATEGORY.toLowerCase();
 }
 
 const PATH = "/api/pr-orchestrator/connectors";
