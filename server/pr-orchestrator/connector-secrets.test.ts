@@ -24,7 +24,7 @@ describe("connector-secrets", () => {
     writeConnectorSecret(file, "gitlab-event", "secret-two");
     expect(readConnectorSecret(file, "github-event")).toBe("secret-one");
     expect(readConnectorSecret(file, "gitlab-event")).toBe("secret-two");
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
 
     writeConnectorSecret(file, "github-event", "");
     expect(readConnectorSecret(file, "github-event")).toBeNull();
