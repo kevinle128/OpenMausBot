@@ -7,7 +7,6 @@ import { validFixtures } from "./pr-orchestrator/contract/conformance/index.ts";
 import { signBatch } from "./pr-orchestrator/signature.ts";
 
 const HUB_KEY = "fake-hub-key-for-event-source-tests-0123456789";
-const SECRET_NAME = "GITHUB_EVENT_HUB_SECRET";
 
 let fixture: VerificationServer;
 let url: string;
@@ -54,7 +53,7 @@ async function sendCi(id: string): Promise<void> {
 
 it("a signed CI batch for a watched repo starts one run of the bot that owns the automation", async () => {
   writeConfig();
-  expect((await api("POST", "/api/vault/secrets", { name: SECRET_NAME, value: HUB_KEY }, 201)).error).toBeUndefined();
+  expect((await api("PUT", "/api/pr-orchestrator/connectors/github-event", { enabled: true, secret: HUB_KEY }, 200)).error).toBeUndefined();
   const cli = (...args: string[]) => runControlOmb([...args, "--url", url]) as Promise<{ bot: { id: string } }>;
   const { bot } = await cli("new-bot", "--name", "Scout");
   const made = await api("POST", "/api/app-triggers", {

@@ -45,7 +45,7 @@ import { SavedKeysReset } from "./SavedKeysReset";
 import { botAppScope } from "@/lib/bot-app-access";
 import { AppGrantPrompt, botsForApps, useAppGrants } from "./AppGrantPrompt";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { ServiceIcon, type ToolkitCard } from "./ServiceIcon"; import { AppsSection } from "./AppsSection"; import { EventSourcesSection } from "./event-sources/EventSourcesSection";
+import { ServiceIcon, type ToolkitCard } from "./ServiceIcon"; import { AppsSection } from "./AppsSection"; import { EventConnectorCards } from "./event-sources/EventConnectorCards";
 export { ServiceIcon, type ToolkitCard } from "./ServiceIcon";
 
 export { preloadConnectedApps, type ConnectorInventory } from "@/lib/connected-apps";
@@ -311,6 +311,7 @@ export function PluginsPanel() {
 
   const { suggestions, picking, pick } = useSuggestedApps(cards !== null && configured && inventoryPhase === "ready", `${cardsRefresh}:${Object.keys(status).filter((slug) => status[slug]?.connected).sort().join()}`);
   const [disconnecting, setDisconnecting] = useState<{ slug: string; label: string; account: ConnectorAccount } | null>(null); disconnectingRef.current = disconnecting;
+  const [eventApps, setEventApps] = useState({ connected: 0, shown: 0 }); const onEventAppsCount = useCallback((connected: number, shown: number) => setEventApps((p) => (p.connected === connected && p.shown === shown ? p : { connected, shown })), []);
 
   const openConnectUrl = async (url: string) => {
     if (opening.current) return;
@@ -416,7 +417,7 @@ export function PluginsPanel() {
   const connectedHosted = HOSTED_MCP_APPS.filter((app) => hostedConnected?.[app.id]);
   const ownServers = mcpServers.filter((server) => ownMcpServer(server));
   const ownServerShown = (server: McpServerListing) => matchesCatalogSearch(`${server.name} ${isRemoteMcpListing(server) ? server.url : [server.command, ...server.args].join(" ")}`, search);
-  const connectedCount = Object.values(status).filter(hasActiveConnection).length + connectedHosted.length + ownServers.filter(mcpServerConnected).length + Number(emailConnected === true) + Number(xConnected === true) + Number(postizConnected === true);
+  const connectedCount = Object.values(status).filter(hasActiveConnection).length + connectedHosted.length + ownServers.filter(mcpServerConnected).length + Number(emailConnected === true) + Number(xConnected === true) + Number(postizConnected === true) + eventApps.connected;
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
   const close = () => dispatch({ type: "togglePlugins", open: false });
   const setupNotice = connectorSetupNotice({ configured, stale, setup, remoteClient });
@@ -435,7 +436,7 @@ export function PluginsPanel() {
   const categoryInMore = category !== null && moreCategories.includes(category);
   const inCategoryView = filter === "all" && category !== null && !searching;
   const postizHere = showPostiz && (!inCategoryView || inCategory(POSTIZ_CATALOG_CARD, category));
-  const nativeCardsShown = (!inCategoryView && (shownHosted.size > 0 || showEmail || showX)) || postizHere || (filter === "connected" && ownServers.some((server) => server.enabled && ownServerShown(server)));
+  const nativeCardsShown = (!inCategoryView && (shownHosted.size > 0 || showEmail || showX)) || postizHere || eventApps.shown > 0 || (filter === "connected" && ownServers.some((server) => server.enabled && ownServerShown(server)));
   const categoryCards = inCategoryView ? visible.filter((card) => inCategory(card, category)) : visible;
   const sectioned = filter === "all" && !searching && category === null;
   const sections = sectioned ? catalogSections(visible, isConnected, ranked.inline) : [];
@@ -635,7 +636,6 @@ export function PluginsPanel() {
             </div>
           )}
           {error && <div role="alert" className="mb-3 rounded-xl bg-danger/10 px-3 py-2 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</div>}
-
           {filter !== "mcp" && (
             <div data-apps-grid className="@container flex flex-col gap-7 pt-1">
               {!sections.some((section) => section.kind === "connected") && renderSuggested()}
@@ -721,6 +721,7 @@ export function PluginsPanel() {
                 <div data-native-card="x" className={showX && !inCategoryView ? "contents" : "hidden"}><XCard refreshKey={cardsRefresh} onConnection={setXConnected} /></div>
                 <div data-native-card="email" className={showEmail && !inCategoryView ? "contents" : "hidden"}><EmailCard refreshKey={cardsRefresh} onConnection={setEmailConnected} /></div>
                 <div data-native-card="postiz" className={postizHere ? "contents" : "hidden"}><PostizCard refreshKey={cardsRefresh} onConnection={setPostizConnected} /></div>
+                <EventConnectorCards filter={listing} category={inCategoryView ? category : null} search={search} refreshKey={cardsRefresh} onCount={onEventAppsCount} />
                 {allShown.map((card) => renderTile(card))}
               </AppsSection>
             </div>
@@ -731,7 +732,6 @@ export function PluginsPanel() {
               <McpServersPanel embedded hideHosted={filter === "all"} />
             </div>
           )}
-          {filter === "all" && category === null && !searching && <EventSourcesSection />}
         </div>
         <ConfirmDialog open={disconnecting !== null} layer="z-[60]" tone="danger" title={t("connectors.disconnect")} confirmLabel={t("connectors.disconnect")}
           body={disconnecting ? disconnectAccountConfirmation(disconnecting.label, disconnecting.account) : ""} onCancel={() => setDisconnecting(null)}

@@ -1,6 +1,7 @@
 // Event connectors (GitHub Event, GitLab Event, ...) as the admin API lists them: apps that receive events, never tools for a bot.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/state/store";
+import { matchesCatalogSearch } from "../../shared/app-suggestions";
 
 export interface EventConnectorType {
   type: string;
@@ -41,6 +42,22 @@ export interface EventConnectorPatch {
   enabled?: boolean;
   settings?: Record<string, unknown>;
   secretName?: string;
+  /** Write-only connector secret; empty string removes the saved secret. */
+  secret?: string;
+}
+
+export const EVENT_CONNECTORS_CATEGORY = "Developer tools";
+
+export function eventConnectorConnected(connector: Pick<EventConnector, "enabled" | "secretPresent">): boolean {
+  return connector.enabled && connector.secretPresent;
+}
+
+export function eventConnectorMatchesSearch(connector: Pick<EventConnector, "id" | "title" | "description">, search: string): boolean {
+  return matchesCatalogSearch(`${connector.title} ${connector.id} ${connector.description} ${EVENT_CONNECTORS_CATEGORY} pull request merge request pr mr event`, search);
+}
+
+export function inEventConnectorsCategory(category: string): boolean {
+  return category.trim().toLowerCase() === EVENT_CONNECTORS_CATEGORY.toLowerCase();
 }
 
 const PATH = "/api/pr-orchestrator/connectors";
@@ -60,7 +77,7 @@ export function saveEventConnector(id: string, patch: EventConnectorPatch): Prom
  * The connectors, loaded once and again every 30 s while `watching` is true (the detail is open).
  * `null` means "not shown": the list is not loaded yet, or this person may not see it (it needs the admin scope).
  */
-export function useEventConnectors(watching: boolean) {
+export function useEventConnectors(watching: boolean, refreshKey = 0) {
   const [connectors, setConnectors] = useState<EventConnector[] | null>(null);
   // Bumped by every load and every saved change, so a load that started before a newer one does not overwrite it.
   const generation = useRef(0);
@@ -73,7 +90,7 @@ export function useEventConnectors(watching: boolean) {
       setConnectors((current) => current);
     }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
   useEffect(() => {
     if (!watching) return;
     void refresh();

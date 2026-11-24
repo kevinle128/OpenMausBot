@@ -71,14 +71,14 @@ describe("event connector settings over the API", () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect((await sendBatch(before.intakeUrl, [opened()])).status).toBe(503);
 
-    expect((await api("POST", "/api/vault/secrets", { name: SECRET_NAME, value: HUB_KEY })).status).toBe(201);
+    expect((await api("PUT", `${CONNECTORS}/github-event`, { enabled: true, secret: HUB_KEY })).status).toBe(200);
     expect(await connector("github-event")).toMatchObject({ secretPresent: true });
     const accepted = await sendBatch(before.intakeUrl, [opened()]);
     expect(accepted).toMatchObject({ status: 200, body: { rejected: [] } });
     expect(accepted.body.acked).toHaveLength(1);
     expect(await connector("github-event")).toMatchObject({ status: { events24h: 1 } });
 
-    expect((await api("PUT", `${CONNECTORS}/github-event`, { enabled: false })).body.enabled).toBe(false);
+    expect((await api("PUT", `${CONNECTORS}/github-event`, { enabled: false, secret: "" })).body).toMatchObject({ enabled: false, secretPresent: false });
     expect((await sendBatch(before.intakeUrl, [opened()])).status).toBe(404);
   });
 
@@ -91,7 +91,7 @@ describe("event connector settings over the API", () => {
   });
 
   it("never returns a secret value in any connector response", async () => {
-    await api("PUT", `${CONNECTORS}/github-event`, { enabled: true, secretName: SECRET_NAME });
+    await api("PUT", `${CONNECTORS}/github-event`, { enabled: true, secret: HUB_KEY });
     await api("GET", CONNECTORS);
     await api("GET", "/api/pr-orchestrator/status");
     await api("GET", "/api/pr-orchestrator/config");

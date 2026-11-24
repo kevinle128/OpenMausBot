@@ -13,8 +13,8 @@ export interface PrOrchestratorRouteDeps {
   webhookBase?(): string;
   /** The connectors and routines a config file with no content would give, listed with no store, so the App section works before the first write. */
   idle?(): { connectors: ConnectorView[]; routines: ReturnType<OrchestratorCore["routines"]> };
-  /** Writes one connector instance to the config file. */
-  updateConnector(id: string, patch: ConnectorPatch): ConnectorWrite;
+  /** Writes one connector instance (and optional write-only secret) to disk. */
+  updateConnector(id: string, patch: ConnectorPatch & { secret?: string }): ConnectorWrite;
 }
 
 const PREFIX = "/api/pr-orchestrator/";
@@ -25,7 +25,7 @@ const LIST_LIMIT = 200;
 const TEST_BODY_LIMIT = 64 * 1024;
 const CONNECTOR_BODY_LIMIT = 16 * 1024;
 const CONNECTOR_PATH = /^connectors\/([^/]+)$/;
-const CONNECTOR_KEYS = ["enabled", "settings", "secretName"];
+const CONNECTOR_KEYS = ["enabled", "settings", "secretName", "secret"];
 
 const isState = (value: string): value is PrState => (PR_STATES as readonly string[]).includes(value);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -59,15 +59,21 @@ export function createPrOrchestratorRoutes(deps: PrOrchestratorRouteDeps): Route
       const body: unknown = await readBody(req, CONNECTOR_BODY_LIMIT);
       if (!isRecord(body)) return json(res, 400, { error: "Send a JSON object" });
       const unknownKey = Object.keys(body).find(key => !CONNECTOR_KEYS.includes(key));
-      if (unknownKey) return json(res, 400, { error: `${unknownKey} is not a connector field; send enabled, settings or secretName` });
-      const { enabled, settings, secretName } = body;
+      if (unknownKey) return json(res, 400, { error: `${unknownKey} is not a connector field; send enabled, settings, secretName or secret` });
+      const { enabled, settings, secretName, secret } = body;
       if (enabled !== undefined && typeof enabled !== "boolean") return json(res, 400, { error: "enabled must be true or false" });
       if (settings !== undefined && !isRecord(settings)) return json(res, 400, { error: "settings must be a JSON object" });
       if (secretName !== undefined && typeof secretName !== "string") return json(res, 400, { error: "secretName must be a string" });
+      if (secret !== undefined) {
+        if (typeof secret !== "string") return json(res, 400, { error: "secret must be a string" });
+        const trimmed = secret.trim();
+        if (trimmed.length > 0 && /\s/.test(trimmed)) return json(res, 400, { error: "secret must not contain whitespace" });
+      }
       const written = deps.updateConnector(id, {
         ...(enabled !== undefined ? { enabled } : {}),
         ...(settings !== undefined ? { settings: settings as NonNullable<ConnectorPatch["settings"]> } : {}),
         ...(secretName !== undefined ? { secretName } : {}),
+        ...(secret !== undefined ? { secret } : {}),
       });
       if (!written.ok) return json(res, written.reason === "unknown" ? 404 : 400, { error: written.error });
       const current = deps.core();

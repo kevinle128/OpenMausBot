@@ -111,13 +111,13 @@ export function createEventsDoor(deps: EventsDoorDeps): IngressDoor {
         answer(503, { error: "The connector's settings are not valid" }, "error", "the connector's settings are not valid");
         return true;
       }
-      const key = instance.secretName ? deps.key(instance.secretName) : null;
+      const key = deps.key(instanceId);
       const context: InboundContext<unknown> = { instance: instanceId, settings: settings.data, key, now: now() };
       const request: InboundRequest = { method: req.method, headers: headersOf(req) };
 
       // Before the precheck: a header check against a missing key would answer 401 and count a signature failure.
       if (definition.secret.required && !key) {
-        answer(503, { error: "The connector's secret is not saved" }, "error", "the connector's secret is not in the Vault");
+        answer(503, { error: "The connector's secret is not saved" }, "error", "the connector's secret is not saved");
         return true;
       }
       const early = inbound.precheck?.(request, context);

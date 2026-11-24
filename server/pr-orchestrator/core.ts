@@ -253,7 +253,7 @@ export function connectorViewsIn(
     return [{
       id, use: instance.use, title: definition.title, description: definition.description, icon: definition.icon, delivery: definition.delivery,
       enabled: instance.enabled, intakePath: definition.delivery === "inbound-http" ? `/events/${id}` : null,
-      secretName, secretPresent: secretName !== null && secretPresent(secretName),
+      secretName, secretPresent: secretPresent(id),
       settings: instance.settings, settingsSchema: z.toJSONSchema(definition.settingsSchema, { io: "input" }) as Record<string, unknown>,
       eventTypes: registry.eventTypes(instance.use),
       status: statusOf(id),

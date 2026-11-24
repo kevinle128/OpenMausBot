@@ -91,9 +91,8 @@ export function createConnectorSupervisor(deps: SupervisorDeps): ConnectorSuperv
       try {
         const instance = deps.config().connectors[id];
         if (!instance) return;
-        const secretName = instance.secretName ?? (definition.secret.defaultName || null);
-        const key = secretName ? deps.key(secretName) : null;
-        if (definition.secret.required && !key) throw new Error("the connector's secret is not in the Vault");
+        const key = deps.key(id);
+        if (definition.secret.required && !key) throw new Error("the connector's secret is not saved");
         const ctx: SubscriptionContext<unknown> = {
           instance: id,
           settings: definition.settingsSchema.parse(instance.settings ?? {}),

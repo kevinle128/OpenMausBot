@@ -7,6 +7,7 @@ import { noneAttached, type AttachedAdapters } from "../pr-orchestrator/adapters
 import type { PrStatusForBot } from "../pr-orchestrator/bot-status.ts";
 import { createConfigSource, orchestratorActive } from "../pr-orchestrator/config.ts";
 import { updateConnectorInstance } from "../pr-orchestrator/config-writer.ts";
+import { readConnectorSecret, writeConnectorSecret } from "../pr-orchestrator/connector-secrets.ts";
 import type { Owner, PrKey, SubjectKey } from "../pr-orchestrator/types.ts";
 import { connectorViewsIn, createOrchestratorCore, EMPTY_CONNECTOR_STATUS, inboundInstanceIn, routinesIn, type LedgerEventForBot, type OrchestratorCore } from "../pr-orchestrator/core.ts";
 import { BUILT_IN_CONNECTORS } from "../pr-orchestrator/connectors/index.ts";
@@ -59,6 +60,7 @@ export interface PrOrchestratorHost {
 export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrchestratorHost {
   const dbPath = join(deps.dataDir, "pr-orchestrator.db");
   const configPath = join(deps.dataDir, "pr-orchestrator.json");
+  const secretsPath = join(deps.dataDir, "pr-orchestrator-secrets.json");
   const log = deps.log ?? (() => {});
   let core: OrchestratorCore | null = null;
   let running = false;
@@ -70,16 +72,16 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     for (const listener of feedListeners) feedUnsub.set(listener, current.onApplied(listener));
   };
 
-  // Security: a secret (the hub's key, a forge credential) is read from the Vault for one use and dropped. It is never
-  // logged, cached, returned by a route or sent to a bot. Only the team's secrets count, never a person's own.
+  // Security: forge adapter credentials come from the team Vault; event connector secrets live write-only in
+  // pr-orchestrator-secrets.json (0600) and never touch the Vault.
   const secret = (secretName: string): string | null => {
     const wanted = vaultNameKey(secretName);
     const found = deps.vault.listSecrets(TEAM_READER).find(summary => vaultNameKey(summary.name) === wanted);
     const value = found ? deps.vault.secret(found.id)?.value : undefined;
     return value || null;
   };
-  const key = (secretName: string): Buffer | null => {
-    const value = secret(secretName);
+  const connectorKey = (id: string): Buffer | null => {
+    const value = readConnectorSecret(secretsPath, id);
     return value ? Buffer.from(value, "utf8") : null;
   };
   let attached: (AttachedAdapters & { stop(): void }) | null = null;
@@ -88,7 +90,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
   const ensureCore = (): OrchestratorCore | null => {
     if (core) return core;
     if (!running || stopping || !(existsSync(configPath) || existsSync(dbPath))) return null;
-    core = createOrchestratorCore({ dbPath, configPath, connectors: BUILT_IN_CONNECTORS, key, log, attached: () => attached ?? noneAttached() });
+    core = createOrchestratorCore({ dbPath, configPath, connectors: BUILT_IN_CONNECTORS, key: connectorKey, log, attached: () => attached ?? noneAttached() });
     attachFeed(core);
     core.start();
     return core;
@@ -111,7 +113,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
       const config = configOnFile();
       return config ? inboundInstanceIn(config, registry, id) : null;
     },
-    key,
+    key: connectorKey,
     sink: {
       accept(items, now) {
         const current = ensureCore();
@@ -126,16 +128,20 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
 
   const routes = createPrOrchestratorRoutes({
     core: ensureCore,
-    secretPresent: name => key(name) !== null,
+    secretPresent: id => connectorKey(id) !== null,
     ...(deps.webhookBase ? { webhookBase: deps.webhookBase } : {}),
     idle: () => {
       const { config } = fileConfig.current();
       return {
-        connectors: connectorViewsIn(config, registry, name => key(name) !== null, () => EMPTY_CONNECTOR_STATUS),
+        connectors: connectorViewsIn(config, registry, id => connectorKey(id) !== null, () => EMPTY_CONNECTOR_STATUS),
         routines: routinesIn(config, registry),
       };
     },
-    updateConnector: (id, patch) => updateConnectorInstance(configPath, BUILT_IN_CONNECTORS, id, patch),
+    updateConnector: (id, { secret: nextSecret, ...patch }) => {
+      const written = updateConnectorInstance(configPath, BUILT_IN_CONNECTORS, id, patch);
+      if (written.ok && nextSecret !== undefined) writeConnectorSecret(secretsPath, id, nextSecret);
+      return written;
+    },
   });
 
   /** Runs a call on the core that runs now. The host makes a new core after each stop, so no caller may keep one. */

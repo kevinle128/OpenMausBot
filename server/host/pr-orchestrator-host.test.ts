@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validFixtures } from "../pr-orchestrator/contract/conformance/index.ts";
 import { signBatch } from "../pr-orchestrator/signature.ts";
+import { writeConnectorSecret } from "../pr-orchestrator/connector-secrets.ts";
 import { openOrchestratorStore } from "../pr-orchestrator/store.ts";
 import { creation, fakeRuntime, FAKE_OWNER } from "../pr-orchestrator/testing/fake-runtime.ts";
 import { VaultStore } from "../vault-store.ts";
@@ -85,13 +86,15 @@ describe("PR orchestrator host", () => {
     expect(existsSync(dbPath())).toBe(false);
   });
 
-  it("reads the hub key from the Vault by name, ignoring case and person-owned secrets", async () => {
+  const saveHubKey = () => writeConnectorSecret(join(dir, "pr-orchestrator-secrets.json"), "github-event", HUB_KEY);
+
+  it("reads the hub key only from connector secrets and ignores the Vault", async () => {
     writeConfig();
     const { host, base } = await serve();
     host.start();
-    vault.saveSecret({ name: "github_event_hub_secret", value: HUB_KEY, source: "settings", bots: "all", person: "p_ada0000000000000000000" });
+    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
     expect((await post(base, HUB_KEY)).status).toBe(503);
-    vault.saveSecret({ name: "github-event-hub-secret", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     const accepted = await post(base, HUB_KEY);
     expect(accepted.status).toBe(200);
     expect(accepted.body?.acked).toHaveLength(1);
@@ -99,7 +102,7 @@ describe("PR orchestrator host", () => {
   });
 
   it("starts the core on the first request after the config file appears", async () => {
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     const { host, base } = await serve();
     host.start();
     expect((await post(base, HUB_KEY)).status).toBe(404);
@@ -113,14 +116,14 @@ describe("PR orchestrator host", () => {
     host.start();
     await host.stop();
     writeConfig();
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     expect((await post(base, HUB_KEY)).status).toBe(503);
     expect(existsSync(dbPath())).toBe(false);
   });
 
   it("starts a fresh core after a stop", async () => {
     writeConfig();
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     const { host, base } = await serve();
     host.start();
     const first = await post(base, HUB_KEY);
@@ -146,7 +149,7 @@ describe("PR orchestrator host", () => {
 
   it("opens the next core only once the stopping one has closed", async () => {
     writeConfig();
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     const { host, base } = await serve();
     host.start();
     expect((await post(base, HUB_KEY)).status).toBe(200);
@@ -176,7 +179,7 @@ describe("PR orchestrator host", () => {
     expect(existsSync(dbPath())).toBe(false);
 
     writeConfig();
-    vault.saveSecret({ name: "GITHUB_EVENT_HUB_SECRET", value: HUB_KEY, source: "settings", bots: "all" });
+    saveHubKey();
     host.start();
     const opened = validFixtures().find(item => item.type === "pr.opened")!.event as { id: string };
     expect((await post(base, HUB_KEY, [opened])).status).toBe(200);
