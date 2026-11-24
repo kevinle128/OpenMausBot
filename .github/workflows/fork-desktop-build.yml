@@ -195,13 +195,18 @@ jobs:
       # The mini keeps its home folder between jobs. Downloads and caches go to
       # the job temp folder so the last step removes them, and the keychain
       # search list is saved so the last step can undo what signing adds.
+      # The pnpm store is the exception: it sits beside the checkout, on the
+      # same filesystem as node_modules, so pnpm can hard-link instead of copy.
+      # With the job temp folder on the internal disk and _work on an external
+      # volume the install took more than 14 minutes instead of 26 seconds.
+      # shortcut: the store is never pruned; run `pnpm store prune` if the volume fills.
       - name: Use job-local caches
         shell: bash
         run: |
           set -euo pipefail
           {
             echo "npm_config_cache=$RUNNER_TEMP/job-cache/npm"
-            echo "npm_config_store_dir=$RUNNER_TEMP/job-cache/pnpm-store"
+            echo "npm_config_store_dir=$(dirname "$GITHUB_WORKSPACE")/.pnpm-store"
             echo "ELECTRON_CACHE=$RUNNER_TEMP/job-cache/electron"
             echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/job-cache/electron-builder"
             echo "KEYCHAIN_LIST_BACKUP=$RUNNER_TEMP/keychain-search-list.txt"
@@ -479,7 +484,7 @@ jobs:
           free_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')
           echo "Free now: $(( free_kb / 1024 / 1024 )) GiB; at the start: $(( ${FREE_KB_AT_START:-0} / 1024 / 1024 )) GiB."
           du -sh "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/release" "$GITHUB_WORKSPACE/dist-native" "$GITHUB_WORKSPACE/node_modules" \
-            "$RUNNER_TEMP/job-cache" 2> /dev/null || true
+            "$RUNNER_TEMP/job-cache" "$(dirname "$GITHUB_WORKSPACE")/.pnpm-store" 2> /dev/null || true
 
       - name: Upload the installers and the feed
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -508,7 +513,8 @@ jobs:
           fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           # The pnpm store stays: the setup-node post step saves it after this
-          # step. The runner's job-completed hook removes the job temp folder.
+          # step, and it lives beside the checkout, so it is kept between jobs.
+          # The runner's job-completed hook removes the job temp folder.
           rm -rf "$RUNNER_TEMP/job-cache/electron" "$RUNNER_TEMP/job-cache/electron-builder" \
             "$RUNNER_TEMP/private_keys" "${KEYCHAIN_LIST_BACKUP:-/nonexistent}"
           if [[ -s "${MINI_BUILD_LOCK_PID_FILE:-}" ]]; then
