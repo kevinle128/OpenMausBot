@@ -911,6 +911,27 @@ function loadServerOrigin(d) {
   return config.server;
 }
 
+async function isAgentAncestor(info) {
+  let argv = null;
+  const loadArgs = async () => {
+    if (argv !== null) return argv;
+    try {
+      argv = await info.args();
+      return argv;
+    } catch {
+      throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
+    }
+  };
+  const primary = info.path || (await loadArgs())[0] || "";
+  const base = basename(primary).replace(/\.exe$/i, "");
+  if (AGENTS.some((agent) => agent.bin.test(base) || agent.path?.test(primary))) return true;
+  if (!RUNTIMES.test(base) && !RENAMED_RUNTIMES.test(base)) return false;
+  const tokens = await loadArgs();
+  const script = tokens.slice(1).find((token) => !token.startsWith("-"));
+  if (!script) return false;
+  return AGENTS.some((agent) => agent.path?.test(script) || agent.bin.test(basename(script).replace(/\.(?:c|m)?js$/, "")));
+}
+
 /** Fail-closed ancestor check: refuses on Windows, on any agent match (even if hashing fails), or if the walk does not reach PID 1. */
 async function assertHumanTerminal(d) {
   if (!d.stdinIsTTY || !d.stdoutIsTTY) {
@@ -925,8 +946,7 @@ async function assertHumanTerminal(d) {
   if (!Number.isInteger(pid) || pid < 1) {
     throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
   }
-  for (let depth = 0; depth < MAX_WALK; depth++) {
-    if (pid === 1) return;
+  for (let depth = 0; depth < MAX_WALK && pid !== 1; depth++) {
     if (!Number.isInteger(pid) || pid < 1 || seen.has(pid)) {
       throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
     }
@@ -935,13 +955,17 @@ async function assertHumanTerminal(d) {
     if (!info) {
       throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
     }
-    if (info.path && await matchAgent(info.path, info.args)) {
+    if (await isAgentAncestor(info)) {
       throw new CliError(EXIT.refused, "A value is shown to a person at a terminal, never to an agent.", "refused");
     }
     pid = info.ppid;
   }
   if (pid !== 1) {
     throw new CliError(EXIT.refused, "could not verify the parent process tree (process chain too deep)", "refused");
+  }
+  const rootInfo = useProc ? procfsDescribe(d.procRoot, 1) : await psDescribe(d.ps, 1);
+  if (rootInfo && await isAgentAncestor(rootInfo)) {
+    throw new CliError(EXIT.refused, "A value is shown to a person at a terminal, never to an agent.", "refused");
   }
 }
 
@@ -962,6 +986,9 @@ async function cmdReveal(ctx, { positionals }) {
   } catch (error) {
     if (error instanceof CliError && error.exitCode === EXIT.refused) {
       throw new CliError(EXIT.refused, "the server refused reveal (needs scope 'admin'). Pass an admin token in OMB_ADMIN_TOKEN (from: openmausbot token create NAME --scope admin) or copy the secret in OpenMausBot → Settings → Vault.", "refused");
+    }
+    if (adminToken && error instanceof CliError && error.message.includes("omb pair")) {
+      throw new CliError(EXIT.unreachable, "OMB_ADMIN_TOKEN ended or was revoked: create a new admin token with openmausbot token create NAME --scope admin", "store_unavailable");
     }
     throw error;
   }

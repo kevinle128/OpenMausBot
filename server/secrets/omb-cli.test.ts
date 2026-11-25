@@ -199,6 +199,59 @@ describe("arguments", () => {
     expect(result.err).toContain("scope 'admin'");
     expect(result.err).toContain("OMB_ADMIN_TOKEN");
   });
+
+  it("fails closed on get --reveal for runtime-hosted/cursor agents, unreadable /proc exe, and PID 1 agents", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    const opts = { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100 };
+    // Unlinked runtime-hosted script (not on disk)
+    const deletedScript = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/usr/local/bin/node", args: "node /deleted/@openai/codex/bin/codex.js" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: deletedScript })).code).toBe(EXIT.refused);
+    // Relative runtime-hosted script path
+    const relativeScript = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/usr/local/bin/node", args: "node node_modules/@openai/codex/bin/codex.js" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: relativeScript })).code).toBe(EXIT.refused);
+    // cursor-agent launcher even without a hosted script on disk
+    const cursorLauncher = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/home/u/.local/bin/cursor-agent", args: "cursor-agent --use-system-ca" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: cursorLauncher })).code).toBe(EXIT.refused);
+    // Runtime ancestor whose ps args= lookup fails
+    const failingArgsPs: Deps["ps"] = async (args) => {
+      if (args.includes("args=")) throw new Error("ps args failed");
+      return args[args.length - 1] === "100" ? " 50 /bin/zsh\n" : " 1 /usr/local/bin/node\n";
+    };
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: failingArgsPs })).code).toBe(EXIT.refused);
+    // Containerized PID 1 agent (both direct ppid=1 and via a shell)
+    const pid1Agent = fakePs({ 100: { ppid: 1, comm: "/bin/zsh" }, 1: { ppid: 0, comm: "/usr/local/bin/claude" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: pid1Agent })).code).toBe(EXIT.refused);
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ppid: 1, ps: pid1Agent })).code).toBe(EXIT.refused);
+    // Linux /proc/<pid>/exe unreadable (info.path = null) while /proc/<pid>/cmdline identifies an agent
+    if (posix) {
+      const root = join(home, "proc-reveal");
+      const addProc = (pid: number, ppid: number, cmdline: string[]) => {
+        mkdirSync(join(root, String(pid)), { recursive: true });
+        writeFileSync(join(root, String(pid), "stat"), `${pid} (proc) S ${ppid} 1 1 0 -1 4194560`);
+        writeFileSync(join(root, String(pid), "cmdline"), `${cmdline.join("\0")}\0`);
+      };
+      addProc(100, 50, ["/bin/bash"]);
+      addProc(50, 1, ["/usr/local/bin/claude", "--chat"]);
+      addProc(1, 0, ["/sbin/init"]);
+      expect((await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "linux", ppid: 100, procRoot: root })).code).toBe(EXIT.refused);
+    }
+    expect(seen.requests).toHaveLength(0);
+  });
+
+  it("points to OMB_ADMIN_TOKEN rather than omb pair when OMB_ADMIN_TOKEN is rejected with 401", async () => {
+    const seen = await stub(() => ({ status: 401, json: { error: "unauthorized: token ended" } }));
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      env: { OMB_CONFIG_DIR: join(home, "config"), OMB_TOKEN_STORE: "file", OMB_ADMIN_TOKEN: "omb_sess_EXPIRED1234567890" },
+    });
+    expect(result.code).toBe(EXIT.unreachable);
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
+    expect(result.err).toContain("openmausbot token create NAME --scope admin");
+    expect(result.err).not.toContain("omb pair");
+  });
 });
 
 describe("server address and pairing input", () => {
