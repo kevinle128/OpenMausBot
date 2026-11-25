@@ -41,4 +41,15 @@ describe("paseoScopedSecrets", () => {
     expect(scoped.get("api-key")).toMatchObject({ id: "d", ref: "api-key" });
     expect(skipped).toEqual(["bad/name", "API_KEY"]);
   });
+
+  it("replaces an older duplicate and notifies onSkip when the newer secret appears later", () => {
+    const skipped: Array<[string, string]> = [];
+    const rows = [
+      secret("b", "API_KEY", { updatedAt: 1, bots: [] }),
+      secret("c", "API_KEY", { updatedAt: 5, bots: ["other-bot"] }),
+    ];
+    const scoped = paseoScopedSecrets(vault(rows), (name, why) => skipped.push([name, why]));
+    expect(scoped.get("API_KEY")).toMatchObject({ id: "c", ref: "API_KEY", updatedAt: 5 });
+    expect(skipped).toEqual([["API_KEY", "another secret has the same name"]]);
+  });
 });

@@ -35,9 +35,9 @@ export function paseoScopedSecrets(vault: Pick<VaultStore, "listSecrets">, onSki
       continue;
     }
     const seen = byName.get(secret.name);
-    if (seen && seen.updatedAt >= secret.updatedAt) {
+    if (seen) {
       onSkip?.(secret.name, "another secret has the same name");
-      continue;
+      if (seen.updatedAt >= secret.updatedAt) continue;
     }
     byName.set(secret.name, { id: secret.id, ref: secret.name, updatedAt: secret.updatedAt });
   }
