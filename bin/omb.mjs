@@ -891,6 +891,32 @@ async function cmdDescribe(ctx, { positionals }, kind) {
   return EXIT.done;
 }
 
+async function cmdReveal(ctx, { positionals }) {
+  if (positionals.length !== 1) throw invalid("usage: omb secrets get <ref> --reveal");
+  const ref = checkRef(positionals[0]);
+  const { d } = ctx;
+  if (!d.stdinIsTTY || !d.stdoutIsTTY) {
+    throw new CliError(EXIT.refused, "revealing a secret requires an interactive terminal (run it yourself, not through a pipe or agent)", "refused");
+  }
+  const agent = await findAgent({ platform: d.platform, startPid: d.ppid, ps: d.ps, procRoot: d.procRoot });
+  if (agent) throw new CliError(EXIT.refused, "A value is shown to a person at a terminal, never to an agent.", "refused");
+  const creds = await loadCredentials(d);
+  let envelope;
+  try {
+    envelope = await call(d, creds, "POST", "/api/secrets/admin/reveal", { ref });
+  } catch (error) {
+    if (error instanceof CliError && error.exitCode === EXIT.refused) {
+      throw new CliError(EXIT.refused, "this machine's token cannot reveal secrets (needs scope 'admin'). Pair with an admin token or copy the secret in OpenMausBot → Settings → Vault.", "refused");
+    }
+    throw error;
+  }
+  const data = envelope.data;
+  if (!data || typeof data.value !== "string") throw new CliError(EXIT.unreachable, "the server's reveal answer has an unexpected shape", "store_unavailable");
+  if (ctx.json) d.stdout.write(`${JSON.stringify({ schema_version: 1, kind: "secrets.get", data })}\n`);
+  else d.stdout.write(`${data.value}\n`);
+  return EXIT.done;
+}
+
 async function cmdGrants(ctx, { positionals }) {
   if (positionals.length > 0) throw invalid("usage: omb secrets grants");
   const identity = await needIdentity(ctx);
@@ -1263,7 +1289,7 @@ const HELP = `omb ${VERSION}: use the OpenMausBot Vault from an agent machine
                     [--purpose P] [--project X] [--include] [--json]
   omb secrets run --env VAR=REF [--env ...] [--purpose P] [--project X] -- <program> [args]
   omb secrets request <ref> [--purpose P] [--project X] [--exec PROGRAM --env VAR]
-  omb secrets list | describe <ref> | get <ref> | grants | audit [--secret REF] [--since 24h] [--limit N]
+  omb secrets list | describe <ref> | get <ref> [--reveal] | grants | audit [--secret REF] [--since 24h] [--limit N]
 
   omb skill list [--json]                       where the omb-vault skill is or is not installed, per agent harness
   omb skill install (--harness ID[,ID...] | --all) [--json]
@@ -1271,7 +1297,8 @@ const HELP = `omb ${VERSION}: use the OpenMausBot Vault from an agent machine
                                                 also add the guard hook to settings.json
   omb hook claude-pretooluse                    Claude Code PreToolUse hook (reads stdin): denies secret placeholders
 
-set, rotate, delete, grant, revoke, approve and get --reveal are done by the person in the OpenMausBot app.
+set, rotate, delete, grant, revoke and approve are done by the person in the OpenMausBot app.
+get --reveal is for a person at an interactive terminal with an admin token (never for an agent).
 Exit codes: 0 done, 2 invalid, 3 no such secret, 4 exists, 5 server or store unreachable, 6 refused,
 8 approval pending, 9 rate limited. skill install: 5 a write failed, 6 a skill folder is a symbolic link. Flags: --json, -q/--quiet.
 `;
@@ -1280,7 +1307,7 @@ export async function main(argv, overrides = {}) {
   const d = {
     env: process.env, platform: process.platform, home: process.env.HOME || homedir(), cwd: () => process.cwd(), ppid: process.ppid, procRoot: "/proc",
     nodePath: process.execPath, selfPath: fileURLToPath(import.meta.url),
-    stdin: process.stdin, stdinIsTTY: process.stdin.isTTY === true, stdout: process.stdout, stderr: process.stderr, proc: process,
+    stdin: process.stdin, stdinIsTTY: process.stdin.isTTY === true, stdout: process.stdout, stdoutIsTTY: process.stdout.isTTY === true, stderr: process.stderr, proc: process,
     fetch: (...args) => globalThis.fetch(...args),
     ps: (args) => new Promise((done, fail) => execFile("ps", args, { encoding: "utf8", timeout: 5000 }, (error, out) => (error ? fail(error) : done(out)))),
     security: (args, input) => new Promise((done, fail) => {
@@ -1362,14 +1389,13 @@ export async function main(argv, overrides = {}) {
       return EXIT.done;
     }
     if (name === "run") parsed.positionals = program;
-    if (name === "get" && parsed.flags.reveal) throw secretsError("revealing a value", "A value is shown to a person only, never to an agent.");
     switch (name) {
       case "fetch": return await cmdFetch(ctx, parsed);
       case "run": return await cmdRun(ctx, parsed);
       case "request": return await cmdRequest(ctx, parsed);
       case "list": return await cmdList(ctx, parsed);
       case "describe": return await cmdDescribe(ctx, parsed, "describe");
-      case "get": return await cmdDescribe(ctx, parsed, "get");
+      case "get": return parsed.flags.reveal ? await cmdReveal(ctx, parsed) : await cmdDescribe(ctx, parsed, "get");
       case "grants": return await cmdGrants(ctx, parsed);
       default: return await cmdAudit(ctx, parsed);
     }

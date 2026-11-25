@@ -35,6 +35,13 @@ export async function deleteSecret(id: string): Promise<string[]> {
   return (await api<{ keysOff?: string[] }>(`/api/vault/secrets/${encodeURIComponent(id)}`, { method: "DELETE" })).keysOff ?? [];
 }
 
+/** Reveals one Vault secret for an owner/admin (writes an audit row server-side). */
+export async function revealSecret(ref: string): Promise<string> {
+  const res = await api<{ data?: { value?: string } }>("/api/secrets/admin/reveal", { method: "POST", body: JSON.stringify({ ref }) });
+  if (typeof res.data?.value !== "string") throw new Error("Could not read secret");
+  return res.data.value;
+}
+
 /** The NAME=value lines of a pasted .env file. `export`, quotes and trailing comments are dropped; a later line with the
  * same name wins, and a line with no value is skipped. */
 export function parseEnv(text: string): Array<{ name: string; value: string }> {

@@ -21,6 +21,7 @@ export interface Deps {
   stdin: AsyncIterable<Uint8Array>;
   stdinIsTTY: boolean;
   stdout: Writable;
+  stdoutIsTTY: boolean;
   stderr: Writable;
   proc: { on(signal: string, handler: () => void): unknown; off(signal: string, handler: () => void): unknown };
   fetch: typeof fetch;

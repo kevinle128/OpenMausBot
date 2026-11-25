@@ -94,12 +94,49 @@ describe("arguments", () => {
     expect(result.err).toContain("OpenMausBot app");
   });
 
-  it("refuses get --reveal with exit 6 before any request", async () => {
-    const seen = await stub(() => ({ json: envelope("secrets.get", {}) }));
+  it("refuses get --reveal with exit 6 when not in an interactive terminal", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
     await paired(seen.url);
-    const result = await run(["secrets", "get", "REF", "--reveal"]);
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: false, stdoutIsTTY: false });
     expect(result.code).toBe(EXIT.refused);
     expect(seen.requests).toHaveLength(0);
+  });
+
+  it("refuses get --reveal with exit 6 when an agent is in the parent process tree", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    const { ps } = await agentTable();
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps });
+    expect(result.code).toBe(EXIT.refused);
+    expect(seen.requests).toHaveLength(0);
+  });
+
+  it("reveals a secret for a person at an interactive terminal when the server authorizes it", async () => {
+    const seen = await stub((req) => {
+      if (req.path === "/api/secrets/admin/reveal" && req.method === "POST") return { json: envelope("secrets.get", { ref: "REF", value: "top-secret-value" }) };
+      return { status: 404, json: { error: "not found" } };
+    });
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const plain = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(plain.code).toBe(EXIT.done);
+    expect(plain.out).toBe("top-secret-value\n");
+    expect(seen.requests).toHaveLength(1);
+    expect(seen.requests[0]!.path).toBe("/api/secrets/admin/reveal");
+    expect(seen.requests[0]!.body).toEqual({ ref: "REF" });
+
+    const asJson = await run(["secrets", "get", "REF", "--reveal", "--json"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(asJson.code).toBe(EXIT.done);
+    expect(JSON.parse(asJson.out)).toEqual({ schema_version: 1, kind: "secrets.get", data: { ref: "REF", value: "top-secret-value" } });
+  });
+
+  it("explains the admin scope requirement when the server refuses reveal with 403", async () => {
+    const seen = await stub(() => ({ status: 403, json: { error: "forbidden" } }));
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(result.code).toBe(EXIT.refused);
+    expect(result.err).toContain("scope 'admin'");
   });
 });
 

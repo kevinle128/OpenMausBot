@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ChevronDown, KeyRound, Loader2, LockKeyhole, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Copy, KeyRound, Loader2, LockKeyhole, ShieldCheck, Trash2 } from "lucide-react";
 
 import { loginHeldBackFor, normalizeLoginHost, type BitwardenStatus, type LoginBots, type LoginSummary, type OnePasswordItemRef, type OnePasswordStatus, type OnePasswordVault } from "../../shared/logins";
 import type { LinkedSecret, VaultSecret } from "../../shared/vault";
@@ -8,7 +8,7 @@ import { productName } from "@/lib/brand";
 import { addLogin, changeLogin, connectOnePassword, deleteLogin, disconnectOnePassword, grantOnePasswordItem, grantVault, refreshOnePassword } from "@/lib/logins";
 import { relativeTime } from "@/lib/memory";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
-import { deleteSecret, listVault } from "@/lib/vault";
+import { deleteSecret, listVault, revealSecret } from "@/lib/vault";
 import { useStore } from "@/state/store";
 import { Segmented } from "./bot-panel/rows";
 import { LoginBotPicker, LoginForm } from "./LoginForm";
@@ -124,8 +124,26 @@ export function VaultSettings() {
     catch (cause) { setError(cause instanceof Error && cause.message ? cause.message : t("settings.logins.deleteError")); }
     finally { setBusy(false); }
   };
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copySecret = async (id: string, name: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(await revealSecret(name));
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 2000);
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : t("settings.vault.secret.saveError"));
+    } finally {
+      setBusy(false);
+    }
+  };
   const rowButtons = (id: string, kind: "login" | "secret", name: string, onChange: () => void) => (
     <div className="flex shrink-0 gap-1">
+      {!member && kind === "secret" && <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => void copySecret(id, name)}
+        aria-label={copiedId === id ? t("code.copied") : t("code.copy")}>
+        {copiedId === id ? <Check size={13} /> : <Copy size={13} />}{copiedId === id ? t("code.copied") : t("code.copy")}
+      </button>}
       {!member && <button type="button" className={ROW_BUTTON} disabled={busy} onClick={onChange}
         aria-label={kind === "login" ? t("settings.logins.changeFor", { site: name }) : t("settings.vault.secret.changeFor", { name })}>{t("settings.logins.change")}</button>}
       <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => void remove(id, kind)}
