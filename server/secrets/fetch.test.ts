@@ -266,32 +266,37 @@ describe("what a fetch refuses before the value is read", () => {
     expect(seen).toEqual([]);
   });
 
-  it("opens a card for a secret nobody approved, and sends nothing until the person answers", async () => {
+  it("opens a card for a ref that is not in the Vault, and sends nothing until the person answers and the secret exists", async () => {
     const f = fixture();
-    f.save("CARD_KEY", SECRET, []);
     expect(await refusal(() => f.send("CARD_KEY", {}, asker({ agentLabel: "claude" })))).toMatchObject({ exit: 8, code: "approval_pending" });
     expect(f.cards).toHaveLength(1);
+    expect(f.cards[0]!.subtitle).toContain("not in the Vault yet");
     expect(f.service.admin.pending()).toHaveLength(1);
     expect(seen).toEqual([]);
     f.cards[0]!.onAnswer("allow");
     await f.service.idle();
+    f.save("CARD_KEY", SECRET, []);
     expect((await f.send("CARD_KEY", {})).status).toBe(200);
     expect(seen).toHaveLength(1);
   });
 
-  it("approves a secret kept to the Paseo bot at once, and the same call goes through", async () => {
+  it("approves a Vault secret at once for any bots value, and the same call goes through", async () => {
     const f = fixture();
-    f.save("API_KEY", SECRET, [PASEO_BOT_ID]);
-    expect((await f.send("API_KEY", {})).status).toBe(200);
+    f.save("API_KEY", SECRET, []);
+    f.save("OTHER_KEY", SECRET, ["other-bot"]);
+    expect((await f.send("OTHER_KEY", {})).status).toBe(200);
     expect(seen).toHaveLength(1);
     await f.service.idle();
     expect(f.cards).toEqual([]);
     expect(f.history).toHaveLength(1);
-    const rows = f.service.auditFor(FP, {}).entries;
-    expect(rows.findIndex((row) => row.context.startsWith("auto:paseo-scoped"))).toBeGreaterThanOrEqual(0);
     expect((await f.send("API_KEY", {})).status).toBe(200);
     expect(seen).toHaveLength(2);
-    expect(f.history).toHaveLength(1);
+    const rows = f.service.auditFor(FP, {}).entries;
+    expect(rows.some((row) => row.ref === "API_KEY" && row.context.startsWith("auto:paseo-scoped"))).toBe(true);
+    expect(rows.some((row) => row.ref === "OTHER_KEY" && row.context.startsWith("auto:paseo-scoped"))).toBe(true);
+    expect((await f.send("API_KEY", {})).status).toBe(200);
+    expect(seen).toHaveLength(3);
+    expect(f.history).toHaveLength(2);
   });
 
   it("refuses a block with 6 and a missing secret that a grant covers with 3", async () => {

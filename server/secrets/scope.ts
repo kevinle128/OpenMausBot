@@ -1,4 +1,3 @@
-import { vaultNameKey } from "../../shared/vault.ts";
 import { TEAM_READER, type VaultStore } from "../vault-store.ts";
 
 const REF_MAX = 128;
@@ -26,23 +25,21 @@ export interface ScopedSecret {
   updatedAt: number;
 }
 
-/** The secrets the Paseo bot may use: those shared with every bot, and those that name it in the Vault's bot picker.
- * A name that is not a valid ref is skipped; of two secrets with one name the newest is used. */
-export function paseoScopedSecrets(vault: Pick<VaultStore, "listSecrets">, botId: string, onSkip?: (name: string, why: string) => void): Map<string, ScopedSecret> {
+/** Every team Vault secret whose name is a valid ref. `bots` is not consulted.
+ * Of two secrets with one exact name, the newest `updatedAt` is kept. A name that differs in case or punctuation is its own ref. */
+export function paseoScopedSecrets(vault: Pick<VaultStore, "listSecrets">, onSkip?: (name: string, why: string) => void): Map<string, ScopedSecret> {
   const byName = new Map<string, ScopedSecret>();
   for (const secret of vault.listSecrets(TEAM_READER)) {
-    if (secret.bots !== "all" && !secret.bots.includes(botId)) continue;
     if (!isScopedRef(secret.name)) {
       onSkip?.(secret.name, "not a valid ref");
       continue;
     }
-    const key = vaultNameKey(secret.name);
-    const seen = byName.get(key);
+    const seen = byName.get(secret.name);
     if (seen && seen.updatedAt >= secret.updatedAt) {
       onSkip?.(secret.name, "another secret has the same name");
       continue;
     }
-    byName.set(key, { id: secret.id, ref: secret.name, updatedAt: secret.updatedAt });
+    byName.set(secret.name, { id: secret.id, ref: secret.name, updatedAt: secret.updatedAt });
   }
-  return new Map([...byName.values()].map((entry) => [entry.ref, entry]));
+  return byName;
 }

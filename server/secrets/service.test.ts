@@ -97,7 +97,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-describe("a secret kept to the Paseo bot", () => {
+describe("a secret in the Vault", () => {
   it("is approved for 24 hours at once and written to the Inbox as OpenMausBot's own decision, and the same call gets the value without a notice to the agent", async () => {
     const f = fixture();
     f.save("API_KEY", [PASEO_BOT_ID]);
@@ -143,24 +143,31 @@ describe("a secret kept to the Paseo bot", () => {
     ]);
   });
 
-  it("returns no value for a run that names one ref kept to the bot and one that needs the person, and the person's card stays open", async () => {
+  it("returns no value for a run that names one Vault ref and one missing ref, and the card stays open until the secret exists", async () => {
     const f = fixture();
-    f.save("API_KEY", [PASEO_BOT_ID]);
-    f.save("CARD_KEY", [], SECRET);
+    f.save("API_KEY", []);
     const scopes = [{ var: "A", ref: "API_KEY", program }, { var: "B", ref: "CARD_KEY", program }];
     expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent))).toMatchObject({ exit: 8, code: "approval_pending" });
     expect(f.cards).toHaveLength(1);
+    expect(f.cards[0]!.subtitle).toContain("not in the Vault yet");
     f.answer(0, "allow");
     await f.service.idle();
+    f.save("CARD_KEY", [], SECRET);
     expect(f.service.runCheck({ requests: scopes, asker: asker() }, agent)).toHaveLength(2);
   });
 
-  it("is also approved when it is kept to every bot, and the same record is read as was decided", async () => {
+  it("approves a secret with no bots or another bot, and reads the newest exact name", async () => {
     const f = fixture();
-    f.save("API_KEY", [], "sk-other-record-not-for-agents-0000");
-    f.save("API_KEY", "all");
-    f.save("API_KEY", [PASEO_BOT_ID], SECRET);
+    f.save("API_KEY", [PASEO_BOT_ID], "older-value-00000000000000");
+    clock += 1;
+    f.save("API_KEY", [], SECRET);
     expect(await f.release("API_KEY", asker())).toBe(SECRET);
+    expect(f.cards).toEqual([]);
+    clock += 1;
+    f.save("api-key", ["other-bot"], "value-other-bot-00000000000");
+    expect(await f.release("api-key", asker())).toBe("value-other-bot-00000000000");
+    expect(await f.release("API_KEY", asker())).toBe(SECRET);
+    expect(f.cards).toEqual([]);
   });
 
   it("covers an exec scope of its own program and variable only", async () => {
@@ -180,30 +187,29 @@ describe("a secret kept to the Paseo bot", () => {
   });
 });
 
-describe("a secret not kept to the Paseo bot, or missing from the Vault", () => {
+describe("a ref missing from the Vault", () => {
   it("opens one card with the agent, workspace, ref, purpose and program, and an allow writes a 24 hour grant, a history line and a plain notice", async () => {
     const f = fixture();
-    f.save("API_KEY", [], SECRET);
     const call = () => f.service.runCheck({ requests: [{ var: "TOKEN", ref: "API_KEY", program }], asker: asker({ agentId: "a1", purpose: "ship the site" }) }, agent);
     expect(refusal(call).message).toMatch(/pending.*card/);
     expect(refusal(call).exit).toBe(8);
     expect(f.cards).toHaveLength(1);
     const card = f.cards[0]!;
     expect(card).toMatchObject({ threadId: "thread-paseo", tool: "omb secrets request", allowLabel: "Allow 24h", title: "A Paseo agent asks to run a program with a secret" });
-    expect(card.subtitle).toBe("API_KEY · agent Deploy agent · ship the site\nWorkspace: /work/site\nOnly for /usr/bin/curl, in the variable TOKEN");
+    expect(card.subtitle).toBe("API_KEY · agent Deploy agent · ship the site\nWorkspace: /work/site\nOnly for /usr/bin/curl, in the variable TOKEN\nThe secret is not in the Vault yet, so the person was asked; it has to be added in OpenMausBot first.");
     expect(f.told).toEqual([]);
     f.answer(0, "allow");
     await f.service.idle();
     expect(f.told).toEqual([{ ref: "API_KEY", vault: "omb", program: "/usr/bin/curl", agentId: "a1" }]);
     expect(f.told[0]).not.toHaveProperty("by");
     expect(formatAutoApproval(f.history[0]!, 1)).toMatch(/^✓ Bạn đã duyệt\nAgent: Deploy agent\nWorkspace: \/work\/site\nViệc: cấp quyền chạy \/usr\/bin\/curl với bí mật API_KEY trong biến TOKEN, mục đích: ship the site, 24h · đã báo agent$/);
+    f.save("API_KEY", [], SECRET);
     expect(call()).toEqual([{ var: "TOKEN", ref: "API_KEY", value: SECRET }]);
     expect(f.service.admin.pending()).toEqual([]);
   });
 
   it("records a denial without a grant, tells nobody, and asks again on the next request", async () => {
     const f = fixture();
-    f.save("API_KEY", [], SECRET);
     expect((await refusalOf(() => f.release("API_KEY", asker({ agentId: "a1" })))).exit).toBe(8);
     f.answer(0, "deny");
     await f.service.idle();
@@ -230,7 +236,6 @@ describe("a secret not kept to the Paseo bot, or missing from the Vault", () => 
 
   it("opens the card again after a restart, and an admin answer closes it", () => {
     const f = fixture();
-    f.save("API_KEY", [], SECRET);
     f.service.request({ ref: "API_KEY", asker: asker() }, agent);
     const [row] = f.service.admin.pending();
     expect(row).toMatchObject({ ref: "API_KEY", count: 1 });
@@ -256,22 +261,27 @@ describe("grant states on the wire", () => {
     expect(f.cards).toEqual([]);
   });
 
-  it("spends a single-release allow on one release only", async () => {
+  it("spends a single-release allow on one release, then approves the Vault secret on the next call", async () => {
     const f = fixture();
     f.save("API_KEY", []);
     f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "allow", once: true });
     expect((await f.release("API_KEY", asker()))).toBe(SECRET);
-    expect((await refusalOf(() => f.release("API_KEY", asker()))).exit).toBe(8);
+    expect(f.service.admin.grants({ ref: "API_KEY" })).toEqual([]);
+    expect((await f.release("API_KEY", asker()))).toBe(SECRET);
+    expect(f.service.admin.grants({ ref: "API_KEY" })[0]).toMatchObject({ createdBy: "omb" });
+    expect((await refusalOf(() => f.release("MISSING", asker()))).exit).toBe(8);
   });
 
-  it("ends a ttl allow on time and keeps a persistent one", async () => {
+  it("ends a ttl allow on time, approves the Vault secret again, and keeps a persistent one", async () => {
     const f = fixture();
     f.save("API_KEY", []);
     f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "deploy", state: "allow", ttl: "12h" });
     f.service.admin.grant({ ref: "API_KEY", fingerprint: FP, purpose: "forever", state: "allow", persist: true });
     clock += 13 * 3_600_000;
-    expect((await refusalOf(() => f.release("API_KEY", asker()))).exit).toBe(8);
+    expect((await f.release("API_KEY", asker()))).toBe(SECRET);
+    expect(f.service.admin.grants({ ref: "API_KEY" }).some((grant) => grant.createdBy === "omb" && grant.purpose === "deploy")).toBe(true);
     expect((await f.release("API_KEY", asker({ purpose: "forever" })))).toBe(SECRET);
+    expect((await refusalOf(() => f.release("MISSING", asker()))).exit).toBe(8);
   });
 
   it("judges a restricted allow on the host of the URL, never on the host the caller claims", async () => {
@@ -287,13 +297,12 @@ describe("grant states on the wire", () => {
   it("answers a run only when every scope is covered, and spends no single-release allow when one is not", () => {
     const f = fixture();
     f.save("A", [], "value-of-a-0000000000000");
-    f.save("B", [], "value-of-b-0000000000000");
     const exec = (env: string) => ({ path: program.path, hash: program.hash, env });
     f.service.admin.grant({ ref: "A", fingerprint: FP, purpose: "deploy", state: "allow", once: true, exec: exec("TOKEN_A") });
     const scopes = [{ var: "TOKEN_A", ref: "A", program }, { var: "TOKEN_B", ref: "B", program }];
     expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent)).exit).toBe(8);
     expect(f.service.admin.grants({ ref: "A" })).toHaveLength(1);
-    f.service.admin.grant({ ref: "B", fingerprint: FP, purpose: "deploy", state: "allow", persist: true, exec: exec("TOKEN_B") });
+    f.save("B", [], "value-of-b-0000000000000");
     expect(f.service.runCheck({ requests: scopes, asker: asker() }, agent).map((one) => one.ref)).toEqual(["A", "B"]);
     expect(f.service.admin.grants({ ref: "A" })).toEqual([]);
   });
@@ -328,7 +337,6 @@ describe("grant states on the wire", () => {
 describe("requests are coalesced and rate limited", () => {
   it("files repeats as one request with a count and answers 9 after 12 a minute, for five minutes", async () => {
     const f = fixture();
-    f.save("API_KEY", []);
     for (let i = 0; i < RATE_LIMIT; i += 1) expect((await refusalOf(() => f.release("API_KEY", asker()))).exit).toBe(8);
     expect(f.service.admin.pending()).toHaveLength(1);
     expect(f.service.admin.pending()[0]!.count).toBe(RATE_LIMIT);
@@ -344,7 +352,7 @@ describe("requests are coalesced and rate limited", () => {
 
   it("counts one run-check call once, however many of its variables are uncovered", () => {
     const f = fixture();
-    const scopes = Array.from({ length: 16 }, (_, i) => (f.save(`KEY_${i}`, []), { var: `VAR_${i}`, ref: `KEY_${i}`, program }));
+    const scopes = Array.from({ length: 16 }, (_, i) => ({ var: `VAR_${i}`, ref: `KEY_${i}`, program }));
     expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent))).toMatchObject({ exit: 8, code: "approval_pending" });
     expect(f.service.admin.pending()).toHaveLength(16);
     for (let i = 1; i < RATE_LIMIT; i += 1) expect(refusal(() => f.service.runCheck({ requests: scopes, asker: asker() }, agent)).exit).toBe(8);
@@ -391,12 +399,12 @@ describe("the audit ledger comes before the value", () => {
 describe("no value is written anywhere but the Vault", () => {
   it("is absent from cards, history, notices, logs, grants, requests and the ledger across every path", async () => {
     const f = fixture();
-    f.save("AUTO_KEY", [PASEO_BOT_ID], SECRET);
-    f.save("CARD_KEY", [], SECRET);
+    f.save("AUTO_KEY", [], SECRET);
     await f.release("AUTO_KEY", asker({ agentId: "a1", purpose: "auto" }));
     (await refusalOf(() => f.release("CARD_KEY", asker({ agentId: "a1" }))));
     f.answer(0, "allow");
     await f.service.idle();
+    f.save("CARD_KEY", ["other-bot"], SECRET);
     await f.release("CARD_KEY", asker());
     f.service.admin.grant({ ref: "CARD_KEY", fingerprint: FP, purpose: "deploy", state: "allow", persist: true, exec: { ...program, env: "T" } });
     expect(f.service.runCheck({ requests: [{ var: "T", ref: "CARD_KEY", program }], asker: asker() }, agent)).toHaveLength(1);
@@ -435,14 +443,17 @@ describe("the Vault side", () => {
     expect(f.service.admin.reveal("API_KEY").value).toBe("another-value-0000000");
   });
 
-  it("keeps a new secret to no bot unless asked, so a request for it opens a card", async () => {
+  it("stores a new secret with no bots, and still approves it", async () => {
     const f = fixture();
     f.service.admin.set({ ref: "API_KEY", value: SECRET, profile: { allowedHosts: HOSTS } });
     expect(f.vault.listSecrets({ person: null, team: true })[0]!.bots).toEqual([]);
-    (await refusalOf(() => f.release("API_KEY", asker())));
-    expect(f.cards).toHaveLength(1);
+    expect(await f.release("API_KEY", asker())).toBe(SECRET);
+    expect(f.cards).toEqual([]);
+    expect(f.service.admin.grants({ ref: "API_KEY" })[0]).toMatchObject({ createdBy: "omb" });
     expect(refusal(() => f.service.admin.set({ ref: "OTHER", value: SECRET, bots: ["nobody"] })).exit).toBe(2);
     f.service.admin.set({ ref: "OTHER", value: SECRET, bots: ["bot-1"] });
+    expect(f.service.runCheck({ requests: [{ var: "TOKEN", ref: "OTHER", program }], asker: asker() }, agent)).toEqual([{ var: "TOKEN", ref: "OTHER", value: SECRET }]);
+    expect(f.cards).toEqual([]);
   });
 
   it("refuses a name that is not a ref, a profile that holds the value, and an unknown profile field", () => {
@@ -461,13 +472,15 @@ describe("the Vault side", () => {
     f.service.admin.rotate({ ref: "API_KEY", value: "rotated-value-000000000" });
     expect(f.service.describe("API_KEY").profile).toEqual({ description: "Billing API", allowedHosts: HOSTS });
     expect((await f.release("API_KEY", asker()))).toBe("rotated-value-000000000");
-    f.service.request({ ref: "API_KEY", asker: asker({ purpose: "other" }) }, agent);
-    expect(f.service.admin.remove("API_KEY")).toMatchObject({ deleted: true, grantsRemoved: 1 });
+    expect(f.service.request({ ref: "API_KEY", asker: asker({ purpose: "other" }) }, agent)).toEqual({ status: "granted" });
+    expect(f.service.admin.pending()).toEqual([]);
+    expect(f.service.admin.remove("API_KEY")).toMatchObject({ deleted: true, grantsRemoved: 2 });
     expect(f.service.admin.pending()).toEqual([]);
     expect(refusal(() => f.service.admin.rotate({ ref: "API_KEY", value: SECRET })).exit).toBe(3);
     expect(refusal(() => f.service.admin.remove("API_KEY")).exit).toBe(3);
     f.service.admin.set({ ref: "API_KEY", value: SECRET, profile: { allowedHosts: HOSTS } });
-    expect((await refusalOf(() => f.release("API_KEY", asker()))).exit).toBe(8);
+    expect(await f.release("API_KEY", asker())).toBe(SECRET);
+    expect((await refusalOf(() => f.release("MISSING", asker()))).exit).toBe(8);
   });
 
   it("replaces the whole profile with an empty one sent to rotate or a forced set, clearing the allowed hosts", () => {
@@ -484,7 +497,6 @@ describe("the Vault side", () => {
 describe("answers from the person", () => {
   it("names a request by id when several match, refuses an unknown state and an unknown request, and writes a once grant", () => {
     const f = fixture();
-    f.save("API_KEY", []);
     f.service.request({ ref: "API_KEY", asker: asker({ purpose: "one" }) }, agent);
     f.service.request({ ref: "API_KEY", asker: asker({ purpose: "two" }) }, agent);
     expect(refusal(() => f.service.admin.approve({ ref: "API_KEY", state: "ttl" })).exit).toBe(2);
@@ -535,9 +547,8 @@ describe("with the real notifier", () => {
 
   it("never lets a named agent that the daemon does not list steer the notice or the card", async () => {
     const f = fixture();
-    f.save("API_KEY", []);
     (await refusalOf(() => f.release("API_KEY", asker({ agentId: "ghost", agentLabel: "claude", cwd: "/claimed" }))));
-    expect(f.cards[0]!.subtitle).toBe("API_KEY · agent claude · deploy\nWorkspace: /claimed");
+    expect(f.cards[0]!.subtitle).toBe("API_KEY · agent claude · deploy\nWorkspace: /claimed\nThe secret is not in the Vault yet, so the person was asked; it has to be added in OpenMausBot first.");
     f.answer(0, "allow");
     await f.service.idle();
     expect(f.told).toEqual([]);
