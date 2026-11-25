@@ -109,9 +109,9 @@ export function createSecretsService(deps: SecretsDeps) {
     background.add(running);
   };
 
-  /** The one record a ref names: the one kept to the Paseo bot first, else the newest, so the decision and the read agree. */
+  /** The newest secret with this exact name. A valid ref is scoped, so the read and the auto-approval agree. */
   function lookup(ref: string): { id: string; scoped: boolean; updatedAt: number } | null {
-    const scoped = paseoScopedSecrets(deps.vault, PASEO_BOT_ID).get(ref);
+    const scoped = paseoScopedSecrets(deps.vault).get(ref);
     if (scoped) return { id: scoped.id, scoped: true, updatedAt: scoped.updatedAt };
     const found = deps.vault.listSecrets(TEAM_READER).filter((secret) => secret.name === ref).sort((a, b) => b.updatedAt - a.updatedAt)[0];
     return found ? { id: found.id, scoped: false, updatedAt: found.updatedAt } : null;
@@ -222,7 +222,7 @@ export function createSecretsService(deps: SecretsDeps) {
     return { granted, request };
   }
 
-  /** Decides one scope. A scope no grant covers files a request, and either grants it at once (a secret kept to the Paseo bot) or opens a card. A release call that was granted at once goes on with the new grant; a plain request only reports it. */
+  /** Decides one scope. A scope no grant covers files a request, and either grants it at once (a valid secret in the Vault) or opens a card. A release call that was granted at once goes on with the new grant; a plain request only reports it. */
   function evaluate(scope: SecretScope, asker: Asker, caller: Caller, mode: "release" | "request", admit: () => ReturnType<RateLimiter["admit"]> = () => limiter.admit(scope.fingerprint)): Eval {
     const found = grants.match(scope);
     if (found.kind === "block") {

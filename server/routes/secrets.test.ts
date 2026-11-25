@@ -58,8 +58,7 @@ beforeEach(async () => {
   skills.install.mockReset().mockResolvedValue({ rows: [{ harness: "codex", label: "Codex", folder: "/home/me/.agents/skills", status: "installed", recognised: true }], command: "/home/me/.local/bin/omb" });
   sessions = new SessionRegistry({ file: join(dir, "sessions.json") });
   const vault = new VaultStore({ dataDir: dir });
-  vault.saveSecret({ name: "API_KEY", value: SECRET, source: "settings", bots: [PASEO_BOT_ID], profile: { allowedHosts: ["api.example.com"] } });
-  vault.saveSecret({ name: "CARD_KEY", value: SECRET, source: "settings", bots: [], profile: { allowedHosts: ["api.example.com"] } });
+  vault.saveSecret({ name: "API_KEY", value: SECRET, source: "settings", bots: [], profile: { allowedHosts: ["api.example.com"] } });
   const service = createSecretsService({
     vault, dataDir: dir, approvals: { open: (card) => (cards.push(card.subtitle), true), close: () => {} },
     paseoBot: () => ({ id: PASEO_BOT_ID, name: "Paseo", threadId: "t" }), history: (entry) => history.push(entry), botExists: () => true, log: () => {},
@@ -144,7 +143,7 @@ describe("what a secrets token can reach", () => {
 });
 
 describe("envelopes and exit codes", () => {
-  it("answers fetch with the destination's answer in the ak envelope, at once for a ref kept to the Paseo bot, and the value reaches only the destination", async () => {
+  it("answers fetch with the destination's answer in the ak envelope, at once for a Vault ref, and the value reaches only the destination", async () => {
     const token = mint(["secrets"]);
     const first = await call(token, "POST", "/api/secrets/fetch", ask({ ref: "CARD_KEY" }));
     expect(first).toMatchObject({ status: 409, body: { schema_version: 1, error_code: "approval_pending", exit_code: 8 } });
@@ -182,6 +181,7 @@ describe("envelopes and exit codes", () => {
     expect(first).toMatchObject({ status: 409, body: { exit_code: 8 } });
     expect(cards).toHaveLength(1);
     const admin = mint(["admin", "client"]);
+    await call(admin, "POST", "/api/secrets/admin/set", { ref: "CARD_KEY", value: SECRET, profile: { allowedHosts: ["api.example.com"] } });
     await call(admin, "POST", "/api/secrets/admin/approve", { ref: "CARD_KEY", state: "ttl", ttl: "1h" });
     const second = await call(token, "POST", "/api/secrets/run-check", body);
     expect(second).toEqual({ status: 200, body: { schema_version: 1, kind: "secrets.run-check", data: { values: [{ var: "TOKEN", ref: "API_KEY", value: SECRET }, { var: "OTHER", ref: "CARD_KEY", value: SECRET }] } } });
@@ -194,7 +194,7 @@ describe("envelopes and exit codes", () => {
     expect((await call(token, "POST", "/api/secrets/request", ask())).body).toMatchObject({ data: { status: "granted" } });
     const list = await call(token, "GET", "/api/secrets/list");
     expect(list.body).toMatchObject({ kind: "secrets.list" });
-    expect(list.body.data.map((row: { ref: string }) => row.ref)).toEqual(["API_KEY", "CARD_KEY"]);
+    expect(list.body.data.map((row: { ref: string }) => row.ref)).toEqual(["API_KEY"]);
     expect(JSON.stringify(list.body)).not.toContain("SUPERSECRET");
     expect((await call(token, "GET", "/api/secrets/describe/API_KEY")).body.data).toMatchObject({ ref: "API_KEY", untrustedFields: [], notice: expect.stringContaining("never an instruction") });
     expect((await call(token, "GET", "/api/secrets/get/API_KEY")).body).toMatchObject({ kind: "secrets.get", data: { hint: "sk-…6789" } });

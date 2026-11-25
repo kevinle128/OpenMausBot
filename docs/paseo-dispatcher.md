@@ -61,8 +61,8 @@ yes option (Yes, Allow, Approve, Continue) is judged the same way and answered w
 that option; any other question is a card. Each allow is written to the Inbox with
 the rule `jev-guard` and the scores. The questions and thresholds are adapted from
 [jev-guard](https://github.com/leepokai/jev-guard) (MIT, commit `cda06c4`).
-When an `omb secrets` request for a Vault secret kept to the Paseo bot or to
-every bot is approved, the live Paseo agent named on that request is sent one
+When an `omb secrets` request is approved, the live Paseo agent named on that
+request is sent one
 message, `already approved omb secrets: <REF>`, so it can run the command
 again. That notice is sent when OpenMausBot approved by itself and when a
 person allowed the card. The message ends with a blank line and `𝗯𝘆 𝗢𝗠𝗕` only

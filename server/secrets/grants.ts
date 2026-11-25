@@ -15,7 +15,7 @@ const grantSchema = z.object({
   purpose: z.string(),
   state: z.enum(["allow", "block"]),
   createdAt: z.number(),
-  /** `omb`: allowed by OpenMausBot's own rule for a secret kept to the Paseo bot; `card`: the person's answer; `admin`: `grant`. */
+  /** `omb`: allowed by OpenMausBot's own rule for a secret in the Vault; `card`: the person's answer; `admin`: `grant`. */
   createdBy: z.enum(["omb", "card", "admin"]),
   /** Absent: it never ends. */
   expiresAt: z.number().optional(),
