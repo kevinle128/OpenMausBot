@@ -564,6 +564,11 @@ export function createSecretsService(deps: SecretsDeps) {
         return { ref, value };
       },
 
+      /** Writes an audit row for a Vault UI reveal by secret id (arbitrary name). */
+      auditReveal(name: string, callerId = "admin"): void {
+        audit({ id: callerId, source: "desktop" }, { ref: name, project: "", fingerprint: "", purpose: "" }, {}, "allow", "", "admin:reveal");
+      },
+
       grant(input: {
         ref: string; fingerprint: string; project?: string; purpose?: string; state: "allow" | "block"; ttl?: string; persist?: boolean; once?: boolean;
         allowHosts?: string[]; exec?: { path: string; env: string; hash: string }; agentLabel?: string;

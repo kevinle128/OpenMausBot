@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseEnv } from "./vault";
+const apiMock = vi.hoisted(() => vi.fn());
+vi.mock("@/state/store", () => ({ api: apiMock }));
+
+const { parseEnv, revealSecret } = await import("./vault");
+
+beforeEach(() => { apiMock.mockReset(); });
 
 describe("a pasted .env file", () => {
   it("keeps each NAME=value line, dropping export, quotes, comments and empty values; a later line wins", () => {
@@ -19,5 +24,18 @@ describe("a pasted .env file", () => {
       { name: "SINGLE", value: "a # b" },
       { name: "SPACED", value: "fake-3" },
     ]);
+  });
+});
+
+describe("revealSecret", () => {
+  it("posts to the id-scoped vault reveal route and returns the secret value", async () => {
+    apiMock.mockResolvedValueOnce({ value: "sk_live_fake" });
+    await expect(revealSecret("sec/1")).resolves.toBe("sk_live_fake");
+    expect(apiMock).toHaveBeenCalledWith("/api/vault/secrets/sec%2F1/reveal", { method: "POST", body: "{}" });
+  });
+
+  it("throws when the server answer has no string value", async () => {
+    apiMock.mockResolvedValueOnce({});
+    await expect(revealSecret("s1")).rejects.toThrow("Could not read secret");
   });
 });

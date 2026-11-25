@@ -1,5 +1,6 @@
-// No answer ever carries a saved value: a saved secret is only ever replaced. A Team Cloud member sees and deletes only
-// the secrets of their own; an admin, only the team's and their own.
+// Listing, adding, changing and deleting never return a saved value; only POST /api/vault/secrets/:id/reveal returns
+// one, for an owner or admin. A Team Cloud member sees and deletes only the secrets of their own; an admin, only the
+// team's and their own.
 import { parseAllowedHosts } from "../../shared/host-name.ts";
 import { SECRET_VALUE_MAX_BYTES, VAULT_SECRET_NAME_MAX, type LinkedSecret, type SecretProfile } from "../../shared/vault.ts";
 import type { RequestAuth } from "../request-auth.ts";
@@ -10,13 +11,15 @@ import { PASS, type RouteHandler } from "./table.ts";
 
 export interface VaultRouteDeps {
   logins: Pick<LoginRouteDeps, "list" | "botExists" | "onePassword" | "bitwarden">;
-  secrets: Pick<VaultStore, "listSecrets" | "saveSecret" | "receiveSecret" | "updateSecret" | "removeSecret">;
+  secrets: Pick<VaultStore, "listSecrets" | "secret" | "saveSecret" | "receiveSecret" | "updateSecret" | "removeSecret">;
   /** A linked password manager's secrets, listed beside the saved ones and changed only in the manager. */
   linked?: () => LinkedSecret[];
   /** Which MCP servers lose their key when a secret is deleted. */
   keys?: Pick<McpKeys, "usedBy">;
   /** Whose secrets this caller sees; absent: the team's, as an admin's. */
   reader?(auth: RequestAuth): VaultReader;
+  /** Called before returning a secret value on POST /api/vault/secrets/:id/reveal; throwing aborts the reveal. */
+  onReveal?(secret: { id: string; name: string }, auth: RequestAuth): void;
 }
 
 const SECRETS = "/api/vault/secrets";
@@ -89,8 +92,20 @@ export function createVaultRoutes(deps: VaultRouteDeps): RouteHandler {
       const received = deps.secrets.receiveSecret({ ...fields, id: body.id, source: body.source === "card" ? "card" : "settings", ...(body.refOnly === true ? { refOnly: true } : {}) });
       return received ? json(res, 201, { secret: received }) : json(res, 404, { error: "no such secret" });
     }
-    const id = path.slice(`${SECRETS}/`.length);
+    const reveal = path.endsWith("/reveal");
+    const id = reveal ? path.slice(`${SECRETS}/`.length, -"/reveal".length) : path.slice(`${SECRETS}/`.length);
     if (!ID.test(id) || !readable(id)) return json(res, 404, { error: "no such secret" });
+    if (reveal) {
+      if (method !== "POST") return json(res, 405, { error: "method not allowed" });
+      const stored = deps.secrets.secret(id);
+      if (!stored) return json(res, 404, { error: "no such secret" });
+      try {
+        deps.onReveal?.({ id: stored.id, name: stored.name }, auth);
+      } catch {
+        return json(res, 503, { error: "Could not record the audit entry; nothing was revealed." });
+      }
+      return json(res, 200, { value: stored.value });
+    }
     if (method === "DELETE") {
       if (!deps.secrets.removeSecret(id)) return json(res, 404, { error: "no such secret" });
       const keysOff = deps.keys?.usedBy(id) ?? [];

@@ -3,7 +3,7 @@ import type { LinkedSecret, VaultChoice, VaultSecret } from "../../shared/vault"
 import type { ComputerHelpRef } from "../../shared/wire";
 import { api } from "@/state/store";
 
-// A saved value is sent once and never comes back: every answer here is names, sites and who may use them.
+// Most routes return names, sites and who may use them; only revealSecret fetches a saved value for an owner/admin.
 
 export interface VaultList {
   logins: LoginSummary[];
@@ -35,11 +35,11 @@ export async function deleteSecret(id: string): Promise<string[]> {
   return (await api<{ keysOff?: string[] }>(`/api/vault/secrets/${encodeURIComponent(id)}`, { method: "DELETE" })).keysOff ?? [];
 }
 
-/** Reveals one Vault secret for an owner/admin (writes an audit row server-side). */
-export async function revealSecret(ref: string): Promise<string> {
-  const res = await api<{ data?: { value?: string } }>("/api/secrets/admin/reveal", { method: "POST", body: JSON.stringify({ ref }) });
-  if (typeof res.data?.value !== "string") throw new Error("Could not read secret");
-  return res.data.value;
+/** Reveals one Vault secret by id for an owner/admin (writes an audit row server-side). */
+export async function revealSecret(id: string): Promise<string> {
+  const res = await api<{ value?: string }>(`/api/vault/secrets/${encodeURIComponent(id)}/reveal`, { method: "POST", body: "{}" });
+  if (typeof res.value !== "string") throw new Error("Could not read secret");
+  return res.value;
 }
 
 /** The NAME=value lines of a pasted .env file. `export`, quotes and trailing comments are dropped; a later line with the

@@ -252,7 +252,7 @@ function interpret(status, json) {
 
 /** No redirects, no retries: a repeated POST could spend a single-release grant or trip the rate limit. */
 async function call(d, creds, method, path, body, timeoutMs = 30_000) {
-  const headers = { authorization: `Bearer ${creds.token}`, accept: "application/json" };
+  const headers = { ...(creds.token ? { authorization: `Bearer ${creds.token}` } : {}), accept: "application/json" };
   let payload;
   if (body !== undefined) {
     payload = JSON.stringify(body);
@@ -891,22 +891,77 @@ async function cmdDescribe(ctx, { positionals }, kind) {
   return EXIT.done;
 }
 
+function isLoopbackOrigin(origin) {
+  const host = new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host === "::1" || host.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
+function loadServerOrigin(d) {
+  if (d.env.OMB_SERVER) return checkedOrigin(d.env.OMB_SERVER);
+  const dir = configDir(d.env, d.home);
+  let config;
+  try {
+    config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+  } catch {
+    throw new CliError(EXIT.unreachable, "this machine is not paired with an OpenMausBot server. Pair first or set OMB_SERVER", "store_unavailable");
+  }
+  if (typeof config?.server !== "string" || !allowedServerOrigin(config.server)) {
+    throw new CliError(EXIT.unreachable, `${join(dir, "config.json")} does not hold a usable server address: pair again`, "store_unavailable");
+  }
+  return config.server;
+}
+
+/** Fail-closed ancestor check: refuses on Windows, on any agent match (even if hashing fails), or if the walk does not reach PID 1. */
+async function assertHumanTerminal(d) {
+  if (!d.stdinIsTTY || !d.stdoutIsTTY) {
+    throw new CliError(EXIT.refused, "revealing a secret requires an interactive terminal (run it yourself, not through a pipe or agent)", "refused");
+  }
+  if (d.platform === "win32") {
+    throw new CliError(EXIT.refused, "revealing a secret is not supported on Windows because the parent process tree cannot be verified", "refused");
+  }
+  const useProc = d.platform === "linux";
+  const seen = new Set();
+  let pid = d.ppid;
+  if (!Number.isInteger(pid) || pid < 1) {
+    throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
+  }
+  for (let depth = 0; depth < MAX_WALK; depth++) {
+    if (pid === 1) return;
+    if (!Number.isInteger(pid) || pid < 1 || seen.has(pid)) {
+      throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
+    }
+    seen.add(pid);
+    const info = useProc ? procfsDescribe(d.procRoot, pid) : await psDescribe(d.ps, pid);
+    if (!info) {
+      throw new CliError(EXIT.refused, "could not verify the parent process tree; revealing a secret requires a verified interactive terminal", "refused");
+    }
+    if (info.path && await matchAgent(info.path, info.args)) {
+      throw new CliError(EXIT.refused, "A value is shown to a person at a terminal, never to an agent.", "refused");
+    }
+    pid = info.ppid;
+  }
+  if (pid !== 1) {
+    throw new CliError(EXIT.refused, "could not verify the parent process tree (process chain too deep)", "refused");
+  }
+}
+
 async function cmdReveal(ctx, { positionals }) {
   if (positionals.length !== 1) throw invalid("usage: omb secrets get <ref> --reveal");
   const ref = checkRef(positionals[0]);
   const { d } = ctx;
-  if (!d.stdinIsTTY || !d.stdoutIsTTY) {
-    throw new CliError(EXIT.refused, "revealing a secret requires an interactive terminal (run it yourself, not through a pipe or agent)", "refused");
+  await assertHumanTerminal(d);
+  const server = loadServerOrigin(d);
+  const adminToken = (d.env.OMB_ADMIN_TOKEN ?? "").trim();
+  if (adminToken && /[\s\0-\x1f\x7f]/.test(adminToken)) throw invalid("OMB_ADMIN_TOKEN holds invalid characters");
+  if (!adminToken && !isLoopbackOrigin(server)) {
+    throw new CliError(EXIT.refused, "revealing a secret on a remote server needs an admin token (scope 'admin'). Set OMB_ADMIN_TOKEN (from: openmausbot token create NAME --scope admin) or copy the secret in OpenMausBot → Settings → Vault.", "refused");
   }
-  const agent = await findAgent({ platform: d.platform, startPid: d.ppid, ps: d.ps, procRoot: d.procRoot });
-  if (agent) throw new CliError(EXIT.refused, "A value is shown to a person at a terminal, never to an agent.", "refused");
-  const creds = await loadCredentials(d);
   let envelope;
   try {
-    envelope = await call(d, creds, "POST", "/api/secrets/admin/reveal", { ref });
+    envelope = await call(d, { server, token: adminToken }, "POST", "/api/secrets/admin/reveal", { ref });
   } catch (error) {
     if (error instanceof CliError && error.exitCode === EXIT.refused) {
-      throw new CliError(EXIT.refused, "this machine's token cannot reveal secrets (needs scope 'admin'). Pair with an admin token or copy the secret in OpenMausBot → Settings → Vault.", "refused");
+      throw new CliError(EXIT.refused, "the server refused reveal (needs scope 'admin'). Pass an admin token in OMB_ADMIN_TOKEN (from: openmausbot token create NAME --scope admin) or copy the secret in OpenMausBot → Settings → Vault.", "refused");
     }
     throw error;
   }
@@ -1298,7 +1353,7 @@ const HELP = `omb ${VERSION}: use the OpenMausBot Vault from an agent machine
   omb hook claude-pretooluse                    Claude Code PreToolUse hook (reads stdin): denies secret placeholders
 
 set, rotate, delete, grant, revoke and approve are done by the person in the OpenMausBot app.
-get --reveal is for a person at an interactive terminal with an admin token (never for an agent).
+get --reveal is for a person at an interactive terminal (local server, or set OMB_ADMIN_TOKEN; never for an agent).
 Exit codes: 0 done, 2 invalid, 3 no such secret, 4 exists, 5 server or store unreachable, 6 refused,
 8 approval pending, 9 rate limited. skill install: 5 a write failed, 6 a skill folder is a symbolic link. Flags: --json, -q/--quiet.
 `;

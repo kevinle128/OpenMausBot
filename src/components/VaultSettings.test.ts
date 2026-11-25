@@ -3,13 +3,14 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ api: vi.fn(), dispatch: vi.fn(), admin: true as boolean | null, config: null as { cloudHome?: boolean; team?: { id: string; name: string } } | null }));
+const fixture = vi.hoisted(() => ({ api: vi.fn(), dispatch: vi.fn(), copyText: vi.fn(), admin: true as boolean | null, config: null as { cloudHome?: boolean; team?: { id: string; name: string } } | null }));
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   api: fixture.api,
   useStore: () => ({ state: { bots: [{ id: "pepper", name: "Pepper" }, { id: "quill", name: "Quill" }], config: fixture.config }, dispatch: fixture.dispatch }),
 }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.admin }));
+vi.mock("@/lib/copy-text", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/copy-text")>(), copyText: fixture.copyText }));
 const { VaultSettings } = await import("./VaultSettings");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,6 +26,8 @@ const OFF = { connected: false };
 beforeEach(() => {
   fixture.api.mockReset();
   fixture.dispatch.mockReset();
+  fixture.copyText.mockReset();
+  fixture.copyText.mockResolvedValue("copied");
   fixture.admin = true;
   fixture.config = null;
   host = document.createElement("div");
@@ -460,6 +463,40 @@ describe("Settings → Vault: keys and secrets", () => {
     expect(host.querySelector("[data-vault-keys]")!.textContent).toContain("AI and app keys");
     await act(async () => host.querySelector<HTMLButtonElement>("[data-vault-keys] button")!.click());
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+  });
+
+  it("copies a saved secret by id via copyText without rendering its value, hides Copy for linked secrets and Team Cloud members, and handles failures", async () => {
+    fixture.api.mockResolvedValueOnce(listed()).mockResolvedValueOnce({ value: "sk_live_fake_copied_value" });
+    await render();
+    expect(button("Copy Notion token"), "linked secret has no Copy button").toBeUndefined();
+    await click("Copy Stripe secret key");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(fixture.api).toHaveBeenNthCalledWith(2, "/api/vault/secrets/s1/reveal", { method: "POST", body: "{}" });
+    expect(fixture.copyText).toHaveBeenCalledWith("sk_live_fake_copied_value");
+    expect(host.innerHTML).not.toContain("sk_live_fake_copied_value");
+    expect(button("Copied Stripe secret key")).toBeDefined();
+
+    // Clipboard failure shows copyFailed alert
+    fixture.api.mockResolvedValueOnce({ value: "sk_live_second" });
+    fixture.copyText.mockResolvedValueOnce("failed");
+    await click("Copied Stripe secret key");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(host.querySelector("[role=alert]")?.textContent).toBe("Could not copy");
+
+    // Reveal API failure shows error without setting copied state
+    fixture.api.mockRejectedValueOnce(new Error("forbidden"));
+    await click("Copied Stripe secret key");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(host.querySelector("[role=alert]")?.textContent).toBe("forbidden");
+
+    // Team Cloud member does not see Copy button
+    act(() => root.unmount());
+    root = createRoot(host);
+    fixture.admin = false;
+    fixture.config = { team: { id: "acme", name: "Acme" } };
+    fixture.api.mockResolvedValueOnce({ logins: [], secrets: [SAVED], onePassword: OFF });
+    await render();
+    expect(button("Copy Stripe secret key")).toBeUndefined();
   });
 });
 

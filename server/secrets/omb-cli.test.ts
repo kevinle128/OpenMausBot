@@ -124,10 +124,70 @@ describe("arguments", () => {
     expect(seen.requests).toHaveLength(1);
     expect(seen.requests[0]!.path).toBe("/api/secrets/admin/reveal");
     expect(seen.requests[0]!.body).toEqual({ ref: "REF" });
+    expect(seen.requests[0]!.headers.authorization).toBeUndefined();
 
     const asJson = await run(["secrets", "get", "REF", "--reveal", "--json"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
     expect(asJson.code).toBe(EXIT.done);
     expect(JSON.parse(asJson.out)).toEqual({ schema_version: 1, kind: "secrets.get", data: { ref: "REF", value: "top-secret-value" } });
+  });
+
+  it("sends OMB_ADMIN_TOKEN on get --reveal without using the paired secrets token", async () => {
+    const seen = await stub((req) => {
+      if (req.path === "/api/secrets/admin/reveal" && req.method === "POST") return { json: envelope("secrets.get", { ref: "REF", value: "admin-secret" }) };
+      return { status: 404, json: { error: "not found" } };
+    });
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      env: { OMB_CONFIG_DIR: join(home, "config"), OMB_TOKEN_STORE: "file", OMB_ADMIN_TOKEN: "omb_sess_ADMINTOKEN1234567890" },
+    });
+    expect(result.code).toBe(EXIT.done);
+    expect(result.out).toBe("admin-secret\n");
+    expect(seen.requests[0]!.headers.authorization).toBe("Bearer omb_sess_ADMINTOKEN1234567890");
+  });
+
+  it("refuses get --reveal on a remote server without OMB_ADMIN_TOKEN before making a request", async () => {
+    const dir = join(home, "config");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ schema_version: 1, server: "https://maus.example.com", scope: "secrets", store: "file" }));
+    writeFileSync(join(dir, "token"), `${TOKEN}\n`, { mode: 0o600 });
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    let fetched = 0;
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      fetch: (async () => { fetched++; throw new Error("should not fetch"); }) as unknown as typeof fetch,
+    });
+    expect(result.code).toBe(EXIT.refused);
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
+    expect(fetched).toBe(0);
+  });
+
+  it("fails closed on get --reveal for Windows, unreadable/deep process trees, and unlinked agent binaries", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    // Windows
+    const win = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "win32", ppid: 100 });
+    expect(win.code).toBe(EXIT.refused);
+    // Unreadable ps
+    const badPs = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: async () => { throw new Error("ps failed"); },
+    });
+    expect(badPs.code).toBe(EXIT.refused);
+    // Process chain exceeding MAX_WALK (40)
+    const deepTable: Record<number, { ppid: number; comm: string }> = {};
+    for (let pid = 2; pid <= 60; pid++) deepTable[pid] = { ppid: pid - 1, comm: "/bin/zsh" };
+    const deep = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 60, ps: fakePs(deepTable),
+    });
+    expect(deep.code).toBe(EXIT.refused);
+    // Unlinked/nonexistent agent binary (hashFile would fail, but matchAgent still refuses)
+    const unlinkedPs = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: join(home, "claude-deleted-binary", "claude") } });
+    const unlinked = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: unlinkedPs,
+    });
+    expect(unlinked.code).toBe(EXIT.refused);
+    expect(seen.requests).toHaveLength(0);
   });
 
   it("explains the admin scope requirement when the server refuses reveal with 403", async () => {
@@ -137,6 +197,7 @@ describe("arguments", () => {
     const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
     expect(result.code).toBe(EXIT.refused);
     expect(result.err).toContain("scope 'admin'");
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
   });
 });
 

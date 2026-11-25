@@ -28,7 +28,7 @@ afterEach(async () => {
 });
 
 /** `team`: a Team Cloud, where each call says who makes it (`as`: "admin" or "member", and their person key). */
-async function serve(onePasswordToken: string | null = null, team = false) {
+async function serve(onePasswordToken: string | null = null, team = false, onReveal?: (secret: { id: string; name: string }) => void) {
   const dir = mkdtempSync(join(tmpdir(), "omb-vault-routes-"));
   dirs.push(dir);
   const store = new VaultStore({ dataDir: dir });
@@ -40,7 +40,7 @@ async function serve(onePasswordToken: string | null = null, team = false) {
   const botLogins = new BotLogins(store, onePassword);
   const logins = botLogins.routes((id) => ["pepper", "quill"].includes(id));
   const readers = createVaultReaders({ team, audienceOf: () => "team", personOf: (auth) => auth.session.id });
-  const routes = [createLoginRoutes(logins), createVaultRoutes({ logins, secrets: store, linked: () => botLogins.linkedSecrets(), keys: { usedBy: (item) => store.serversUsingKey(item) }, reader: readers.viewer })];
+  const routes = [createLoginRoutes(logins), createVaultRoutes({ logins, secrets: store, linked: () => botLogins.linkedSecrets(), keys: { usedBy: (item) => store.serversUsingKey(item) }, reader: readers.viewer, ...(onReveal ? { onReveal } : {}) })];
   const answers: string[] = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -178,5 +178,42 @@ describe("the Vault routes", () => {
     await call("POST", "/api/vault/secrets", { name: "Stripe secret key", value: VALUE });
     expect((await call("GET", "/api/vault", undefined, "application/json", "member:p_phone000000000000000000")).body).toEqual({ logins: [], secrets: [], onePassword: { connected: false } });
     expect((await call("GET", "/api/vault")).body.secrets).toHaveLength(1);
+  });
+
+  it("reveals a saved secret by id for an admin (supporting spaces, leading underscores, duplicate names, and Team Cloud) while auditing and blocking members", async () => {
+    const revealed: Array<{ id: string; name: string }> = [];
+    const { store, call } = await serve("ops_fake-route-token", false, (secret) => { revealed.push(secret); });
+    const first = (await call("POST", "/api/vault/secrets", { name: "Stripe secret key", value: VALUE, bots: ["pepper"] })).body.secret;
+    const second = (await call("POST", "/api/vault/secrets", { name: "Stripe secret key", value: NEW_VALUE, bots: ["quill"] })).body.secret;
+    const under = (await call("POST", "/api/vault/secrets", { name: "_API_KEY", value: "under-val" })).body.secret;
+
+    expect(await call("POST", `/api/vault/secrets/${first.id}/reveal`, {})).toMatchObject({ status: 200, cache: "no-store", body: { value: VALUE } });
+    expect(await call("POST", `/api/vault/secrets/${second.id}/reveal`, {})).toMatchObject({ status: 200, body: { value: NEW_VALUE } });
+    expect(await call("POST", `/api/vault/secrets/${under.id}/reveal`, {})).toMatchObject({ status: 200, body: { value: "under-val" } });
+    expect(revealed).toEqual([{ id: first.id, name: "Stripe secret key" }, { id: second.id, name: "Stripe secret key" }, { id: under.id, name: "_API_KEY" }]);
+    expect((await call("GET", `/api/vault/secrets/${first.id}/reveal`)).status).toBe(405);
+    expect((await call("POST", `/api/vault/secrets/${first.id}/reveal`, {}, "text/plain")).status).toBe(415);
+    expect((await call("POST", "/api/vault/secrets/1password:v1:n1/reveal", {})).status).toBe(404);
+    expect((await call("POST", "/api/vault/secrets/missing/reveal", {})).status).toBe(404);
+    expect(store.listSecrets(TEAM_READER)).toHaveLength(3);
+
+    // Fail-closed when audit hook throws
+    const broken = await serve(null, false, () => { throw new Error("ledger down"); });
+    const saved = (await broken.call("POST", "/api/vault/secrets", { name: "Audited", value: VALUE })).body.secret;
+    const failed = await broken.call("POST", `/api/vault/secrets/${saved.id}/reveal`, {});
+    expect(failed.status).toBe(503);
+    expect(JSON.stringify(failed.body)).not.toContain(VALUE);
+
+    // Team Cloud scoping: admin reveals team secret only, never a member's own; member is refused with 403
+    const ADA = "p_ada0000000000000000000", ARI = "p_ari0000000000000000000";
+    const teamSrv = await serve(null, true);
+    const as = (who: string) => (method: string, path: string, body?: unknown) => teamSrv.call(method, path, body, "application/json", who);
+    const ari = as(`admin:${ARI}`), ada = as(`member:${ADA}`);
+    const teamSecret = (await ari("POST", "/api/vault/secrets", { name: "Team key", value: VALUE })).body.secret;
+    const ownSecret = teamSrv.store.saveSecret({ name: "My key", value: NEW_VALUE, source: "card", bots: ["pepper"], refOnly: true, person: ADA });
+    expect(await ari("POST", `/api/vault/secrets/${teamSecret.id}/reveal`, {})).toMatchObject({ status: 200, body: { value: VALUE } });
+    expect((await ari("POST", `/api/vault/secrets/${ownSecret.id}/reveal`, {})).status).toBe(404);
+    expect((await ada("POST", `/api/vault/secrets/${ownSecret.id}/reveal`, {})).status).toBe(403);
+    expect((await ada("POST", `/api/vault/secrets/${teamSecret.id}/reveal`, {})).status).toBe(403);
   });
 });
