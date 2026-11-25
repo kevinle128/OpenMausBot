@@ -94,12 +94,163 @@ describe("arguments", () => {
     expect(result.err).toContain("OpenMausBot app");
   });
 
-  it("refuses get --reveal with exit 6 before any request", async () => {
-    const seen = await stub(() => ({ json: envelope("secrets.get", {}) }));
+  it("refuses get --reveal with exit 6 when not in an interactive terminal", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
     await paired(seen.url);
-    const result = await run(["secrets", "get", "REF", "--reveal"]);
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: false, stdoutIsTTY: false });
     expect(result.code).toBe(EXIT.refused);
     expect(seen.requests).toHaveLength(0);
+  });
+
+  it("refuses get --reveal with exit 6 when an agent is in the parent process tree", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    const { ps } = await agentTable();
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps });
+    expect(result.code).toBe(EXIT.refused);
+    expect(seen.requests).toHaveLength(0);
+  });
+
+  it("reveals a secret for a person at an interactive terminal when the server authorizes it", async () => {
+    const seen = await stub((req) => {
+      if (req.path === "/api/secrets/admin/reveal" && req.method === "POST") return { json: envelope("secrets.get", { ref: "REF", value: "top-secret-value" }) };
+      return { status: 404, json: { error: "not found" } };
+    });
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const plain = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(plain.code).toBe(EXIT.done);
+    expect(plain.out).toBe("top-secret-value\n");
+    expect(seen.requests).toHaveLength(1);
+    expect(seen.requests[0]!.path).toBe("/api/secrets/admin/reveal");
+    expect(seen.requests[0]!.body).toEqual({ ref: "REF" });
+    expect(seen.requests[0]!.headers.authorization).toBeUndefined();
+
+    const asJson = await run(["secrets", "get", "REF", "--reveal", "--json"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(asJson.code).toBe(EXIT.done);
+    expect(JSON.parse(asJson.out)).toEqual({ schema_version: 1, kind: "secrets.get", data: { ref: "REF", value: "top-secret-value" } });
+  });
+
+  it("sends OMB_ADMIN_TOKEN on get --reveal without using the paired secrets token", async () => {
+    const seen = await stub((req) => {
+      if (req.path === "/api/secrets/admin/reveal" && req.method === "POST") return { json: envelope("secrets.get", { ref: "REF", value: "admin-secret" }) };
+      return { status: 404, json: { error: "not found" } };
+    });
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      env: { OMB_CONFIG_DIR: join(home, "config"), OMB_TOKEN_STORE: "file", OMB_ADMIN_TOKEN: "omb_sess_ADMINTOKEN1234567890" },
+    });
+    expect(result.code).toBe(EXIT.done);
+    expect(result.out).toBe("admin-secret\n");
+    expect(seen.requests[0]!.headers.authorization).toBe("Bearer omb_sess_ADMINTOKEN1234567890");
+  });
+
+  it("refuses get --reveal on a remote server without OMB_ADMIN_TOKEN before making a request", async () => {
+    const dir = join(home, "config");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ schema_version: 1, server: "https://maus.example.com", scope: "secrets", store: "file" }));
+    writeFileSync(join(dir, "token"), `${TOKEN}\n`, { mode: 0o600 });
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    let fetched = 0;
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      fetch: (async () => { fetched++; throw new Error("should not fetch"); }) as unknown as typeof fetch,
+    });
+    expect(result.code).toBe(EXIT.refused);
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
+    expect(fetched).toBe(0);
+  });
+
+  it("fails closed on get --reveal for Windows, unreadable/deep process trees, and unlinked agent binaries", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    // Windows
+    const win = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "win32", ppid: 100 });
+    expect(win.code).toBe(EXIT.refused);
+    // Unreadable ps
+    const badPs = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: async () => { throw new Error("ps failed"); },
+    });
+    expect(badPs.code).toBe(EXIT.refused);
+    // Process chain exceeding MAX_WALK (40)
+    const deepTable: Record<number, { ppid: number; comm: string }> = {};
+    for (let pid = 2; pid <= 60; pid++) deepTable[pid] = { ppid: pid - 1, comm: "/bin/zsh" };
+    const deep = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 60, ps: fakePs(deepTable),
+    });
+    expect(deep.code).toBe(EXIT.refused);
+    // Unlinked/nonexistent agent binary (hashFile would fail, but matchAgent still refuses)
+    const unlinkedPs = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: join(home, "claude-deleted-binary", "claude") } });
+    const unlinked = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: unlinkedPs,
+    });
+    expect(unlinked.code).toBe(EXIT.refused);
+    expect(seen.requests).toHaveLength(0);
+  });
+
+  it("explains the admin scope requirement when the server refuses reveal with 403", async () => {
+    const seen = await stub(() => ({ status: 403, json: { error: "forbidden" } }));
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs });
+    expect(result.code).toBe(EXIT.refused);
+    expect(result.err).toContain("scope 'admin'");
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
+  });
+
+  it("fails closed on get --reveal for runtime-hosted/cursor agents, unreadable /proc exe, and PID 1 agents", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "top-secret" }) }));
+    await paired(seen.url);
+    const opts = { stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100 };
+    // Unlinked runtime-hosted script (not on disk)
+    const deletedScript = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/usr/local/bin/node", args: "node /deleted/@openai/codex/bin/codex.js" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: deletedScript })).code).toBe(EXIT.refused);
+    // Relative runtime-hosted script path
+    const relativeScript = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/usr/local/bin/node", args: "node node_modules/@openai/codex/bin/codex.js" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: relativeScript })).code).toBe(EXIT.refused);
+    // cursor-agent launcher even without a hosted script on disk
+    const cursorLauncher = fakePs({ 100: { ppid: 50, comm: "/bin/zsh" }, 50: { ppid: 1, comm: "/home/u/.local/bin/cursor-agent", args: "cursor-agent --use-system-ca" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: cursorLauncher })).code).toBe(EXIT.refused);
+    // Runtime ancestor whose ps args= lookup fails
+    const failingArgsPs: Deps["ps"] = async (args) => {
+      if (args.includes("args=")) throw new Error("ps args failed");
+      return args[args.length - 1] === "100" ? " 50 /bin/zsh\n" : " 1 /usr/local/bin/node\n";
+    };
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: failingArgsPs })).code).toBe(EXIT.refused);
+    // Containerized PID 1 agent (both direct ppid=1 and via a shell)
+    const pid1Agent = fakePs({ 100: { ppid: 1, comm: "/bin/zsh" }, 1: { ppid: 0, comm: "/usr/local/bin/claude" } });
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ps: pid1Agent })).code).toBe(EXIT.refused);
+    expect((await run(["secrets", "get", "REF", "--reveal"], { ...opts, ppid: 1, ps: pid1Agent })).code).toBe(EXIT.refused);
+    // Linux /proc/<pid>/exe unreadable (info.path = null) while /proc/<pid>/cmdline identifies an agent
+    if (posix) {
+      const root = join(home, "proc-reveal");
+      const addProc = (pid: number, ppid: number, cmdline: string[]) => {
+        mkdirSync(join(root, String(pid)), { recursive: true });
+        writeFileSync(join(root, String(pid), "stat"), `${pid} (proc) S ${ppid} 1 1 0 -1 4194560`);
+        writeFileSync(join(root, String(pid), "cmdline"), `${cmdline.join("\0")}\0`);
+      };
+      addProc(100, 50, ["/bin/bash"]);
+      addProc(50, 1, ["/usr/local/bin/claude", "--chat"]);
+      addProc(1, 0, ["/sbin/init"]);
+      expect((await run(["secrets", "get", "REF", "--reveal"], { stdinIsTTY: true, stdoutIsTTY: true, platform: "linux", ppid: 100, procRoot: root })).code).toBe(EXIT.refused);
+    }
+    expect(seen.requests).toHaveLength(0);
+  });
+
+  it("points to OMB_ADMIN_TOKEN rather than omb pair when OMB_ADMIN_TOKEN is rejected with 401", async () => {
+    const seen = await stub(() => ({ status: 401, json: { error: "unauthorized: token ended" } }));
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    const result = await run(["secrets", "get", "REF", "--reveal"], {
+      stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+      env: { OMB_CONFIG_DIR: join(home, "config"), OMB_TOKEN_STORE: "file", OMB_ADMIN_TOKEN: "omb_sess_EXPIRED1234567890" },
+    });
+    expect(result.code).toBe(EXIT.unreachable);
+    expect(result.err).toContain("OMB_ADMIN_TOKEN");
+    expect(result.err).toContain("openmausbot token create NAME --scope admin");
+    expect(result.err).not.toContain("omb pair");
   });
 });
 

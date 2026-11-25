@@ -1,14 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { ChevronDown, KeyRound, Loader2, LockKeyhole, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, ChevronDown, Copy, KeyRound, Loader2, LockKeyhole, ShieldCheck, Trash2 } from "lucide-react";
 
 import { loginHeldBackFor, normalizeLoginHost, type BitwardenStatus, type LoginBots, type LoginSummary, type OnePasswordItemRef, type OnePasswordStatus, type OnePasswordVault } from "../../shared/logins";
 import type { LinkedSecret, VaultSecret } from "../../shared/vault";
 import { t } from "@/lib/i18n";
 import { productName } from "@/lib/brand";
+import { copyText } from "@/lib/copy-text";
 import { addLogin, changeLogin, connectOnePassword, deleteLogin, disconnectOnePassword, grantOnePasswordItem, grantVault, refreshOnePassword } from "@/lib/logins";
 import { relativeTime } from "@/lib/memory";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
-import { deleteSecret, listVault } from "@/lib/vault";
+import { deleteSecret, listVault, revealSecret } from "@/lib/vault";
 import { useStore } from "@/state/store";
 import { Segmented } from "./bot-panel/rows";
 import { LoginBotPicker, LoginForm } from "./LoginForm";
@@ -18,7 +19,7 @@ import { EnvImportForm, SecretForm } from "./VaultSecretForms";
 import { BitwardenConnection } from "./BitwardenConnection";
 import { VaultSkillDialog } from "./VaultSkillDialog";
 
-// Security: a row never shows a password or a secret, which no route returns. A saved value can only be replaced.
+// Security: a row never renders a password or a secret in the DOM; Copy fetches a secret on demand straight to the clipboard.
 
 const SOURCE_KEYS = {
   card: "settings.logins.source.card",
@@ -124,8 +125,36 @@ export function VaultSettings() {
     catch (cause) { setError(cause instanceof Error && cause.message ? cause.message : t("settings.logins.deleteError")); }
     finally { setBusy(false); }
   };
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+  const copySecret = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await copyText(await revealSecret(id));
+      if (result !== "copied") {
+        setError(t("common.copyFailed"));
+        return;
+      }
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      setCopiedId(id);
+      copiedTimer.current = setTimeout(() => {
+        copiedTimer.current = null;
+        setCopiedId((cur) => (cur === id ? null : cur));
+      }, 2000);
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : t("common.copyFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
   const rowButtons = (id: string, kind: "login" | "secret", name: string, onChange: () => void) => (
     <div className="flex shrink-0 gap-1">
+      {!member && kind === "secret" && <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => void copySecret(id)}
+        aria-label={copiedId === id ? `${t("code.copied")} ${name}` : t("connectionDetail.copy", { label: name })}>
+        {copiedId === id ? <Check size={13} /> : <Copy size={13} />}{copiedId === id ? t("code.copied") : t("code.copy")}
+      </button>}
       {!member && <button type="button" className={ROW_BUTTON} disabled={busy} onClick={onChange}
         aria-label={kind === "login" ? t("settings.logins.changeFor", { site: name }) : t("settings.vault.secret.changeFor", { name })}>{t("settings.logins.change")}</button>}
       <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => void remove(id, kind)}
