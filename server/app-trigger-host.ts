@@ -8,6 +8,7 @@ import { botMayWatchApp, type AppEventCatalog } from "../shared/app-triggers.ts"
 import type { ConnectorToolGrant } from "../shared/wire.ts";
 import { appEventCatalog, appLabel } from "./app-event-catalog.ts";
 import { eventSourceCatalog, eventSourceInstances, isEventSourceApp, type EventSourceFeed } from "./app-event-sources.ts";
+import { listForgeApps } from "./apps/forge-connections.ts";
 import { DATA_DIR } from "./config.ts";
 import { brokerClient, type AppTriggerBroker, type BrokerAccess } from "./app-trigger-broker.ts";
 import { AppTriggerRequestService, type AppTriggerRequestStore } from "./app-trigger-requests.ts";
@@ -104,11 +105,14 @@ export function createAppTriggerHost(deps: AppTriggerHostDeps) {
 
   function sourceCatalog(app?: string, search?: string) {
     let text: string | null = null;
+    let forgeConnected: Partial<Record<"github" | "gitlab", boolean>> | undefined;
     if (deps.eventSourceConfig) text = deps.eventSourceConfig();
     else {
       try { text = readFileSync(join(DATA_DIR, "pr-orchestrator.json"), "utf8"); } catch { text = null; }
+      const apps = listForgeApps(join(DATA_DIR, "forge-apps.json"));
+      forgeConnected = Object.fromEntries(apps.map((entry) => [entry.id, entry.connected]));
     }
-    return eventSourceCatalog(eventSourceInstances(text), { ...(app ? { app } : {}), ...(search ? { search } : {}) });
+    return eventSourceCatalog(eventSourceInstances(text, forgeConnected), { ...(app ? { app } : {}), ...(search ? { search } : {}) });
   }
 
   async function catalog(bot: Bot, app?: string, search?: string): Promise<AppEventCatalog> {

@@ -48,7 +48,10 @@ export function eventSourceTitle(app: string): string {
 }
 
 /** Enabled instances become apps. A switched-off instance is not connected, so the editor can offer setup. */
-export function eventSourceInstances(text: string | null): EventSourceInstance[] {
+export function eventSourceInstances(
+  text: string | null,
+  forgeConnected?: Readonly<Partial<Record<"github" | "gitlab", boolean>>>,
+): EventSourceInstance[] {
   const parsed = parseOrchestratorConfig(text?.trim() ? text : "{}", BUILT_IN_CONNECTORS);
   const document = parsed.ok ? parsed.config : null;
   if (!document) return [];
@@ -56,7 +59,8 @@ export function eventSourceInstances(text: string | null): EventSourceInstance[]
   for (const [id, instance] of Object.entries(document.connectors)) {
     if (!EVENT_SOURCE_USE.has(instance.use)) continue;
     const definition = BUILT_IN_CONNECTORS.find((candidate) => candidate.id === instance.use);
-    found.push({ id, title: definition?.title ?? id, enabled: instance.enabled });
+    const forgeId = instance.use === "github-event" ? "github" : instance.use === "gitlab-event" ? "gitlab" : null;
+    found.push({ id, title: definition?.title ?? id, enabled: instance.enabled || Boolean(forgeId && forgeConnected?.[forgeId]) });
   }
   return found;
 }

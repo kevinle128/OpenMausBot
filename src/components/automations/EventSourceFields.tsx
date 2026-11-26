@@ -1,6 +1,7 @@
-// Event types, repos and authors for a pull request event app.
+// Event types, repos (Tag Picker) and authors for a pull request event app.
 import type { LocaleKey } from "@/locales";
 import { t } from "@/lib/i18n";
+import { ResourceTagPicker } from "./ResourceTagPicker";
 
 const FIELD = "w-full rounded-xl border border-hairline/60 bg-panel px-3.5 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent/70";
 const LABEL = "mb-1.5 block text-[12px] font-medium text-ink-secondary";
@@ -41,8 +42,9 @@ export function settingList(value: unknown): string[] {
 }
 
 export function EventSourceFields({
-  options, types, repos, authors, gitlab, onTypes, onRepos, onAuthors,
+  app, options, types, repos, authors, gitlab, onTypes, onRepos, onAuthors,
 }: {
+  app?: string;
   options: readonly string[];
   types: readonly string[];
   repos: string;
@@ -53,6 +55,7 @@ export function EventSourceFields({
   onAuthors: (authors: string) => void;
 }) {
   const chosen = new Set(types);
+  const selectedRepos = settingList(repos);
   const toggle = (type: string, on: boolean) => {
     const next = new Set(types);
     if (on) next.add(type);
@@ -72,11 +75,19 @@ export function EventSourceFields({
           ))}
         </div>
       </fieldset>
-      <label className="block sm:col-span-2">
+      <div className="block sm:col-span-2">
         <span className={LABEL}>{t("automations.editor.eventSource.repos")}</span>
-        <textarea value={repos} onChange={(input) => onRepos(input.target.value)} rows={3} placeholder={t("automations.editor.eventSource.reposPlaceholder")} className={`${FIELD} resize-y leading-relaxed`} />
+        <ResourceTagPicker
+          app={app ?? (gitlab ? "gitlab" : "github")}
+          kind="repositories"
+          values={selectedRepos}
+          onChange={(next) => onRepos(next.join("\n"))}
+          placeholder={t("automations.editor.eventSource.reposPlaceholder")}
+          emptyHint={gitlab ? t("automations.editor.eventSource.reposExample.gitlab") : t("automations.editor.eventSource.reposExample.github")}
+          ariaLabel={t("automations.editor.eventSource.repos")}
+        />
         <span className="mt-1.5 block text-[12px] text-ink-secondary">{gitlab ? t("automations.editor.eventSource.reposExample.gitlab") : t("automations.editor.eventSource.reposExample.github")}</span>
-      </label>
+      </div>
       <label className="block sm:col-span-2">
         <span className={LABEL}>{t("automations.editor.eventSource.authors")}</span>
         <input value={authors} onChange={(input) => onAuthors(input.target.value)} placeholder={t("automations.editor.eventSource.authorsPlaceholder")} className={FIELD} />

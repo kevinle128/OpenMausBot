@@ -1,76 +1,123 @@
-import { Check, Github, Gitlab, Loader2 } from "lucide-react";
-import { useState, type ComponentType } from "react";
+import { Check, ExternalLink, Github, Gitlab, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { openExternalLink } from "@/lib/app-links";
 import { t } from "@/lib/i18n";
-import { eventConnectorConnected, type EventConnector } from "@/lib/event-connectors";
-import { ServiceIcon } from "../ServiceIcon";
+import type { ForgeApp } from "@/lib/forge-apps";
+import type { LocaleKey } from "@/locales";
 
-const GLYPHS: Record<string, ComponentType<{ size?: number; className?: string }>> = { github: Github, gitlab: Gitlab };
+const GITHUB_TOKEN_URL = "https://github.com/settings/tokens?type=beta";
 
-function ConnectorIcon({ connector }: { connector: EventConnector }) {
-  const Glyph = "glyph" in connector.icon ? GLYPHS[connector.icon.glyph] : undefined;
-  if (Glyph) return <span className="flex size-10 shrink-0 items-center justify-center rounded-[8px] bg-control text-ink"><Glyph size={22} /></span>;
-  const logo = "image" in connector.icon ? connector.icon.image : null;
-  return <ServiceIcon card={{ logo, domain: null, label: connector.title }} className="size-10 shrink-0 rounded-[8px]" />;
+const PERMS_HINT_KEY: Record<ForgeApp["id"], LocaleKey> = {
+  github: "forgeApps.github.permsHint",
+  gitlab: "forgeApps.gitlab.permsHint",
+};
+
+function safeGitLabTokenUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}/-/user_settings/personal_access_tokens`;
+  } catch {
+    return null;
+  }
 }
 
-/** Standard Apps tile for an event connector: matches key-based Developer tools apps (Connect + key input / Disconnect). */
-export function EventConnectorTile({ connector, busy, error, onConnect, onDisconnect }: {
-  connector: EventConnector;
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return url; }
+}
+
+/** Unified Native Forge App tile (GitHub / self-hosted GitLab) inside Apps → Developer tools. */
+export function EventConnectorTile({ app, busy, error, onConnect, onDisconnect }: {
+  app: ForgeApp;
   busy: boolean;
   error: string | null;
-  /** Resolves true once the secret is saved; the input keeps the pasted key until then. */
-  onConnect: (secret: string) => Promise<boolean>;
+  onConnect: (input: { token: string; baseUrl?: string }) => Promise<boolean>;
   onDisconnect: () => void;
 }) {
-  const [secret, setSecret] = useState("");
-  const connected = eventConnectorConnected(connector);
-  const canConnect = secret.trim().length > 0;
+  const [token, setToken] = useState("");
+  const [baseUrl, setBaseUrl] = useState(app.baseUrl);
+  const isGitLab = app.id === "gitlab";
+  const canConnect = token.trim().length > 0 && (!isGitLab || baseUrl.trim().length > 0);
+  const tokenUrl = isGitLab ? (safeGitLabTokenUrl(baseUrl) ?? safeGitLabTokenUrl(app.baseUrl)) : GITHUB_TOKEN_URL;
+  const Icon = isGitLab ? Gitlab : Github;
 
   const submit = () => {
-    const trimmed = secret.trim();
-    if (!trimmed || busy) return;
-    void onConnect(trimmed).then((saved) => { if (saved) setSecret(""); });
+    if (!canConnect || busy) return;
+    void onConnect({ token: token.trim(), ...(isGitLab ? { baseUrl: baseUrl.trim() } : {}) })
+      .then((saved) => { if (saved) setToken(""); });
   };
+
+  const subtitle = app.connected
+    ? [app.login ? `@${app.login}` : null, isGitLab ? hostOf(app.baseUrl) : null].filter(Boolean).join(" · ") || app.description
+    : app.description;
 
   return (
     <div
-      data-event-source-tile={connector.id}
+      data-event-source-tile={app.id}
       className="flex min-w-0 flex-col rounded-xl px-2 py-2 transition-colors hover:bg-raised/40"
     >
       <div className="flex items-center gap-3">
-        <ConnectorIcon connector={connector} />
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-[8px] bg-control text-ink">
+          <Icon size={22} />
+        </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[14px] font-semibold leading-5 text-ink">{connector.title}</span>
-            {connected && <Check size={13} strokeWidth={2.5} className="shrink-0 text-success" aria-label={t("apps.connected")} />}
+            <span className="truncate text-[14px] font-semibold leading-5 text-ink">{app.title}</span>
+            {app.connected && <Check size={13} strokeWidth={2.5} className="shrink-0 text-success" aria-label={t("apps.connected")} />}
           </div>
-          <p className="truncate text-[13px] leading-[18px] text-ink-secondary" title={connector.description}>{connector.description}</p>
+          <p className="truncate text-[13px] leading-[18px] text-ink-secondary" title={subtitle}>{subtitle}</p>
         </div>
         <button
           type="button"
-          aria-label={t(connected ? "hostedMcp.disconnect" : "hostedMcp.connect", { service: connector.title })}
-          disabled={busy || (!connected && !canConnect)}
-          onClick={() => (connected ? onDisconnect() : submit())}
+          aria-label={t(app.connected ? "hostedMcp.disconnect" : "hostedMcp.connect", { service: app.title })}
+          disabled={busy || (!app.connected && !canConnect)}
+          onClick={() => (app.connected ? onDisconnect() : submit())}
           className="inline-flex h-7 min-w-[64px] shrink-0 items-center justify-center gap-2 rounded-full bg-control/80 px-3 text-[13px] font-medium leading-5 text-ink hover:bg-raised-hover disabled:opacity-40"
         >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : t(connected ? "connectors.disconnect" : "connectors.action.connect")}
+          {busy ? <Loader2 size={14} className="animate-spin" /> : t(app.connected ? "connectors.disconnect" : "connectors.action.connect")}
         </button>
       </div>
       <div className="ps-[52px]">
-        {!connected && (
-          <div className="mt-2">
+        {!app.connected && (
+          <div className="mt-2 flex flex-col items-start gap-2">
+            {isGitLab && (
+              <input
+                type="url"
+                value={baseUrl}
+                disabled={busy}
+                autoComplete="off"
+                spellCheck={false}
+                aria-label={t("forgeApps.gitlab.serverUrl")}
+                placeholder="https://git.oceanlabs.dev"
+                onChange={(event) => setBaseUrl(event.target.value)}
+                className="h-8 w-full min-w-0 rounded-lg bg-inset px-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
+              />
+            )}
             <input
               type="password"
-              value={secret}
+              value={token}
               disabled={busy}
               autoComplete="off"
               spellCheck={false}
-              aria-label={t("hostedMcp.keyLabel", { service: connector.title })}
-              placeholder={t("hostedMcp.keyPlaceholder", { service: connector.title })}
-              onChange={(event) => setSecret(event.target.value)}
+              aria-label={t("hostedMcp.keyLabel", { service: app.title })}
+              placeholder={t("hostedMcp.keyPlaceholder", { service: app.title })}
+              onChange={(event) => setToken(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") submit(); }}
               className="h-8 w-full min-w-0 rounded-lg bg-inset px-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
             />
+            <p className="text-[12px] leading-4 text-ink-secondary">{t(PERMS_HINT_KEY[app.id])}</p>
+            <button
+              type="button"
+              disabled={!tokenUrl}
+              onClick={() => { if (tokenUrl) void openExternalLink(tokenUrl); }}
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-accent-text hover:underline disabled:opacity-40"
+            >
+              {t("hostedMcp.getKey", { service: app.title })}
+              <ExternalLink size={11} aria-hidden="true" />
+            </button>
           </div>
         )}
         {error && <p role="alert" className="mt-1.5 text-[12px] text-danger">{error}</p>}
