@@ -13,6 +13,7 @@ import { connectorViewsIn, createOrchestratorCore, EMPTY_CONNECTOR_STATUS, inbou
 import { BUILT_IN_CONNECTORS } from "../pr-orchestrator/connectors/index.ts";
 import { createConnectorRegistry } from "../pr-orchestrator/connectors/registry.ts";
 import { createEventsDoor } from "../pr-orchestrator/intake.ts";
+import { createForgeAppsRoutes } from "../routes/forge-apps.ts";
 import { createPrOrchestratorRoutes } from "../routes/pr-orchestrator.ts";
 import type { RouteHandler } from "../routes/table.ts";
 import { TEAM_READER, type VaultStore } from "../vault-store.ts";
@@ -126,7 +127,7 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
     logLine: log,
   });
 
-  const routes = createPrOrchestratorRoutes({
+  const orchestratorRoutes = createPrOrchestratorRoutes({
     core: ensureCore,
     secretPresent: id => connectorKey(id) !== null,
     ...(deps.webhookBase ? { webhookBase: deps.webhookBase } : {}),
@@ -143,6 +144,14 @@ export function createPrOrchestratorHost(deps: PrOrchestratorHostDeps): PrOrches
       return written;
     },
   });
+
+  const forgeRoutes = createForgeAppsRoutes({
+    storePath: join(deps.dataDir, "forge-apps.json"),
+    recentRepos: (provider) => (ensureCore()?.listPrs({ limit: 200 }) ?? [])
+      .filter((pr) => pr.provider === provider)
+      .map((pr) => pr.repo),
+  });
+  const routes: RouteHandler = (ctx) => (ctx.path.startsWith("/api/apps/") ? forgeRoutes(ctx) : orchestratorRoutes(ctx));
 
   /** Runs a call on the core that runs now. The host makes a new core after each stop, so no caller may keep one. */
   const onCore = (what: string, call: (current: OrchestratorCore) => void): void => {

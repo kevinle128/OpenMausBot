@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import {
-  eventConnectorConnected,
-  eventConnectorMatchesSearch,
-  inEventConnectorsCategory,
-  saveEventConnector,
-  useEventConnectors,
-  type EventConnectorPatch,
-} from "@/lib/event-connectors";
+  connectForgeApp,
+  disconnectForgeApp,
+  FORGE_APPS_CATEGORY,
+  forgeMatchesSearch,
+  useForgeApps,
+  type ForgeId,
+} from "@/lib/forge-apps";
 import { EventConnectorTile } from "./EventConnectorTile";
 
-/** Event connector app tiles rendered inline inside the standard Apps grid under Developer tools. */
+/** Unified GitHub & self-hosted GitLab app tiles rendered inline inside Apps → Developer tools. */
 export function EventConnectorCards({ filter, category, search, refreshKey = 0, onCount }: {
   filter: "all" | "connected" | "mcp";
   category: string | null;
@@ -17,18 +17,18 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
   refreshKey?: number;
   onCount?: (connected: number, shown: number) => void;
 }) {
-  const { connectors, replace } = useEventConnectors(false, refreshKey);
-  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const { apps, replace } = useForgeApps(refreshKey);
+  const [busyId, setBusyId] = useState<ForgeId | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
 
   const searching = search.trim().length > 0;
-  const visible = (connectors ?? []).filter((connector) => {
+  const visible = (apps ?? []).filter((app) => {
     if (filter === "mcp") return false;
-    if (!searching && category !== null && !inEventConnectorsCategory(category)) return false;
-    if (!searching && filter === "connected" && !eventConnectorConnected(connector)) return false;
-    return eventConnectorMatchesSearch(connector, search);
+    if (!searching && category !== null && category !== FORGE_APPS_CATEGORY) return false;
+    if (!searching && filter === "connected" && !app.connected) return false;
+    return forgeMatchesSearch(app, search);
   });
-  const connectedCount = (connectors ?? []).filter(eventConnectorConnected).length;
+  const connectedCount = (apps ?? []).filter((app) => app.connected).length;
 
   useEffect(() => {
     onCount?.(connectedCount, visible.length);
@@ -36,26 +36,25 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
 
   if (visible.length === 0) return null;
 
-  /** Resolves true once the change is saved, false when it failed (the error shows on the tile). */
-  const run = (id: string, patch: EventConnectorPatch): Promise<boolean> => {
-    setBusy((current) => ({ ...current, [id]: true }));
+  const run = (id: ForgeId, task: Promise<Parameters<typeof replace>[0]>) => {
+    setBusyId(id);
     setErrors((current) => ({ ...current, [id]: null }));
-    return saveEventConnector(id, patch)
-      .then((updated) => { replace(updated); return true; })
-      .catch((failure) => { setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) })); return false; })
-      .finally(() => setBusy((current) => ({ ...current, [id]: false })));
+    task
+      .then((updated) => replace(updated))
+      .catch((failure) => setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) })))
+      .finally(() => setBusyId((current) => (current === id ? null : current)));
   };
 
   return (
     <>
-      {visible.map((connector) => (
+      {visible.map((app) => (
         <EventConnectorTile
-          key={connector.id}
-          connector={connector}
-          busy={busy[connector.id] === true}
-          error={errors[connector.id] ?? null}
-          onConnect={(secret) => run(connector.id, { enabled: true, secret })}
-          onDisconnect={() => { void run(connector.id, { enabled: false, secret: "" }); }}
+          key={app.id}
+          app={app}
+          busy={busyId === app.id}
+          error={errors[app.id] ?? null}
+          onConnect={(input) => run(app.id, connectForgeApp(app.id, input))}
+          onDisconnect={() => run(app.id, disconnectForgeApp(app.id))}
         />
       ))}
     </>

@@ -70,7 +70,12 @@ const choose = (container: HTMLElement, label: string, value: string) => {
 beforeEach(() => {
   fixture.dispatch.mockReset();
   fixture.api.mockReset();
-  fixture.api.mockImplementation(async (path: unknown) => String(path).startsWith("/api/app-triggers/events") ? catalog : { trigger: saved });
+  fixture.api.mockImplementation(async (path: unknown) => {
+    const p = String(path);
+    if (p.startsWith("/api/app-triggers/events")) return catalog;
+    if (p.startsWith("/api/apps/")) return { items: [] };
+    return { trigger: saved };
+  });
   fixture.state = { bots: [scout] };
 });
 afterEach(() => { root?.unmount(); root = null; document.body.innerHTML = ""; });
@@ -90,7 +95,12 @@ it("choosing GitHub Event shows type checkboxes and a repos field and sends them
   expect([...container.querySelectorAll('input[type="checkbox"]')].map((box) => box.getAttribute("value"))).toEqual(["pr.ci.finished", "pr.review.finished", "pr.opened"]);
   expect(container.textContent).toContain("CI finished");
   expect(container.textContent).toContain("Review finished");
-  expect(container.querySelector('textarea[placeholder="owner/repo or glob, one per line"]')).not.toBeNull();
+  const addRepoTag = (container: HTMLElement, value: string) => {
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Repos"]')!;
+    type(input, value);
+    flushSync(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  };
+  expect(container.querySelector('input[aria-label="Repos"]')).not.toBeNull();
   expect(container.textContent).toContain("For example kevinle128/OpenMausBot or kevinle128/*");
   const sample = [...container.querySelectorAll("textarea")].find((field) => field.getAttribute("placeholder")?.startsWith("Read `pr`"))!;
   expect(sample.getAttribute("placeholder")).toContain("--match-head-commit");
@@ -100,7 +110,8 @@ it("choosing GitHub Event shows type checkboxes and a repos field and sends them
   expect(button(container, "Set it up").disabled).toBe(true);
   flushSync(() => container.querySelector<HTMLInputElement>('input[value="pr.ci.finished"]')!.click());
   flushSync(() => container.querySelector<HTMLInputElement>('input[value="pr.review.finished"]')!.click());
-  type(container.querySelector('textarea[placeholder="owner/repo or glob, one per line"]')!, "kevinle128/OpenMausBot\nkevinle128/*");
+  addRepoTag(container, "kevinle128/OpenMausBot");
+  addRepoTag(container, "kevinle128/*");
   type(container.querySelector('input[placeholder="e.g. kevinle128"]')!, "kevinle128");
   type(sample, "Read the pull request and merge it when it is valid.");
   flushSync(() => button(container, "Set it up").click());
@@ -113,14 +124,17 @@ it("choosing GitHub Event shows type checkboxes and a repos field and sends them
   });
 });
 
-it("a repos line of only commas keeps Set it up disabled", async () => {
+it("a repos entry of only commas keeps Set it up disabled", async () => {
   const container = mount(createElement(AppEventEditor, { bots: [scout], onClose: vi.fn() }));
   await vi.waitFor(() => expect(container.querySelector('select[aria-label="App"]')).not.toBeNull());
   choose(container, "App", "github-event");
   flushSync(() => container.querySelector<HTMLInputElement>('input[value="pr.ci.finished"]')!.click());
-  type(container.querySelector('textarea[placeholder="owner/repo or glob, one per line"]')!, ",");
+  const repoInput = container.querySelector<HTMLInputElement>('input[aria-label="Repos"]')!;
+  type(repoInput, ",");
+  flushSync(() => { repoInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
   expect(button(container, "Set it up").disabled).toBe(true);
-  type(container.querySelector('textarea[placeholder="owner/repo or glob, one per line"]')!, "acme/widgets");
+  type(repoInput, "acme/widgets");
+  flushSync(() => { repoInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
   expect(button(container, "Set it up").disabled).toBe(false);
 });
 
@@ -128,7 +142,7 @@ it("editing an event-app automation sends its changed types", async () => {
   const onSaved = vi.fn();
   const container = mount(createElement(AppEventEditor, { trigger: saved, bots: [scout], onClose: vi.fn(), onSaved }));
   expect(container.querySelector<HTMLInputElement>('input[value="pr.opened"]')!.checked).toBe(true);
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[placeholder="owner/repo or glob, one per line"]')!.value).toBe("acme/widgets");
+  expect(container.querySelector('[data-resource-tag="acme/widgets"]')).not.toBeNull();
   flushSync(() => container.querySelector<HTMLInputElement>('input[value="pr.opened"]')!.click());
   flushSync(() => container.querySelector<HTMLInputElement>('input[value="pr.ci.finished"]')!.click());
   flushSync(() => button(container, "Save").click());

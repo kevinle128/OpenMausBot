@@ -2,8 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { EventConnector } from "@/lib/event-connectors";
-import { connectorFixture } from "./fixtures";
+import type { ForgeApp } from "@/lib/forge-apps";
 
 const apiMock = vi.fn();
 
@@ -33,96 +32,69 @@ async function renderCards(props: Parameters<typeof EventConnectorCards>[0]) {
   return host;
 }
 
-describe("EventConnectorCards", () => {
+const GH: ForgeApp = {
+  id: "github", title: "GitHub", description: "Pull requests, repositories, and automated workflows.",
+  baseUrl: "https://api.github.com", connected: false, login: null,
+};
+const GL: ForgeApp = {
+  id: "gitlab", title: "GitLab", description: "Self-hosted GitLab projects, merge requests, and CI events.",
+  baseUrl: "https://git.oceanlabs.dev", connected: false, login: null,
+};
+
+describe("Unified Forge App cards (GitHub & self-hosted GitLab)", () => {
   it("shows in All and Developer tools, hides in other categories, and filters by Connected and search", async () => {
-    const gh = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: true, secretPresent: true });
-    const gl = connectorFixture({ id: "gitlab-event", title: "GitLab Event", enabled: false, secretPresent: false });
-    apiMock.mockResolvedValue({ connectors: [gh, gl] });
+    apiMock.mockResolvedValue({ apps: [{ ...GH, connected: true, login: "kevinle128" }, GL] });
 
     const onCount = vi.fn();
     const el = await renderCards({ filter: "all", category: "Developer tools", search: "", onCount });
     expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(2);
     expect(onCount).toHaveBeenLastCalledWith(1, 2);
+    expect(el.textContent).toContain("@kevinle128");
+    expect(el.textContent).toContain("Required PAT scopes");
 
     await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "all", category: "Social", search: "", onCount })); });
     expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(0);
 
     await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "connected", category: null, search: "", onCount })); });
     expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
-    expect(el.querySelector("[data-event-source-tile='github-event']")).not.toBeNull();
+    expect(el.querySelector("[data-event-source-tile='github']")).not.toBeNull();
 
     await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "all", category: null, search: "gitlab", onCount })); });
     expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
-    expect(el.querySelector("[data-event-source-tile='gitlab-event']")).not.toBeNull();
+    expect(el.querySelector("[data-event-source-tile='gitlab']")).not.toBeNull();
   });
 
-  it("matches the Developer tools pill in any letter case and catalog-style searches", async () => {
-    const gh = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
-    apiMock.mockResolvedValue({ connectors: [gh] });
-
-    const el = await renderCards({ filter: "all", category: "Developer Tools", search: "" });
-    expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
-
-    for (const search of ["connect github", "github app", "pull requests"]) {
-      await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "all", category: null, search })); });
-      expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(1);
-    }
-  });
-
-  it("keeps the pasted key when saving it fails", async () => {
-    const gh: EventConnector = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
+  it("connects GitLab with server URL + PAT and disconnects via DELETE", async () => {
     apiMock
-      .mockResolvedValueOnce({ connectors: [gh] })
-      .mockRejectedValueOnce(new Error("secret must not contain whitespace"));
+      .mockResolvedValueOnce({ apps: [GL] })
+      .mockResolvedValueOnce({ ...GL, connected: true, login: "kevin.le", baseUrl: "https://git.example.com" })
+      .mockResolvedValueOnce({ ...GL, connected: false, login: null });
 
     const el = await renderCards({ filter: "all", category: null, search: "" });
-    const input = el.querySelector<HTMLInputElement>("input[type='password']")!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      setter.call(input, "my hub-secret");
+    const urlInput = el.querySelector<HTMLInputElement>("input[type='url']")!;
+    const tokenInput = el.querySelector<HTMLInputElement>("input[type='password']")!;
+    const setVal = (input: HTMLInputElement, val: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, val);
       input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => { el.querySelector<HTMLButtonElement>("button")!.click(); });
-    await act(async () => { await Promise.resolve(); });
+    };
 
-    expect(el.querySelector("[role='alert']")?.textContent).toContain("secret must not contain whitespace");
-    expect(el.querySelector<HTMLInputElement>("input[type='password']")!.value).toBe("my hub-secret");
-  });
-
-  it("connects with a pasted key and disconnects by clearing it, without Vault or setup chrome", async () => {
-    const gh: EventConnector = connectorFixture({ id: "github-event", title: "GitHub Event", enabled: false, secretPresent: false });
-    apiMock
-      .mockResolvedValueOnce({ connectors: [gh] })
-      .mockResolvedValueOnce({ ...gh, enabled: true, secretPresent: true })
-      .mockResolvedValueOnce({ ...gh, enabled: false, secretPresent: false });
-
-    const el = await renderCards({ filter: "all", category: null, search: "" });
-    expect(el.textContent).not.toContain("Vault");
-    expect(el.textContent).not.toContain("Address that receives events");
-
-    const connectBtn = el.querySelector<HTMLButtonElement>("button")!;
-    expect(connectBtn.disabled).toBe(true);
-
-    const input = el.querySelector<HTMLInputElement>("input[type='password']")!;
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      setter.call(input, "my-hub-secret");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      setVal(urlInput, "https://git.example.com");
+      setVal(tokenInput, "glpat-secret-123");
     });
+
+    const connectBtn = el.querySelector<HTMLButtonElement>("button[aria-label*='Connect']")!;
     expect(connectBtn.disabled).toBe(false);
-
     await act(async () => { connectBtn.click(); });
-    expect(apiMock).toHaveBeenCalledWith("/api/pr-orchestrator/connectors/github-event", {
+
+    expect(apiMock).toHaveBeenCalledWith("/api/apps/forge/gitlab", {
       method: "PUT",
-      body: JSON.stringify({ enabled: true, secret: "my-hub-secret" }),
+      body: JSON.stringify({ token: "glpat-secret-123", baseUrl: "https://git.example.com" }),
     });
     expect(el.querySelector("input[type='password']")).toBeNull();
 
-    const disconnectBtn = el.querySelector<HTMLButtonElement>("button")!;
+    const disconnectBtn = el.querySelector<HTMLButtonElement>("button[aria-label*='Disconnect']")!;
     await act(async () => { disconnectBtn.click(); });
-    expect(apiMock).toHaveBeenCalledWith("/api/pr-orchestrator/connectors/github-event", {
-      method: "PUT",
-      body: JSON.stringify({ enabled: false, secret: "" }),
-    });
+    expect(apiMock).toHaveBeenCalledWith("/api/apps/forge/gitlab", { method: "DELETE" });
   });
 });

@@ -158,7 +158,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
                 </label>
               )}
               {eventSource
-                ? <EventSourceFields options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
+                ? <EventSourceFields app={app} options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
                 : required.map((field) => (
                   <label className="block sm:col-span-2" key={field.name}>
                     <span className={LABEL}>{field.name}</span>
@@ -169,7 +169,7 @@ export function AppEventEditor({ trigger, bots, initialBotId, initialApp, onClos
           )}
           {trigger && eventSource && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <EventSourceFields options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
+              <EventSourceFields app={trigger.app} options={typeOptions} types={types} repos={repos} authors={authors} gitlab={gitlab} onTypes={setTypes} onRepos={setRepos} onAuthors={setAuthors} />
             </div>
           )}
           {(trigger || appEntry) && (
