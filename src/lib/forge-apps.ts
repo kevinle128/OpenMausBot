@@ -1,6 +1,7 @@
 // Client helpers for unified native Forge Apps (GitHub / self-hosted GitLab) and the reusable Resource Picker API.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/state/store";
+import { matchesCatalogSearch } from "../../shared/app-suggestions";
 
 export type ForgeId = "github" | "gitlab";
 
@@ -22,11 +23,12 @@ export interface ResourceItem {
 
 export const FORGE_APPS_CATEGORY = "Developer tools";
 
+export function inForgeAppsCategory(category: string): boolean {
+  return category.trim().toLowerCase() === FORGE_APPS_CATEGORY.toLowerCase();
+}
+
 export function forgeMatchesSearch(app: Pick<ForgeApp, "id" | "title" | "description">, search: string): boolean {
-  const query = search.trim().toLowerCase();
-  if (!query) return true;
-  const hay = `${app.title} ${app.id} ${app.description} developer tools pull request merge request repo project`.toLowerCase();
-  return query.split(/\s+/).every((part) => hay.includes(part));
+  return matchesCatalogSearch(`${app.title} ${app.id} ${app.description} ${FORGE_APPS_CATEGORY} pull request merge request pr mr repo project`, search);
 }
 
 export async function loadForgeApps(): Promise<ForgeApp[]> {

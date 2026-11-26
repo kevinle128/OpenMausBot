@@ -76,4 +76,40 @@ describe("ResourceTagPicker", () => {
     await act(async () => { removeBtn.click(); });
     expect(onChange).toHaveBeenLastCalledWith([]);
   });
+
+  it("ignores Enter when closed and empty, and opens the listbox on ArrowDown", async () => {
+    apiMock.mockResolvedValue({
+      items: [
+        { id: "kevinle128/OpenMausBot", label: "kevinle128/OpenMausBot", meta: "GitHub", group: "all" },
+      ],
+    });
+
+    const onChange = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+
+    await act(async () => {
+      root!.render(createElement(ResourceTagPicker, {
+        app: "github-event",
+        values: [],
+        onChange,
+        placeholder: "Search repos",
+        emptyHint: "Type owner/repo",
+        ariaLabel: "Repos",
+      }));
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const input = host.querySelector<HTMLInputElement>("input")!;
+    await act(async () => { input.focus(); });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(host.querySelector("[role='listbox']")).toBeNull();
+
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(onChange).not.toHaveBeenCalled();
+
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    expect(host.querySelector("[role='listbox']")).not.toBeNull();
+  });
 });

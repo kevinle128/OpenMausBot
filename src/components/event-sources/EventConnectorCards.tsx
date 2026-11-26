@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import {
   connectForgeApp,
   disconnectForgeApp,
-  FORGE_APPS_CATEGORY,
   forgeMatchesSearch,
+  inForgeAppsCategory,
   useForgeApps,
   type ForgeId,
 } from "@/lib/forge-apps";
@@ -24,7 +24,7 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
   const searching = search.trim().length > 0;
   const visible = (apps ?? []).filter((app) => {
     if (filter === "mcp") return false;
-    if (!searching && category !== null && category !== FORGE_APPS_CATEGORY) return false;
+    if (!searching && category !== null && !inForgeAppsCategory(category)) return false;
     if (!searching && filter === "connected" && !app.connected) return false;
     return forgeMatchesSearch(app, search);
   });
@@ -36,12 +36,15 @@ export function EventConnectorCards({ filter, category, search, refreshKey = 0, 
 
   if (visible.length === 0) return null;
 
-  const run = (id: ForgeId, task: Promise<Parameters<typeof replace>[0]>) => {
+  const run = (id: ForgeId, task: Promise<Parameters<typeof replace>[0]>): Promise<boolean> => {
     setBusyId(id);
     setErrors((current) => ({ ...current, [id]: null }));
-    task
-      .then((updated) => replace(updated))
-      .catch((failure) => setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) })))
+    return task
+      .then((updated) => { replace(updated); return true; })
+      .catch((failure) => {
+        setErrors((current) => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) }));
+        return false;
+      })
       .finally(() => setBusyId((current) => (current === id ? null : current)));
   };
 

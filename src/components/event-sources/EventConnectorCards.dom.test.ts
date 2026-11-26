@@ -5,9 +5,13 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ForgeApp } from "@/lib/forge-apps";
 
 const apiMock = vi.fn();
+const openExternalMock = vi.fn();
 
 vi.mock("@/state/store", () => ({
   api: (...args: unknown[]) => apiMock(...args),
+}));
+vi.mock("@/lib/app-links", () => ({
+  openExternalLink: (...args: unknown[]) => openExternalMock(...args),
 }));
 
 import { EventConnectorCards } from "./EventConnectorCards";
@@ -21,6 +25,7 @@ afterEach(() => {
   host?.remove();
   host = null;
   apiMock.mockReset();
+  openExternalMock.mockReset();
 });
 
 async function renderCards(props: Parameters<typeof EventConnectorCards>[0]) {
@@ -96,5 +101,47 @@ describe("Unified Forge App cards (GitHub & self-hosted GitLab)", () => {
     const disconnectBtn = el.querySelector<HTMLButtonElement>("button[aria-label*='Disconnect']")!;
     await act(async () => { disconnectBtn.click(); });
     expect(apiMock).toHaveBeenCalledWith("/api/apps/forge/gitlab", { method: "DELETE" });
+  });
+
+  it("matches Developer Tools in any case and handles catalog-style plural/noise-word queries", async () => {
+    apiMock.mockResolvedValue({ apps: [GH, GL] });
+
+    const el = await renderCards({ filter: "all", category: "Developer Tools", search: "" });
+    expect(el.querySelectorAll("[data-event-source-tile]").length).toBe(2);
+
+    for (const search of ["connect github", "github app", "pull requests", "merge requests"]) {
+      await act(async () => { root!.render(createElement(EventConnectorCards, { filter: "all", category: null, search })); });
+      expect(el.querySelectorAll("[data-event-source-tile]").length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the pasted PAT when saving fails and sanitizes the GitLab token link", async () => {
+    apiMock
+      .mockResolvedValueOnce({ apps: [GL] })
+      .mockRejectedValueOnce(new Error("GitLab rejected this Personal Access Token"));
+
+    const el = await renderCards({ filter: "all", category: null, search: "" });
+    const urlInput = el.querySelector<HTMLInputElement>("input[type='url']")!;
+    const tokenInput = el.querySelector<HTMLInputElement>("input[type='password']")!;
+    const setVal = (input: HTMLInputElement, val: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, val);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    await act(async () => {
+      setVal(urlInput, "javascript:alert(1)");
+      setVal(tokenInput, "glpat-keep-me");
+    });
+
+    const getKeyBtn = [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Get a GitLab key"))!;
+    await act(async () => { getKeyBtn.click(); });
+    expect(openExternalMock).toHaveBeenCalledWith("https://git.oceanlabs.dev/-/user_settings/personal_access_tokens");
+
+    const connectBtn = el.querySelector<HTMLButtonElement>("button[aria-label*='Connect']")!;
+    await act(async () => { connectBtn.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(el.querySelector("[role='alert']")?.textContent).toContain("GitLab rejected");
+    expect(el.querySelector<HTMLInputElement>("input[type='password']")!.value).toBe("glpat-keep-me");
   });
 });

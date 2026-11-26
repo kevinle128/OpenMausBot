@@ -180,6 +180,10 @@ describe("event source matching", () => {
       .rejects.toThrow("GitHub Event matches words in the event, not from or subject.");
     expect(normalizeEventSourceConfig({ types: "pr.ci.finished, pr.review.finished", repos: "acme/*\nkevinle128/*" }).ok).toBe(true);
     expect(eventSourceInstances(null).map((instance) => instance.enabled)).toEqual([false, false]);
+    expect(eventSourceInstances(null, { github: true, gitlab: false }).map((instance) => [instance.id, instance.enabled])).toEqual([
+      ["github-event", true],
+      ["gitlab-event", false],
+    ]);
     expect(HELD_EVENT_MS).toBe(6 * 60 * 60 * 1000);
   });
 

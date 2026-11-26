@@ -3,16 +3,27 @@ import { useState } from "react";
 import { openExternalLink } from "@/lib/app-links";
 import { t } from "@/lib/i18n";
 import type { ForgeApp } from "@/lib/forge-apps";
+import type { LocaleKey } from "@/locales";
 
-const TOKEN_URL: Record<ForgeApp["id"], (baseUrl: string) => string> = {
-  github: () => "https://github.com/settings/tokens?type=beta",
-  gitlab: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/-/user_settings/personal_access_tokens`,
+const GITHUB_TOKEN_URL = "https://github.com/settings/tokens?type=beta";
+
+const PERMS_HINT_KEY: Record<ForgeApp["id"], LocaleKey> = {
+  github: "forgeApps.github.permsHint",
+  gitlab: "forgeApps.gitlab.permsHint",
 };
 
-const PERMS_HINT: Record<ForgeApp["id"], string> = {
-  github: "Required PAT permissions: Fine-grained (Metadata, Pull requests, Contents, Checks) or classic (repo).",
-  gitlab: "Required PAT scopes: api (comment/merge) or read_api (list projects & read MRs).",
-};
+function safeGitLabTokenUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}/-/user_settings/personal_access_tokens`;
+  } catch {
+    return null;
+  }
+}
 
 function hostOf(url: string): string {
   try { return new URL(url).host; } catch { return url; }
@@ -23,19 +34,20 @@ export function EventConnectorTile({ app, busy, error, onConnect, onDisconnect }
   app: ForgeApp;
   busy: boolean;
   error: string | null;
-  onConnect: (input: { token: string; baseUrl?: string }) => void;
+  onConnect: (input: { token: string; baseUrl?: string }) => Promise<boolean>;
   onDisconnect: () => void;
 }) {
   const [token, setToken] = useState("");
   const [baseUrl, setBaseUrl] = useState(app.baseUrl);
   const isGitLab = app.id === "gitlab";
   const canConnect = token.trim().length > 0 && (!isGitLab || baseUrl.trim().length > 0);
+  const tokenUrl = isGitLab ? (safeGitLabTokenUrl(baseUrl) ?? safeGitLabTokenUrl(app.baseUrl)) : GITHUB_TOKEN_URL;
   const Icon = isGitLab ? Gitlab : Github;
 
   const submit = () => {
     if (!canConnect || busy) return;
-    onConnect({ token: token.trim(), ...(isGitLab ? { baseUrl: baseUrl.trim() } : {}) });
-    setToken("");
+    void onConnect({ token: token.trim(), ...(isGitLab ? { baseUrl: baseUrl.trim() } : {}) })
+      .then((saved) => { if (saved) setToken(""); });
   };
 
   const subtitle = app.connected
@@ -78,7 +90,7 @@ export function EventConnectorTile({ app, busy, error, onConnect, onDisconnect }
                 disabled={busy}
                 autoComplete="off"
                 spellCheck={false}
-                aria-label="GitLab server URL"
+                aria-label={t("forgeApps.gitlab.serverUrl")}
                 placeholder="https://git.oceanlabs.dev"
                 onChange={(event) => setBaseUrl(event.target.value)}
                 className="h-8 w-full min-w-0 rounded-lg bg-inset px-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
@@ -96,11 +108,12 @@ export function EventConnectorTile({ app, busy, error, onConnect, onDisconnect }
               onKeyDown={(event) => { if (event.key === "Enter") submit(); }}
               className="h-8 w-full min-w-0 rounded-lg bg-inset px-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
             />
-            <p className="text-[11.5px] leading-4 text-ink-secondary">{PERMS_HINT[app.id]}</p>
+            <p className="text-[12px] leading-4 text-ink-secondary">{t(PERMS_HINT_KEY[app.id])}</p>
             <button
               type="button"
-              onClick={() => void openExternalLink(TOKEN_URL[app.id](baseUrl || app.baseUrl))}
-              className="inline-flex items-center gap-1 text-[12px] font-medium text-accent-text hover:underline"
+              disabled={!tokenUrl}
+              onClick={() => { if (tokenUrl) void openExternalLink(tokenUrl); }}
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-accent-text hover:underline disabled:opacity-40"
             >
               {t("hostedMcp.getKey", { service: app.title })}
               <ExternalLink size={11} aria-hidden="true" />

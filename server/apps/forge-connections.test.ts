@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { globMatch } from "../pr-orchestrator/glob.ts";
 import {
   clearForgeRepoCache,
   connectForgeApp,
@@ -9,6 +10,7 @@ import {
   forgeIdOfApp,
   listForgeApps,
   listForgeRepositories,
+  normalizeForgeUrl,
 } from "./forge-connections.ts";
 
 const dirs: string[] = [];
@@ -73,7 +75,9 @@ describe("forge-connections", () => {
     const badFetch = stubFetch(() => ({ status: 401, body: { message: "401 Unauthorized" } }));
     await expect(connectForgeApp(store, "gitlab", { token: "glpat_bad", baseUrl: "https://git.oceanlabs.dev" }, badFetch)).rejects.toThrow(/rejected/);
 
-    const okFetch = stubFetch((url) => {
+    const seenInits: Array<RequestInit | undefined> = [];
+    const okFetch = stubFetch((url, init) => {
+      seenInits.push(init);
       if (url === "https://git.oceanlabs.dev/api/v4/user") return { status: 200, body: { username: "kevin.le" } };
       if (url.startsWith("https://git.oceanlabs.dev/api/v4/projects")) {
         return { status: 200, body: [{ path_with_namespace: "vtc/backend/api" }] };
@@ -82,10 +86,22 @@ describe("forge-connections", () => {
     });
     const gl = await connectForgeApp(store, "gitlab", { token: "glpat_good", baseUrl: "https://git.oceanlabs.dev/" }, okFetch);
     expect(gl).toMatchObject({ id: "gitlab", connected: true, login: "kevin.le", baseUrl: "https://git.oceanlabs.dev" });
+    expect(seenInits.every((init) => init?.redirect === "error")).toBe(true);
 
     const projects = await listForgeRepositories(store, "gitlab", { fetchImpl: okFetch });
-    expect(projects.map((p) => p.id)).toEqual(["vtc/*", "vtc/backend/api"]);
+    expect(projects.map((p) => p.id)).toEqual(["vtc/**", "vtc/backend/api"]);
+    expect(globMatch(projects[0]!.id, "vtc/backend/api")).toBe(true);
     expect(forgeIdOfApp("gitlab-event")).toBe("gitlab");
     expect(forgeIdOfApp("github")).toBe("github");
+  });
+
+  it("blocks query/hash URLs and private/loopback addresses on hosted installs", () => {
+    expect(() => normalizeForgeUrl("https://git.example.com/?a=1")).toThrow(/query/);
+    expect(() => normalizeForgeUrl("https://git.example.com/#frag")).toThrow(/query/);
+    expect(normalizeForgeUrl("http://127.0.0.1:8080/", { hosted: false })).toBe("http://127.0.0.1:8080");
+    expect(() => normalizeForgeUrl("http://127.0.0.1:8080", { hosted: true })).toThrow(/https/);
+    expect(() => normalizeForgeUrl("https://169.254.169.254", { hosted: true })).toThrow(/private|link-local/);
+    expect(() => normalizeForgeUrl("https://10.0.0.5", { hosted: true })).toThrow(/private|link-local/);
+    expect(normalizeForgeUrl("https://git.example.com/gitlab/", { hosted: true })).toBe("https://git.example.com/gitlab");
   });
 });

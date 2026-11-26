@@ -1,7 +1,10 @@
 // Unified native GitHub & GitLab (self-hosted) connections + reusable repository resource listing.
 // Tokens are stored write-only in forge-apps.json (mode 0600) and never returned by any route.
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { writeFileAtomic } from "../atomic.ts";
+import { cloudHomeConfigured } from "../cloud-home.ts";
+import { isPublicDomainAddress } from "../custom-domain.ts";
 import { parseJson } from "../schema.ts";
 
 export type ForgeId = "github" | "gitlab";
@@ -59,8 +62,8 @@ export function forgeIdOfApp(slug: string): ForgeId | null {
   return null;
 }
 
-/** Validates https URLs (or http on loopback for tests); strips trailing slashes and forbids embedded credentials. */
-export function normalizeForgeUrl(raw: string): string {
+/** Validates https URLs (or http on loopback when not hosted); strips trailing slashes and forbids credentials/query/hash. */
+export function normalizeForgeUrl(raw: string, opts?: { hosted?: boolean; allowLoopback?: boolean }): string {
   const trimmed = raw.trim();
   let parsed: URL;
   try {
@@ -69,11 +72,23 @@ export function normalizeForgeUrl(raw: string): string {
     throw new ForgeError(400, "Server URL must be a valid https:// address");
   }
   if (parsed.username || parsed.password) throw new ForgeError(400, "Server URL must not include credentials");
-  const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+  if (parsed.search || parsed.hash) throw new ForgeError(400, "Server URL must not include query parameters or fragments");
+  const hosted = opts?.hosted ?? cloudHomeConfigured();
+  const allowLoopback = opts?.allowLoopback ?? !hosted;
+  const bareHost = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const loopback = bareHost === "127.0.0.1" || bareHost === "localhost" || bareHost === "::1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && allowLoopback && loopback)) {
     throw new ForgeError(400, "Server URL must use https://");
   }
-  return parsed.toString().replace(/\/+$/, "");
+  if (hosted) {
+    if (loopback || /(?:^|\.)(?:localhost|local|internal|invalid|test)$/.test(bareHost)) {
+      throw new ForgeError(400, "Server URL must use a public https:// address");
+    }
+    if (isIP(bareHost) && !isPublicDomainAddress(bareHost)) {
+      throw new ForgeError(400, "Server URL must not use a private or link-local IP address");
+    }
+  }
+  return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
 }
 
 export class ForgeError extends Error {
@@ -148,7 +163,7 @@ async function fetchJson(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetchImpl(url, { headers, signal: controller.signal });
+    const res = await fetchImpl(url, { headers, redirect: "error", signal: controller.signal });
     const text = await res.text().catch(() => "");
     let body: unknown = null;
     try { body = text ? JSON.parse(text) : null; } catch { body = null; }
@@ -254,12 +269,16 @@ export async function listForgeRepositories(
   }
 
   const seen = new Set<string>();
-  const owners = new Set<string>();
+  const owners = new Map<string, boolean>();
   const recentItems: ResourceItem[] = [];
   const allItems: ResourceItem[] = [];
   const addOwner = (repo: string) => {
     const slash = repo.indexOf("/");
-    if (slash > 0) owners.add(repo.slice(0, slash));
+    if (slash > 0) {
+      const owner = repo.slice(0, slash);
+      const nested = repo.indexOf("/", slash + 1) > 0;
+      owners.set(owner, (owners.get(owner) ?? false) || nested);
+    }
   };
 
   for (const repo of opts.recentRepos ?? []) {
@@ -277,12 +296,17 @@ export async function listForgeRepositories(
     allItems.push({ id: clean, label: clean, meta: META[id].title, group: "all" });
   }
 
-  const wildcards: ResourceItem[] = [...owners].sort().map((owner) => ({
-    id: `${owner}/*`,
-    label: `${owner}/*`,
-    meta: `All in ${owner}`,
-    group: "wildcard",
-  }));
+  const wildcards: ResourceItem[] = [...owners.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([owner, nested]) => {
+      const pattern = nested ? `${owner}/**` : `${owner}/*`;
+      return {
+        id: pattern,
+        label: pattern,
+        meta: `All in ${owner}`,
+        group: "wildcard",
+      };
+    });
 
   const q = (opts.query ?? "").trim().toLowerCase();
   const combined = [...wildcards, ...recentItems, ...allItems];
