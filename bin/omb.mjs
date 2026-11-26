@@ -976,7 +976,7 @@ async function cmdReveal(ctx, { positionals }) {
   await assertHumanTerminal(d);
   const server = loadServerOrigin(d);
   const adminToken = (d.env.OMB_ADMIN_TOKEN ?? "").trim();
-  if (adminToken && /[\s\0-\x1f\x7f]/.test(adminToken)) throw invalid("OMB_ADMIN_TOKEN holds invalid characters");
+  if (adminToken && (/\s/.test(adminToken) || hasControl(adminToken))) throw invalid("OMB_ADMIN_TOKEN holds invalid characters");
   if (!adminToken && !isLoopbackOrigin(server)) {
     throw new CliError(EXIT.refused, "revealing a secret on a remote server needs an admin token (scope 'admin'). Set OMB_ADMIN_TOKEN (from: openmausbot token create NAME --scope admin) or copy the secret in OpenMausBot → Settings → Vault.", "refused");
   }

@@ -252,6 +252,21 @@ describe("arguments", () => {
     expect(result.err).toContain("openmausbot token create NAME --scope admin");
     expect(result.err).not.toContain("omb pair");
   });
+
+  it("refuses get --reveal with exit 2 when OMB_ADMIN_TOKEN contains whitespace or control characters", async () => {
+    const seen = await stub(() => ({ json: envelope("secrets.get", { ref: "REF", value: "admin-secret" }) }));
+    await paired(seen.url);
+    const humanPs = fakePs({ 100: { ppid: 10, comm: "/bin/zsh" }, 10: { ppid: 1, comm: "/sbin/launchd" } });
+    for (const badToken of ["omb_sess_bad token", "omb_sess_bad\x00token", "omb_sess_bad\x7ftoken", "omb_sess_bad\x85token", "omb_sess_bad\u200btoken"]) {
+      const result = await run(["secrets", "get", "REF", "--reveal"], {
+        stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ppid: 100, ps: humanPs,
+        env: { OMB_CONFIG_DIR: join(home, "config"), OMB_TOKEN_STORE: "file", OMB_ADMIN_TOKEN: badToken },
+      });
+      expect(result.code).toBe(EXIT.invalid);
+      expect(result.err).toContain("OMB_ADMIN_TOKEN");
+    }
+    expect(seen.requests).toHaveLength(0);
+  });
 });
 
 describe("server address and pairing input", () => {
