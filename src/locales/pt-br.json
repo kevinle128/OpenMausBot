@@ -11233,5 +11233,13 @@
   "server.prOrchestrator.answer.approve": "Aprovar",
   "server.prOrchestrator.answer.reject": "Recusar",
   "server.prOrchestrator.bot.name": "Pull requests",
-  "server.prOrchestrator.bot.description": "Perguntas e avisos do MausBot sobre os seus pull requests e merge requests."
+  "server.prOrchestrator.bot.description": "Perguntas e avisos do MausBot sobre os seus pull requests e merge requests.",
+  "forgeApps.github.permsHint": "Permissões necessárias do PAT: Fine-grained (Metadata, Pull requests, Contents, Checks) ou clássico (repo).",
+  "forgeApps.gitlab.permsHint": "Escopos necessários do PAT: api (comentar/mesclar) ou read_api (listar projetos e ler MRs).",
+  "forgeApps.gitlab.serverUrl": "URL do servidor GitLab",
+  "resourcePicker.customGlob": "Padrão personalizado",
+  "resourcePicker.addCustom": "Adicionar personalizado",
+  "resourcePicker.remove": "Remover {value}",
+  "resourcePicker.addAnother": "Adicionar outro…",
+  "resourcePicker.addValue": "Adicionar \"{value}\""
 }
